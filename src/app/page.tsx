@@ -13,10 +13,13 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFo
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Card, CardContent } from '@/components/ui/card';
-import { Navigation2, X, MapPin, Navigation, LocateFixed, Clock, ArrowRight, Volume2, VolumeX, Compass, Loader2 } from 'lucide-react';
+import { Navigation2, X, MapPin, Navigation, LocateFixed, Clock, ArrowRight, Volume2, VolumeX, Compass, Loader2, AlertTriangle } from 'lucide-react';
 
-if (!mapboxgl.accessToken) {
-    mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || '';
+// --- SAFE TOKEN INITIALIZATION ---
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+
+if (MAPBOX_TOKEN) {
+    mapboxgl.accessToken = MAPBOX_TOKEN;
 }
 
 const initialCenter: [number, number] = [104.9282, 11.5564];
@@ -66,7 +69,6 @@ export default function MapExplorerPage() {
     arrivalTime: string;
   } | null>(null);
 
-  // Refs for Event Access
   const showRecenterBtnRef = useRef(false);
   const isMutedRef = useRef(false);
 
@@ -85,9 +87,13 @@ export default function MapExplorerPage() {
     window.speechSynthesis.speak(utterance);
   }, []);
 
-  // --- MAP SETUP ---
+  // --- MAP INITIALIZATION ---
   useEffect(() => {
     isMounted.current = true;
+    
+    // CRITICAL FIX: Don't initialize map if token is missing
+    if (!MAPBOX_TOKEN) return; 
+    
     if (map.current || !mapContainer.current) return;
     
     if (mapContainer.current.hasChildNodes()) {
@@ -113,11 +119,7 @@ export default function MapExplorerPage() {
     mapInstance.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
 
     const geolocate = new GeolocateControl({
-      positionOptions: { 
-          enableHighAccuracy: true, 
-          timeout: 15000,
-          maximumAge: 0 
-      },
+      positionOptions: { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
       trackUserLocation: true,
       showUserHeading: true,
       showUserLocation: true,
@@ -141,24 +143,19 @@ export default function MapExplorerPage() {
         }, 600); 
     });
 
-    // --- REAL-TIME GPS LOGIC ---
+    // --- REAL TIME UPDATES ---
     geolocate.on('geolocate', (e: any) => {
       const pos = e.coords;
       const newLat = pos.latitude;
       const newLng = pos.longitude;
-      // Convert m/s to km/h, default to 0
       const speedKmh = pos.speed ? Math.round(pos.speed * 3.6) : 0;
-      const heading = pos.heading;
       
       if(isMounted.current) setCurrentSpeed(speedKmh);
 
       const prevLocation = userLocation.current;
       userLocation.current = [newLng, newLat];
 
-      // If Navigating
       if (isNavigating.current && directionsControl.current) {
-         
-         // 1. Update Route Origin
          directionsControl.current.setOrigin([newLng, newLat]);
 
          const now = Date.now();
@@ -167,42 +164,30 @@ export default function MapExplorerPage() {
              distanceMoved = getDistanceFromLatLonInMeters(prevLocation[1], prevLocation[0], newLat, newLng);
          }
 
-         // 2. Camera Update Logic
-         // Only update if we aren't panning manually (showRecenterBtn is false)
          if (!showRecenterBtnRef.current) {
-             
-             // SMART BEARING: Only rotate map if we are moving fast enough (> 5km/h)
-             // This prevents the map from spinning wildly when stopped at a red light.
+             const heading = pos.heading;
              const shouldUpdateBearing = speedKmh > 5 && heading !== undefined && heading !== null;
              const targetBearing = shouldUpdateBearing ? heading : mapInstance.getBearing();
-
-             // DYNAMIC ZOOM: Zoom out as we go faster
-             // 0-30km/h = Zoom 18
-             // 100km/h = Zoom 16.5
              const targetZoom = Math.max(16.5, Math.min(18.5, 18.5 - (speedKmh / 80)));
 
-             // Throttle check: Update if moved > 2m OR time > 1s (Standard GPS rate)
              if (distanceMoved > 2 || (now - lastCameraUpdate.current > 1000)) {
                  lastCameraUpdate.current = now;
-
                  mapInstance.easeTo({
                      center: [newLng, newLat],
                      zoom: targetZoom,
-                     pitch: 55, // Driver view tilt
+                     pitch: 55,
                      bearing: targetBearing,
-                     duration: 1000, // Smooth 1s transition matching GPS rate
-                     easing: (t) => t // Linear easing for constant motion
+                     duration: 1000,
+                     easing: (t) => t
                  });
              }
          }
       }
     });
     
-    // Listeners for manual interaction
     mapInstance.on('dragstart', () => { if(isNavigating.current) setShowRecenterBtn(true); });
     mapInstance.on('pitchstart', () => { if(isNavigating.current) setShowRecenterBtn(true); });
 
-    // --- OTHER LISTENERS ---
     const markerObserver = new MutationObserver((mutations) => {
         let shouldCleanup = false;
         mutations.forEach((mutation) => {
@@ -254,8 +239,9 @@ export default function MapExplorerPage() {
     const initializeDirectionsPlugin = (instance: mapboxgl.Map) => {
         if(directionsControl.current) return; 
 
+        // CRITICAL: PASS TOKEN DIRECTLY
         const directions = new MapboxDirections({
-            accessToken: mapboxgl.accessToken,
+            accessToken: MAPBOX_TOKEN, 
             unit: 'metric',
             profile: 'mapbox/driving',
             interactive: false,
@@ -345,8 +331,7 @@ export default function MapExplorerPage() {
     }
   }, []); 
   
-  // --- EFFECTS & HANDLERS ---
-  
+  // --- EFFECTS ---
   useEffect(() => {
     if (routeDetails?.instruction && isNavigating.current) {
         if (lastSpokenInstruction.current !== routeDetails.instruction) {
@@ -384,6 +369,7 @@ export default function MapExplorerPage() {
     }
   }, [locationDetails]);
 
+  // --- ACTIONS ---
   const handleStartNavigation = () => {
     if (!userLocation.current) {
       toast({ title: "Locating...", description: "Waiting for GPS." });
@@ -460,6 +446,29 @@ export default function MapExplorerPage() {
     const hours = Math.floor(m / 60);
     const mins = m % 60;
     return `${hours}h ${mins}m`;
+  }
+
+  // --- RENDER IF NO TOKEN ---
+  if (!MAPBOX_TOKEN) {
+      return (
+          <div className="flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6">
+              <Card className="w-full max-w-md bg-zinc-900 border-red-900/50">
+                  <CardContent className="flex flex-col items-center gap-4 p-6">
+                      <div className="rounded-full bg-red-900/20 p-4">
+                          <AlertTriangle className="h-8 w-8 text-red-500" />
+                      </div>
+                      <h2 className="text-xl font-bold">Configuration Error</h2>
+                      <p className="text-center text-zinc-400">
+                          Mapbox Access Token is missing. 
+                      </p>
+                      <div className="w-full rounded bg-zinc-950 p-4 font-mono text-xs text-zinc-500 break-all">
+                          NEXT_PUBLIC_MAPBOX_TOKEN=pk...
+                      </div>
+                      <p className="text-sm text-zinc-500">Please add this to your .env.local file.</p>
+                  </CardContent>
+              </Card>
+          </div>
+      )
   }
 
   return (
