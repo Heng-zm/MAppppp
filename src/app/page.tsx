@@ -10,9 +10,9 @@ import '@mapbox/mapbox-gl-directions/dist/mapbox-gl-directions.css';
 
 import { useToast } from "@/hooks/use-toast";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from "@/components/ui/sheet";
-import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Card, CardContent } from '@/components/ui/card';
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent } from "@/components/ui/card";
 import { 
   Navigation2, X, MapPin, Navigation, LocateFixed, Clock, 
   ArrowRight, Volume2, VolumeX, Compass, Loader2, AlertTriangle, 
@@ -23,12 +23,11 @@ import {
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
-// Default: Phnom Penh, Cambodia
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; 
 const DEFAULT_ZOOM = 13;
 const MAP_STYLE = 'mapbox://styles/mapbox/dark-v11';
 
-// --- HELPER: MATH ---
+// --- UTILS ---
 function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371; 
   const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -38,90 +37,67 @@ function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number,
   return (R * c) * 1000;
 }
 
-// --- SEARCH RESULT TYPE ---
-type SearchResult = { lng: number, lat: number, name: string, type: string, address: string, isSimulated?: boolean };
+type SearchResult = { lng: number, lat: number, name: string, type: string, address: string };
 
-// --- 1. REAL API SEARCH (Optimized for Cambodia) ---
-const searchPlacesNearLocation = async (query: string, center: [number, number]): Promise<SearchResult[]> => {
+// --- ROBUST API SEARCH ---
+const searchPlacesNearLocation = async (
+    query: string, 
+    center: [number, number], 
+    bbox?: mapboxgl.LngLatBounds,
+    signal?: AbortSignal
+): Promise<SearchResult[]> => {
     if (!MAPBOX_TOKEN) return [];
 
     let searchQuery = query;
     let typeLabel = "Place";
     
-    // Improved keywords for SE Asia / Cambodia tagging
+    // Enhanced Keywords
     if (query.match(/gas|fuel|petrol/i)) { searchQuery = "petrol station, gas station"; typeLabel = "Gas"; }
-    else if (query.match(/food|eat|hungry|dinner|lunch/i)) { searchQuery = "restaurant, khmer food, dining"; typeLabel = "Food"; }
+    else if (query.match(/food|eat|hungry|dinner|lunch/i)) { searchQuery = "restaurant, food"; typeLabel = "Food"; }
     else if (query.match(/coffee|cafe|drink/i)) { searchQuery = "coffee, cafe"; typeLabel = "Coffee"; }
-    else if (query.match(/health|doctor|hospital|clinic/i)) { searchQuery = "hospital, clinic, pharmacy"; typeLabel = "Health"; }
+    else if (query.match(/health|doctor|hospital|clinic/i)) { searchQuery = "hospital, pharmacy, clinic"; typeLabel = "Health"; }
 
-    // Use a tighter proximity bias to find things actually nearby
-    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=8&types=poi&access_token=${MAPBOX_TOKEN}`;
+    // 1. Try Searching within Current View (BBOX) first for relevance
+    let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=10&access_token=${MAPBOX_TOKEN}`;
+    
+    if (bbox) {
+        url += `&bbox=${bbox.getWest()},${bbox.getSouth()},${bbox.getEast()},${bbox.getNorth()}`;
+    }
 
     try {
-        const res = await fetch(url);
+        const res = await fetch(url, { signal });
         const data = await res.json();
         
-        if (!data.features || data.features.length === 0) return [];
+        // 2. Fallback: If no results in view, try global search near center (removing bbox constraint)
+        if (!data.features || data.features.length === 0) {
+            const fallbackUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=10&access_token=${MAPBOX_TOKEN}`;
+            const fallbackRes = await fetch(fallbackUrl, { signal });
+            const fallbackData = await fallbackRes.json();
+            
+            if (fallbackData.features) {
+                 return mapFeaturesToResults(fallbackData.features, typeLabel);
+            }
+            return [];
+        }
 
-        return data.features.map((f: any) => ({
-            lng: f.center[0],
-            lat: f.center[1],
-            name: f.text,
-            // Clean up address to remove redundant country names
-            address: (f.properties?.address || f.place_name?.split(',').slice(1).join(',').trim()) || "Phnom Penh",
-            type: typeLabel,
-            isSimulated: false
-        }));
-    } catch (error) {
-        console.error("Mapbox Search Error:", error);
+        return mapFeaturesToResults(data.features, typeLabel);
+
+    } catch (error: any) {
+        if (error.name === 'AbortError') console.log('Search aborted');
+        else console.error("Search failed:", error);
         return [];
     }
 };
 
-// --- 2. FALLBACK SIMULATION (Localized for Cambodia) ---
-const generateFallbackResults = (query: string, center: [number, number]): SearchResult[] => {
-    let typeLabel = "Place";
-    // Default international brands
-    let brands = ["Local Spot", "Store"];
-    
-    // Check if user is roughly in Cambodia (Lat 10-15, Lng 102-108)
-    const isCambodia = (center[1] > 9 && center[1] < 15 && center[0] > 102 && center[0] < 108);
-
-    if (query.match(/gas|fuel/i)) { 
-        brands = isCambodia 
-            ? ["Tela Station", "PTT Station", "Caltex", "Total Energies", "LIM LONG Station"] 
-            : ["Shell", "BP", "Exxon"];
-        typeLabel = "Gas"; 
-    }
-    else if (query.match(/food|eat|hungry/i)) { 
-        brands = isCambodia 
-            ? ["The Pizza Company", "Lucky Burger", "Master Grill", "Brown Coffee & Bakery", "Park Cafe"] 
-            : ["Burger King", "McDonalds"];
-        typeLabel = "Food"; 
-    }
-    else if (query.match(/coffee|cafe/i)) { 
-        brands = isCambodia 
-            ? ["Brown Coffee", "Amazon Cafe", "Tube Coffee", "Koi Thé", "Starbucks"] 
-            : ["Starbucks", "Costa Coffee"];
-        typeLabel = "Coffee"; 
-    }
-    else if (query.match(/health|doctor|hospital/i)) { 
-        brands = isCambodia 
-            ? ["Royal Phnom Penh Hospital", "Sunrise Japan Hospital", "U-Care Pharmacy", "Khema Clinic"] 
-            : ["General Hospital", "City Clinic"];
-        typeLabel = "Health"; 
-    }
-
-    // Generate points extremely close to the center to ensure they appear on screen
-    return Array.from({ length: 4 }).map((_, i) => ({
-        lng: center[0] + (Math.random() - 0.5) * 0.015, // ~1.5km radius
-        lat: center[1] + (Math.random() - 0.5) * 0.015,
-        name: brands[i % brands.length],
-        address: isCambodia ? "Phnom Penh (Simulated)" : "Nearby (Simulated)",
-        type: typeLabel,
-        isSimulated: true
+const mapFeaturesToResults = (features: any[], typeLabel: string): SearchResult[] => {
+    return features.map((f: any) => ({
+        lng: f.center[0],
+        lat: f.center[1],
+        name: f.text,
+        address: (f.properties?.address || f.place_name?.split(',').slice(1).join(',').trim()) || "Mapbox Location",
+        type: typeLabel
     }));
-};
+}
 
 interface Message { id: string; role: 'user' | 'assistant'; content: string; }
 
@@ -132,6 +108,7 @@ export default function MapExplorerPage() {
   const geolocateControl = useRef<GeolocateControl | null>(null);
   const destinationMarker = useRef<Marker | null>(null);
   const searchMarkers = useRef<Marker[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
   
   const userLocation = useRef<[number, number] | null>(null);
   const isNavigating = useRef<boolean>(false);
@@ -144,6 +121,7 @@ export default function MapExplorerPage() {
 
   const { toast } = useToast();
   
+  // State
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
   const [isFetchingAddress, setIsFetchingAddress] = useState(false);
@@ -153,12 +131,13 @@ export default function MapExplorerPage() {
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   
+  // AI State
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
-    { id: '1', role: 'assistant', content: "Suasdey! I'm your local co-pilot. I can help you find Gas, Food, or Coffee nearby." }
+    { id: '1', role: 'assistant', content: "Hi! I search for real places. Try 'Find Gas' or 'Find Food'." }
   ]);
-  const [isAiTyping, setIsAiTyping] = useState(false);
+  const [isAiTyping, setIsAiTyping] = useState(false); // Used for loading state
 
   const [routeDetails, setRouteDetails] = useState<{
     distance: number; 
@@ -169,6 +148,7 @@ export default function MapExplorerPage() {
 
   const showRecenterBtnRef = useRef(false);
   const isMutedRef = useRef(false);
+  
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
 
@@ -176,16 +156,15 @@ export default function MapExplorerPage() {
   useEffect(() => {
     if (isAiOpen) {
         requestAnimationFrame(() => {
-            chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-            chatInputRef.current?.focus();
+             chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+             // Only focus input on desktop to prevent mobile keyboard jumping
+             if (window.innerWidth > 768) chatInputRef.current?.focus();
         });
     }
   }, [messages, isAiOpen]);
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') setIsAiOpen(false);
-    };
+    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsAiOpen(false); };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
@@ -193,7 +172,7 @@ export default function MapExplorerPage() {
   // --- VOICE ---
   const speak = useCallback((text: string) => {
     if (typeof window === 'undefined' || isMutedRef.current || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
+    window.speechSynthesis.cancel(); 
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
     const preferredVoice = voices.find(v => (v.name.includes('Google') || v.name.includes('Samantha')) && v.lang.includes('en')) || voices[0];
@@ -205,10 +184,9 @@ export default function MapExplorerPage() {
   // --- MAP INIT ---
   useEffect(() => {
     isMounted.current = true;
-    if (!MAPBOX_TOKEN) return; 
-    if (map.current || !mapContainer.current) return;
+    if (!MAPBOX_TOKEN || !mapContainer.current) return;
     
-    mapContainer.current.innerHTML = ''; 
+    mapContainer.current.innerHTML = '';
     
     const mapInstance = new mapboxgl.Map({
       container: mapContainer.current,
@@ -240,7 +218,6 @@ export default function MapExplorerPage() {
     mapInstance.on('load', () => {
         if (!isMounted.current) return;
         setIsMapLoaded(true); 
-        // Trigger geolocation immediately to get Cambodia context if user is there
         geolocate.trigger();
 
         setTimeout(() => {
@@ -248,7 +225,7 @@ export default function MapExplorerPage() {
                 initializeDirectionsPlugin(mapInstance);
                 add3DBuildings(mapInstance);
              }
-        }, 500); 
+        }, 300); 
     });
 
     geolocate.on('geolocate', (e: any) => {
@@ -256,7 +233,10 @@ export default function MapExplorerPage() {
       const speedKmh = pos.speed ? Math.round(pos.speed * 3.6) : 0;
       
       if (isMounted.current) {
-          setCurrentSpeed(prev => Math.abs(prev - speedKmh) > 2 ? speedKmh : prev);
+          setCurrentSpeed(prev => {
+              const diff = Math.abs(prev - speedKmh);
+              return diff > 2 ? speedKmh : prev;
+          });
       }
       
       const prevLocation = userLocation.current;
@@ -271,6 +251,7 @@ export default function MapExplorerPage() {
 
          if (!showRecenterBtnRef.current) {
              const targetZoom = Math.max(16, Math.min(18.5, 18.5 - (speedKmh / 100)));
+             
              if (distanceMoved > 3 || (now - lastCameraUpdate.current > 1500)) {
                  lastCameraUpdate.current = now;
                  mapInstance.easeTo({
@@ -297,6 +278,7 @@ export default function MapExplorerPage() {
       isMounted.current = false;
       mapInstance.remove();
       map.current = null;
+      if (abortControllerRef.current) abortControllerRef.current.abort();
     }
   }, []); 
 
@@ -368,7 +350,7 @@ export default function MapExplorerPage() {
       }
   };
 
-  const handleMapSelection = (lngLat: { lng: number, lat: number }) => {
+  const handleMapSelection = useCallback((lngLat: { lng: number, lat: number }) => {
       if(!map.current) return;
       setRouteDetails(null);
       setShowRecenterBtn(false);
@@ -387,13 +369,13 @@ export default function MapExplorerPage() {
       setIsDrawerOpen(true);
 
       map.current.flyTo({ center: lngLat, zoom: 16, offset: [0, 150], essential: true });
-  };
+  }, []);
 
   useEffect(() => {
     const handleNavEvent = (e: any) => { if(e.detail) handleMapSelection(e.detail); }
     window.addEventListener('nav-to', handleNavEvent);
     return () => window.removeEventListener('nav-to', handleNavEvent);
-  }, []);
+  }, [handleMapSelection]);
   
   useEffect(() => {
     if (routeDetails?.instruction && isNavigating.current) {
@@ -484,13 +466,22 @@ export default function MapExplorerPage() {
       searchMarkers.current = [];
   }
 
-  // --- HYBRID AI ACTION HANDLER ---
+  // --- AI ACTION HANDLER ---
   const performAiAction = async (input: string) => {
     if(!input.trim()) return;
     
+    // Cancel previous ongoing search
+    if (abortControllerRef.current) abortControllerRef.current.abort();
+    abortControllerRef.current = new AbortController();
+    
     setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: input }]);
     setChatInput("");
-    setIsAiTyping(true);
+    setIsAiTyping(true); // START LOADING
+
+    // Hide keyboard on mobile
+    if(typeof window !== 'undefined' && window.innerWidth < 768) {
+        (document.activeElement as HTMLElement)?.blur();
+    }
 
     const lowerMsg = input.toLowerCase();
     let aiResponse = "";
@@ -509,23 +500,21 @@ export default function MapExplorerPage() {
         setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: aiResponse }]);
     
     } else {
-        // 2. SEARCH (Hybrid: Real API -> Fallback to Localized Simulation)
+        // 2. SEARCH
         const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
-        
+        const bounds = map.current ? map.current.getBounds() : undefined;
+
         clearAiMarkers();
         
-        // Attempt Real API
-        let results = await searchPlacesNearLocation(input, center);
-        let source = "found";
-
-        // If Real API fails, use Fallback (Simulation)
-        if (results.length === 0) {
-            results = generateFallbackResults(input, center);
-            source = "identified potential"; // Subtly implies simulation
-        }
+        // Pass the AbortSignal to the search function
+        const results = await searchPlacesNearLocation(input, center, bounds, abortControllerRef.current.signal);
 
         if (map.current && results.length > 0) {
-            const bounds = new LngLatBounds();
+            const fitBounds = new LngLatBounds();
+            
+            // Add user location to bounds so the map zooms to show BOTH user and results
+            if(userLocation.current) fitBounds.extend(userLocation.current);
+
             results.forEach(res => {
                 const el = document.createElement('div');
                 
@@ -559,17 +548,17 @@ export default function MapExplorerPage() {
                 
                 el.addEventListener('click', () => marker.togglePopup());
                 searchMarkers.current.push(marker);
-                bounds.extend([res.lng, res.lat]);
+                fitBounds.extend([res.lng, res.lat]);
             });
 
-            map.current.fitBounds(bounds, { padding: 100, maxZoom: 15 });
-            aiResponse = `I ${source} ${results.length} ${results[0].type.toLowerCase()} places nearby.`;
+            // Smart Zoom: Fit to show User + Results
+            map.current.fitBounds(fitBounds, { padding: 80, maxZoom: 15 });
+            aiResponse = `Found ${results.length} ${results[0].type.toLowerCase()} places.`;
         } else {
-            // Should be unreachable due to fallback, but just in case
-            aiResponse = "I couldn't find any places matching that description.";
+            aiResponse = "No real places found nearby matching that description.";
         }
 
-        setIsAiTyping(false);
+        setIsAiTyping(false); // STOP LOADING
         setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: aiResponse }]);
     }
   }
@@ -712,23 +701,23 @@ export default function MapExplorerPage() {
 
                     <div className="p-4 bg-[#18181b] space-y-4 border-t border-zinc-800/50">
                         <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-                            <button onClick={() => performAiAction("Gas")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-orange-900/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 text-xs font-medium transition-colors whitespace-nowrap">
+                            <button disabled={isAiTyping} onClick={() => performAiAction("Gas")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-orange-900/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
                                 <Fuel className="h-3.5 w-3.5" /> Gas
                             </button>
-                            <button onClick={() => performAiAction("Food")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-rose-900/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 text-xs font-medium transition-colors whitespace-nowrap">
+                            <button disabled={isAiTyping} onClick={() => performAiAction("Food")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-rose-900/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
                                 <Utensils className="h-3.5 w-3.5" /> Food
                             </button>
-                            <button onClick={() => performAiAction("Coffee")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-yellow-900/30 bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors whitespace-nowrap">
+                            <button disabled={isAiTyping} onClick={() => performAiAction("Coffee")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-yellow-900/30 bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
                                 <Coffee className="h-3.5 w-3.5" /> Coffee
                             </button>
-                             <button onClick={() => performAiAction("Hospital")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-900/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium transition-colors whitespace-nowrap">
+                             <button disabled={isAiTyping} onClick={() => performAiAction("Hospital")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-900/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
                                 <Stethoscope className="h-3.5 w-3.5" /> Health
                             </button>
                         </div>
 
                         <form onSubmit={handleFormSubmit} className="relative group">
                             <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-indigo-400 transition-colors">
-                                <Search className="h-4 w-4" />
+                                {isAiTyping ? <Loader2 className="h-4 w-4 animate-spin text-indigo-500" /> : <Search className="h-4 w-4" />}
                             </div>
                             <input 
                                 ref={chatInputRef}
@@ -736,11 +725,12 @@ export default function MapExplorerPage() {
                                 value={chatInput}
                                 onChange={(e) => setChatInput(e.target.value)}
                                 placeholder="Type a message..."
-                                className="w-full bg-[#09090b] border border-zinc-800 text-white rounded-xl py-3 pl-10 pr-12 text-sm focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 placeholder:text-zinc-600 transition-all"
+                                disabled={isAiTyping}
+                                className="w-full bg-[#09090b] border border-zinc-800 text-white rounded-xl py-3 pl-10 pr-12 text-sm focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 placeholder:text-zinc-600 transition-all disabled:opacity-50"
                             />
                             <button 
                                 type="submit"
-                                disabled={!chatInput.trim()} 
+                                disabled={!chatInput.trim() || isAiTyping} 
                                 className="absolute right-1.5 top-1/2 -translate-y-1/2 bg-[#4f46e5] hover:bg-[#4338ca] text-white p-2 rounded-lg disabled:opacity-50 disabled:bg-zinc-800 disabled:text-zinc-600 disabled:cursor-not-allowed transition-all active:scale-95"
                             >
                                 <Send className="h-4 w-4" />

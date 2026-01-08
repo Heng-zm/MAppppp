@@ -8,6 +8,7 @@ html {
   width: 100%;
   overflow: hidden; /* Prevent page scrolling */
   touch-action: none; /* Disable browser pinch-zoom/pan on the page itself */
+  -webkit-tap-highlight-color: transparent; /* Remove tap highlight on mobile */
 }
 
 body, #__next {
@@ -20,6 +21,7 @@ body, #__next {
   overscroll-behavior: none; /* Prevent "pull-to-refresh" bounce effect */
   -webkit-overflow-scrolling: touch;
   font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  background-color: #09090b; /* Match dark theme background to prevent white flashes */
 }
 
 /* --- MAPBOX DIRECTIONS PLUGIN OVERRIDES ("NUCLEAR" OPTION) --- */
@@ -62,7 +64,6 @@ body, #__next {
 }
 
 /* 5. Hide the default Geolocate Button (we trigger it programmatically) */
-/* Remove this block if you want the button visible */
 .mapboxgl-ctrl-geolocate {
     display: none !important;
 }
@@ -112,18 +113,32 @@ body, #__next {
 /* Reduce logo size on mobile to save screen real estate */
 @media (max-width: 640px) {
     .mapboxgl-ctrl-logo {
-        transform: scale(0.85);
+        transform: scale(0.75);
         transform-origin: bottom left;
+        margin: 0 !important;
     }
     .mapboxgl-ctrl-attrib {
-        transform: scale(0.85);
+        transform: scale(0.75);
         transform-origin: bottom right;
+        margin: 0 !important;
     }
 }
 
 @keyframes pulse {
   0% { transform: translate(-50%, -50%) scale(0.8); opacity: 1; }
   100% { transform: translate(-50%, -50%) scale(2.5); opacity: 0; }
+}
+
+/* Custom Scrollbar for Chat */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
 }
 
 /* --- SHADCN UI THEME VARIABLES --- */
