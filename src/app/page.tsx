@@ -3,11 +3,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap } from 'mapbox-gl';
 import { Kantumruy_Pro } from 'next/font/google'; 
-// @ts-ignore
-import MapboxDirections from '@mapbox/mapbox-gl-directions/dist/mapbox-gl-directions';
-
 import 'mapbox-gl/dist/mapbox-gl.css';
-import '@mapbox/mapbox-gl-directions/dist/mapbox-gl-directions.css';
 
 import { useToast } from "@/hooks/use-toast";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from "@/components/ui/sheet";
@@ -34,7 +30,7 @@ if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; 
 const DEFAULT_ZOOM = 15;
-const MAP_STYLE = 'mapbox://styles/mapbox/dark-v11'; // Note: Blue looks best on Light, but works on Dark too
+const MAP_STYLE = 'mapbox://styles/mapbox/dark-v11';
 
 // --- UTILS ---
 function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -77,6 +73,7 @@ const searchPlacesNearLocation = async (
     try {
         const res = await fetch(url, { signal });
         const data = await res.json();
+        // Fallback: If no results in BBox, try global search near center
         if ((!data.features || data.features.length === 0) && bbox) {
             const fallbackUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=10&language=km&access_token=${MAPBOX_TOKEN}`;
             const fallbackRes = await fetch(fallbackUrl, { signal });
@@ -94,7 +91,6 @@ export default function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapboxMap | null>(null);
   
-  const directionsControl = useRef<any>(null);
   const geolocateControl = useRef<GeolocateControl | null>(null);
   const destinationMarker = useRef<Marker | null>(null);
   const puckMarker = useRef<Marker | null>(null);
@@ -106,6 +102,7 @@ export default function MapExplorerPage() {
   const userLocation = useRef<[number, number] | null>(null);
   const isNavigating = useRef<boolean>(false);
   
+  // UX State Refs
   const userIsInteracting = useRef<boolean>(false); 
   const lastCameraUpdate = useRef<number>(0);
   const lastSpokenInstruction = useRef<string>("");
@@ -116,6 +113,7 @@ export default function MapExplorerPage() {
 
   const { toast } = useToast();
   
+  // React State
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
   const [isFetchingAddress, setIsFetchingAddress] = useState(false);
@@ -143,6 +141,7 @@ export default function MapExplorerPage() {
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
 
+  // Focus Chat Input
   useEffect(() => {
     if (isAiOpen) {
         requestAnimationFrame(() => {
@@ -152,18 +151,20 @@ export default function MapExplorerPage() {
     }
   }, [messages, isAiOpen]);
 
+  // Text to Speech
   const speak = useCallback((text: string) => {
     if (typeof window === 'undefined' || isMutedRef.current || !window.speechSynthesis) return;
     window.speechSynthesis.cancel(); 
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
+    // Try to get a Khmer voice, or fallback to Google/Samantha
     const preferredVoice = voices.find(v => v.lang.includes('km')) || voices.find(v => v.name.includes('Google') || v.name.includes('Samantha'));
     if (preferredVoice) utterance.voice = preferredVoice;
     utterance.rate = 1.0; 
     window.speechSynthesis.speak(utterance);
   }, []);
 
-  // --- MAP LAYERS ---
+  // --- MAP LAYERS (3D Buildings & Sky) ---
   const add3DBuildings = useCallback((instance: MapboxMap) => {
     if (!instance.getStyle()) return;
     const layers = instance.getStyle().layers;
@@ -195,52 +196,50 @@ export default function MapExplorerPage() {
       }
   }, []);
 
-  // --- ROUTING LOGIC (GOOGLE MAPS STYLE) ---
-  const drawBlueRoute = (instance: MapboxMap, routeData: any) => {
-      if (!routeData || !routeData.geometry) {
-        console.error("No valid geometry found in route data");
-        return;
-      }
+  // --- DRAWING THE BLUE ROUTE (Google Maps Style) ---
+  const drawBlueRoute = (instance: MapboxMap, geojson: any) => {
+      if (!geojson || !geojson.geometry) return;
 
-      // Cleanup old layers
+      // 1. Clean up old layers
       if (instance.getLayer('custom-route-core')) instance.removeLayer('custom-route-core');
       if (instance.getLayer('custom-route-casing')) instance.removeLayer('custom-route-casing');
       if (instance.getSource('custom-route-source')) instance.removeSource('custom-route-source');
 
+      // 2. Add Source
       instance.addSource('custom-route-source', {
           type: 'geojson',
-          data: { type: 'Feature', properties: {}, geometry: routeData.geometry }
+          data: geojson
       });
 
-      // Find where to insert layers (below text labels, above buildings/roads)
+      // 3. Find layer to draw UNDER (Symbol/Label layers) so route is not on top of text
       const layers = instance.getStyle().layers;
-      const firstSymbolId = layers?.find((layer) => layer.type === 'symbol')?.id;
+      const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
 
-      // 1. Casing Layer (The darker blue outline)
+      // 4. Add Casing Layer (Dark Blue Outline)
       instance.addLayer({
           id: 'custom-route-casing',
           type: 'line',
           source: 'custom-route-source',
           layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
-              'line-color': '#1967d2', // Darker Blue (Outline)
+              'line-color': '#1557b0', // Darker casing blue
               'line-width': [
                   'interpolate', ['linear'], ['zoom'],
-                  12, 6,  // At zoom 12, width 6
-                  18, 16  // At zoom 18, width 16
+                  12, 7,  // At zoom 12, width 7
+                  18, 17  // At zoom 18, width 17
               ],
-              'line-opacity': 1
+              'line-opacity': 0.9
           }
-      }, firstSymbolId); 
+      }, labelLayerId); // Insert before labels
 
-      // 2. Core Layer (The main bright blue line)
+      // 5. Add Core Layer (Bright Blue Road)
       instance.addLayer({
           id: 'custom-route-core',
           type: 'line',
           source: 'custom-route-source',
           layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
-              'line-color': '#4285F4', // Google Maps Blue
+              'line-color': '#4285F4', // Google Blue
               'line-width': [
                   'interpolate', ['linear'], ['zoom'],
                   12, 4,  // At zoom 12, width 4
@@ -248,63 +247,50 @@ export default function MapExplorerPage() {
               ],
               'line-opacity': 1
           }
-      }, firstSymbolId);
+      }, labelLayerId); // Insert before labels
   };
 
-  const initializeDirectionsPlugin = useCallback((instance: MapboxMap) => {
-    if(directionsControl.current) return; 
-    
-    const directions = new MapboxDirections({
-        accessToken: MAPBOX_TOKEN, 
-        unit: 'metric', 
-        profile: 'mapbox/driving-traffic',
-        interactive: false, 
-        controls: { inputs: false, instructions: false, profileSwitcher: false },
-        alternatives: false, 
-        flyTo: false, 
-        language: 'km'
-    });
-    
-    instance.addControl(directions, 'top-left');
-    directionsControl.current = directions;
-
-    directions.on('route', (e: any) => {
-      if (!isMounted.current) return;
+  // --- FETCH ROUTE (DIRECT API - NO PLUGIN) ---
+  const fetchRoute = async (start: [number, number], end: [number, number]) => {
+      if (!MAPBOX_TOKEN) return;
       
-      if (e.route && e.route.length > 0) {
-        const route = e.route[0];
-        
-        // DRAW THE BLUE ROUTE
-        drawBlueRoute(instance, route);
+      const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
+      
+      try {
+          const res = await fetch(url);
+          const data = await res.json();
+          
+          if (data.code !== 'Ok') {
+              console.error("Route Error:", data);
+              toast({ title: "កំហុស", description: "មិនអាចរកផ្លូវបានទេ។ សូមពិនិត្យមើល Token។", variant: "destructive" });
+              return;
+          }
 
-        const leg = route.legs[0];
-        const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) 
+          const route = data.routes[0];
+          
+          // Draw the blue line
+          if (map.current) drawBlueRoute(map.current, { type: 'Feature', geometry: route.geometry });
+
+          // Update HUD
+          const leg = route.legs[0];
+          const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) 
             ? leg.steps[1].maneuver.instruction 
             : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
-            
-        const arrivalDate = new Date(Date.now() + route.duration * 1000);
-        
-        setRouteDetails({
-          distance: route.distance, 
-          duration: route.duration,
-          instruction: instructionText, 
-          arrivalTime: arrivalDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        });
-      }
-    });
-    
-    directions.on('error', (e: any) => {
-        console.error("Mapbox Directions Error:", e);
-        if (e.error?.code === 'Forbidden' || e.error?.statusCode === 403) {
-             toast({ 
-                title: "បញ្ហាបច្ចេកទេស", 
-                description: "Token របស់អ្នកមិនមានសិទ្ធិប្រើប្រាស់ Directions API ទេ។ សូមពិនិត្យមើល Console។",
-                variant: "destructive"
-             });
-        }
-    });
+          
+          const arrivalDate = new Date(Date.now() + route.duration * 1000);
+          
+          setRouteDetails({
+              distance: route.distance, 
+              duration: route.duration,
+              instruction: instructionText,
+              arrivalTime: arrivalDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          });
 
-  }, [toast]);
+      } catch (error) {
+          console.error("Fetch Error:", error);
+          toast({ title: "បណ្តាញអ៊ិនធឺណិត", description: "មិនអាចភ្ជាប់ទៅកាន់ម៉ាស៊ីនមេ។", variant: "destructive" });
+      }
+  };
 
   // --- MAP INITIALIZATION ---
   useEffect(() => {
@@ -322,7 +308,7 @@ export default function MapExplorerPage() {
       attributionControl: false,
       antialias: true, 
       logoPosition: 'bottom-left', 
-      cooperativeGestures: false, // Disabled two fingers
+      cooperativeGestures: false, // Disabled two fingers to move for better mobile UX
       maxPitch: 85,
     });
     map.current = mapInstance;
@@ -335,6 +321,7 @@ export default function MapExplorerPage() {
     geolocateControl.current = geolocate;
     mapInstance.addControl(geolocate, 'top-right');
 
+    // Create Puck Element (CSS hidden below)
     const el = document.createElement('div');
     el.className = 'navigation-puck';
     el.style.display = 'none'; 
@@ -351,7 +338,6 @@ export default function MapExplorerPage() {
              if (isMounted.current && map.current) {
                 add3DBuildings(mapInstance);
                 addSkyLayer(mapInstance);
-                initializeDirectionsPlugin(mapInstance);
              }
         }, 500); 
     });
@@ -373,15 +359,17 @@ export default function MapExplorerPage() {
           puckMarker.current.setRotation(heading);
       }
 
-      if (isNavigating.current && directionsControl.current) {
-         directionsControl.current.setOrigin([pos.longitude, pos.latitude]);
-         
+      // Camera Tracking Logic
+      if (isNavigating.current) {
          const now = Date.now();
          let distanceMoved = 100;
          if (prevLocation) distanceMoved = getDistanceFromLatLonInMeters(prevLocation[1], prevLocation[0], pos.latitude, pos.longitude);
 
+         // Only update camera if user hasn't panned away
          if (!userIsInteracting.current && !showRecenterBtnRef.current) {
              const targetZoom = Math.max(17.5, Math.min(20, 20 - (speedKmh / 100)));
+             
+             // Throttle updates
              if (distanceMoved > 2 || (now - lastCameraUpdate.current > 1500)) {
                  lastCameraUpdate.current = now;
                  mapInstance.easeTo({
@@ -398,6 +386,7 @@ export default function MapExplorerPage() {
       }
     });
     
+    // Detect User Interaction
     const handleInteractionStart = () => {
         if (isNavigating.current) {
             userIsInteracting.current = true; 
@@ -420,7 +409,7 @@ export default function MapExplorerPage() {
       map.current = null;
       if (abortControllerRef.current) abortControllerRef.current.abort();
     }
-  }, [add3DBuildings, addSkyLayer, initializeDirectionsPlugin]);
+  }, [add3DBuildings, addSkyLayer]);
 
   const clearAiMarkers = useCallback(() => {
       searchMarkers.current.forEach(m => m.remove());
@@ -434,13 +423,12 @@ export default function MapExplorerPage() {
       lastSpokenInstruction.current = ""; 
       userIsInteracting.current = false;
       
-      if (directionsControl.current) directionsControl.current.removeRoutes();
-      if (destinationMarker.current) destinationMarker.current.remove();
-      
+      // Cleanup custom route layers
       if (map.current.getLayer('custom-route-core')) map.current.removeLayer('custom-route-core');
       if (map.current.getLayer('custom-route-casing')) map.current.removeLayer('custom-route-casing');
       if (map.current.getSource('custom-route-source')) map.current.removeSource('custom-route-source');
-
+      
+      if (destinationMarker.current) destinationMarker.current.remove();
       clearAiMarkers();
 
       const newMarker = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current);
@@ -501,18 +489,17 @@ export default function MapExplorerPage() {
     }
     if (!locationDetails) return;
     
+    // FETCH THE ROUTE!
+    fetchRoute(userLocation.current, [locationDetails.lng, locationDetails.lat]);
+
     isNavigating.current = true;
-    userIsInteracting.current = false;
+    userIsInteracting.current = false; // Reset interaction flag
     setShowRecenterBtn(false);
     if (!isMuted) speak("ចាប់ផ្តើមការធ្វើដំណើរ។ សូមបើកបរដោយសុវត្ថិភាព។");
     
     mapContainer.current?.classList.add('nav-mode');
-    if (puckElement.current) puckElement.current.style.display = 'block';
+    if (puckElement.current) puckElement.current.style.display = 'block'; // Show Puck
 
-    if (directionsControl.current) {
-      directionsControl.current.setOrigin(userLocation.current);
-      directionsControl.current.setDestination([locationDetails.lng, locationDetails.lat]);
-    }
     setIsDrawerOpen(false);
     setIsAiOpen(false);
     
@@ -554,11 +541,11 @@ export default function MapExplorerPage() {
     window.speechSynthesis.cancel();
     
     mapContainer.current?.classList.remove('nav-mode');
-    if (puckElement.current) puckElement.current.style.display = 'none';
+    if (puckElement.current) puckElement.current.style.display = 'none'; // Hide Puck
 
-    if (directionsControl.current) directionsControl.current.removeRoutes();
     if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; }
     
+    // Remove layers
     if (map.current?.getLayer('custom-route-core')) map.current.removeLayer('custom-route-core');
     if (map.current?.getLayer('custom-route-casing')) map.current.removeLayer('custom-route-casing');
     if (map.current?.getSource('custom-route-source')) map.current.removeSource('custom-route-source');
@@ -651,7 +638,6 @@ export default function MapExplorerPage() {
   return (
     <div className={`relative h-[100dvh] w-full overflow-hidden bg-zinc-950 text-zinc-50 ${kantumruy.className}`}>
         <style jsx global>{`
-          .mapboxgl-ctrl-directions { display: none !important; }
           .navigation-puck {
             width: 24px;
             height: 24px;
