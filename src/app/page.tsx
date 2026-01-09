@@ -14,13 +14,19 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import { 
-  Navigation2, X, MapPin, Navigation, LocateFixed, Clock, 
+  X, MapPin, Navigation, LocateFixed, Clock, 
   ArrowRight, Volume2, VolumeX, Compass, Loader2, AlertTriangle, 
   Bot, Send, Sparkles, Fuel, Utensils, Coffee, Stethoscope, Search
 } from 'lucide-react';
 
 // --- CONFIGURATION ---
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+const GEMINI_API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+
+// You can swap this to 'gemini-3-flash-preview' if you have access, 
+// otherwise 'gemini-1.5-flash' is the current stable fast model.
+const GEMINI_MODEL = 'gemini-1.5-flash'; 
+
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; 
@@ -51,11 +57,11 @@ const searchPlacesNearLocation = async (
     let searchQuery = query;
     let typeLabel = "Place";
     
-    // Enhanced Keywords
-    if (query.match(/gas|fuel|petrol/i)) { searchQuery = "petrol station, gas station"; typeLabel = "Gas"; }
-    else if (query.match(/food|eat|hungry|dinner|lunch/i)) { searchQuery = "restaurant, food"; typeLabel = "Food"; }
-    else if (query.match(/coffee|cafe|drink/i)) { searchQuery = "coffee, cafe"; typeLabel = "Coffee"; }
-    else if (query.match(/health|doctor|hospital|clinic/i)) { searchQuery = "hospital, pharmacy, clinic"; typeLabel = "Health"; }
+    // Simple keyword mapping for icon selection later
+    if (query.match(/gas|fuel|petrol/i)) typeLabel = "Gas";
+    else if (query.match(/food|eat|hungry|dinner|lunch/i)) typeLabel = "Food";
+    else if (query.match(/coffee|cafe|drink/i)) typeLabel = "Coffee";
+    else if (query.match(/health|doctor|hospital|clinic/i)) typeLabel = "Health";
 
     // 1. Try Searching within Current View (BBOX) first for relevance
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=10&access_token=${MAPBOX_TOKEN}`;
@@ -135,9 +141,9 @@ export default function MapExplorerPage() {
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
-    { id: '1', role: 'assistant', content: "Hi! I search for real places. Try 'Find Gas' or 'Find Food'." }
+    { id: '1', role: 'assistant', content: "I'm your AI Co-pilot. I can find places, check traffic logic, or just chat!" }
   ]);
-  const [isAiTyping, setIsAiTyping] = useState(false); // Used for loading state
+  const [isAiTyping, setIsAiTyping] = useState(false); 
 
   const [routeDetails, setRouteDetails] = useState<{
     distance: number; 
@@ -392,7 +398,7 @@ export default function MapExplorerPage() {
         setIsFetchingAddress(true);
         const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY;
         if (!apiKey) {
-           setAddressDetails({ formatted: "Unknown Location" });
+           setAddressDetails({ formatted: "Selected Location" });
            setIsFetchingAddress(false);
            return;
         }
@@ -466,7 +472,7 @@ export default function MapExplorerPage() {
       searchMarkers.current = [];
   }
 
-  // --- AI ACTION HANDLER ---
+  // --- GEMINI AI ACTION HANDLER ---
   const performAiAction = async (input: string) => {
     if(!input.trim()) return;
     
@@ -476,90 +482,145 @@ export default function MapExplorerPage() {
     
     setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: input }]);
     setChatInput("");
-    setIsAiTyping(true); // START LOADING
+    setIsAiTyping(true);
 
-    // Hide keyboard on mobile
     if(typeof window !== 'undefined' && window.innerWidth < 768) {
         (document.activeElement as HTMLElement)?.blur();
     }
 
-    const lowerMsg = input.toLowerCase();
-    let aiResponse = "";
-    
-    // 1. COMMANDS
-    if (lowerMsg.match(/clear|reset|cancel|stop/)) {
-        clearRoute();
-        aiResponse = "I've cleared your route and reset the map.";
+    // 1. Check for Gemini Key
+    if (!GEMINI_API_KEY) {
         setIsAiTyping(false);
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: aiResponse }]);
-    
-    } else if (lowerMsg.match(/where am i|location|locate/)) {
-        if (geolocateControl.current) geolocateControl.current.trigger();
-        aiResponse = "Updating your location on the map now.";
-        setIsAiTyping(false);
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: aiResponse }]);
-    
-    } else {
-        // 2. SEARCH
-        const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
-        const bounds = map.current ? map.current.getBounds() : undefined;
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "I'm sorry, my brain (API Key) is missing. Please add NEXT_PUBLIC_GEMINI_API_KEY to your env file." }]);
+        return;
+    }
 
-        clearAiMarkers();
+    // 2. Prepare Context
+    const center = userLocation.current || DEFAULT_CENTER;
+    const locationContext = `User is at Lat: ${center[1]}, Lng: ${center[0]}.`;
+    const bounds = map.current?.getBounds() || undefined;
+
+    // 3. Call Gemini
+    try {
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [{
+                            text: `
+                                You are a helpful car navigation assistant called Co-Pilot.
+                                Context: ${locationContext}
+                                User Input: "${input}"
+                                
+                                Your goal is to determine if the user wants to SEARCH for a place on the map, LOCATE themselves, CLEAR the route, or just CHAT.
+
+                                Return ONLY a valid JSON object with no markdown formatting. Structure:
+                                {
+                                    "action": "search" | "locate" | "clear" | "chat",
+                                    "search_query": "The optimized search term for Mapbox (e.g. 'Gas station', 'Italian restaurant') OR null if not searching",
+                                    "reply_text": "A very short, friendly confirmation message (max 1 sentence) to speak to the user."
+                                }
+                            `
+                        }]
+                    }]
+                }),
+                signal: abortControllerRef.current.signal
+            }
+        );
+
+        const aiData = await response.json();
         
-        // Pass the AbortSignal to the search function
-        const results = await searchPlacesNearLocation(input, center, bounds, abortControllerRef.current.signal);
-
-        if (map.current && results.length > 0) {
-            const fitBounds = new LngLatBounds();
-            
-            // Add user location to bounds so the map zooms to show BOTH user and results
-            if(userLocation.current) fitBounds.extend(userLocation.current);
-
-            results.forEach(res => {
-                const el = document.createElement('div');
-                
-                let bgClass = "bg-indigo-500";
-                let iconChar = "P";
-                if (res.type === "Gas") { bgClass = "bg-orange-500"; iconChar = "⛽"; }
-                if (res.type === "Food") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
-                if (res.type === "Coffee") { bgClass = "bg-amber-500"; iconChar = "☕"; }
-                if (res.type === "Health") { bgClass = "bg-emerald-500"; iconChar = "🏥"; }
-
-                el.className = `w-9 h-9 ${bgClass} rounded-full border-[3px] border-zinc-900 shadow-xl cursor-pointer hover:scale-110 transition-transform flex items-center justify-center text-white text-sm font-bold`;
-                el.innerText = iconChar;
-
-                const popupHTML = `
-                    <div class="font-sans text-zinc-900 min-w-[160px]">
-                        <h3 class="font-bold text-base mb-1">${res.name}</h3>
-                        <div class="flex items-center gap-1 text-xs text-zinc-600 mb-2">
-                             📍 ${res.address}
-                        </div>
-                        <button onclick="window.dispatchEvent(new CustomEvent('nav-to', {detail: {lng:${res.lng}, lat:${res.lat}}}))" 
-                            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold py-2 px-3 rounded-md transition-colors">
-                            Navigate Here
-                        </button>
-                    </div>
-                `;
-
-                const marker = new Marker(el)
-                    .setLngLat([res.lng, res.lat])
-                    .setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false, maxWidth: '220px' }).setHTML(popupHTML))
-                    .addTo(map.current!);
-                
-                el.addEventListener('click', () => marker.togglePopup());
-                searchMarkers.current.push(marker);
-                fitBounds.extend([res.lng, res.lat]);
-            });
-
-            // Smart Zoom: Fit to show User + Results
-            map.current.fitBounds(fitBounds, { padding: 80, maxZoom: 15 });
-            aiResponse = `Found ${results.length} ${results[0].type.toLowerCase()} places.`;
-        } else {
-            aiResponse = "No real places found nearby matching that description.";
+        // Parse Gemini Response (handle potential markdown code blocks)
+        let responseText = aiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+        responseText = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        let parsedIntent;
+        try {
+            parsedIntent = JSON.parse(responseText);
+        } catch (e) {
+            console.error("Failed to parse AI JSON", responseText);
+            parsedIntent = { action: "chat", reply_text: responseText }; // Fallback to raw text
         }
 
-        setIsAiTyping(false); // STOP LOADING
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: aiResponse }]);
+        // 4. Execute Intent
+        if (parsedIntent.action === "clear") {
+            clearRoute();
+            setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: parsedIntent.reply_text }]);
+            if (!isMuted) speak(parsedIntent.reply_text);
+        
+        } else if (parsedIntent.action === "locate") {
+            if (geolocateControl.current) geolocateControl.current.trigger();
+            setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: parsedIntent.reply_text }]);
+            if (!isMuted) speak(parsedIntent.reply_text);
+
+        } else if (parsedIntent.action === "search" && parsedIntent.search_query) {
+             clearAiMarkers();
+             const results = await searchPlacesNearLocation(parsedIntent.search_query, center, bounds);
+             
+             if (map.current && results.length > 0) {
+                const fitBounds = new LngLatBounds();
+                if(userLocation.current) fitBounds.extend(userLocation.current);
+
+                results.forEach(res => {
+                    const el = document.createElement('div');
+                    let bgClass = "bg-indigo-500";
+                    let iconChar = "P";
+                    
+                    if (res.type === "Gas") { bgClass = "bg-orange-500"; iconChar = "⛽"; }
+                    if (res.type === "Food") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
+                    if (res.type === "Coffee") { bgClass = "bg-amber-500"; iconChar = "☕"; }
+                    if (res.type === "Health") { bgClass = "bg-emerald-500"; iconChar = "🏥"; }
+
+                    el.className = `w-9 h-9 ${bgClass} rounded-full border-[3px] border-zinc-900 shadow-xl cursor-pointer hover:scale-110 transition-transform flex items-center justify-center text-white text-sm font-bold`;
+                    el.innerText = iconChar;
+
+                    const popupHTML = `
+                        <div class="font-sans text-zinc-900 min-w-[160px]">
+                            <h3 class="font-bold text-base mb-1">${res.name}</h3>
+                            <div class="flex items-center gap-1 text-xs text-zinc-600 mb-2">📍 ${res.address}</div>
+                            <button onclick="window.dispatchEvent(new CustomEvent('nav-to', {detail: {lng:${res.lng}, lat:${res.lat}}}))" 
+                                class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold py-2 px-3 rounded-md transition-colors">
+                                Navigate Here
+                            </button>
+                        </div>
+                    `;
+
+                    const marker = new Marker(el)
+                        .setLngLat([res.lng, res.lat])
+                        .setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false, maxWidth: '220px' }).setHTML(popupHTML))
+                        .addTo(map.current!);
+                    
+                    el.addEventListener('click', () => marker.togglePopup());
+                    searchMarkers.current.push(marker);
+                    fitBounds.extend([res.lng, res.lat]);
+                });
+
+                map.current.fitBounds(fitBounds, { padding: 80, maxZoom: 15 });
+                const finalReply = parsedIntent.reply_text || `Found ${results.length} places.`;
+                setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: finalReply }]);
+                if (!isMuted) speak(finalReply);
+             } else {
+                 const notFoundMsg = "I searched mapbox but couldn't find any real places matching that.";
+                 setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: notFoundMsg }]);
+                 if (!isMuted) speak("Sorry, no places found.");
+             }
+
+        } else {
+            // Chat
+            setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: parsedIntent.reply_text }]);
+            if (!isMuted) speak(parsedIntent.reply_text);
+        }
+
+    } catch (err: any) {
+        if (err.name !== 'AbortError') {
+            console.error(err);
+            setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "Connection error with Co-pilot." }]);
+        }
+    } finally {
+        setIsAiTyping(false);
     }
   }
 
@@ -591,6 +652,7 @@ export default function MapExplorerPage() {
   return (
     <div className="relative h-[100dvh] w-full overflow-hidden bg-zinc-950 font-sans text-zinc-50">
         
+        {/* Loading Overlay */}
         <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950 text-white transition-opacity duration-700 pointer-events-none ${isMapLoaded ? 'opacity-0' : 'opacity-100'}`}>
             <Loader2 className="h-10 w-10 animate-spin text-indigo-500 mb-4" />
             <p className="text-zinc-500 text-xs tracking-widest uppercase">Initializing Co-pilot</p>
@@ -639,6 +701,7 @@ export default function MapExplorerPage() {
           </div>
         )}
 
+        {/* --- MAP CONTROLS --- */}
         <div className="absolute right-4 bottom-32 flex flex-col gap-3 pointer-events-auto z-20">
              {!isNavigating.current && (
                  <>
@@ -659,6 +722,7 @@ export default function MapExplorerPage() {
              )}
         </div>
 
+        {/* --- AI CO-PILOT MODAL --- */}
         {isAiOpen && (
             <div className="absolute inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
                 <div className="w-full max-w-sm bg-[#18181b] border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 ring-1 ring-white/10">
@@ -669,6 +733,7 @@ export default function MapExplorerPage() {
                                 <Bot className="h-5 w-5 text-indigo-400" />
                              </div>
                              <span className="font-semibold text-zinc-200 text-sm">AI Co-pilot</span>
+                             <span className="text-[10px] text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded ml-2 border border-zinc-700">Gemini Inside</span>
                         </div>
                         <button onClick={() => setIsAiOpen(false)} className="text-zinc-500 hover:text-white transition-colors p-1 hover:bg-zinc-800 rounded-full">
                             <X className="h-5 w-5" />
@@ -700,17 +765,18 @@ export default function MapExplorerPage() {
                     </div>
 
                     <div className="p-4 bg-[#18181b] space-y-4 border-t border-zinc-800/50">
+                        {/* Suggestion Chips */}
                         <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-                            <button disabled={isAiTyping} onClick={() => performAiAction("Gas")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-orange-900/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
+                            <button disabled={isAiTyping} onClick={() => performAiAction("Find nearby Gas Stations")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-orange-900/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
                                 <Fuel className="h-3.5 w-3.5" /> Gas
                             </button>
-                            <button disabled={isAiTyping} onClick={() => performAiAction("Food")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-rose-900/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
+                            <button disabled={isAiTyping} onClick={() => performAiAction("I'm hungry, find food")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-rose-900/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
                                 <Utensils className="h-3.5 w-3.5" /> Food
                             </button>
-                            <button disabled={isAiTyping} onClick={() => performAiAction("Coffee")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-yellow-900/30 bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
+                            <button disabled={isAiTyping} onClick={() => performAiAction("Where is the closest coffee shop?")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-yellow-900/30 bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
                                 <Coffee className="h-3.5 w-3.5" /> Coffee
                             </button>
-                             <button disabled={isAiTyping} onClick={() => performAiAction("Hospital")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-900/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
+                             <button disabled={isAiTyping} onClick={() => performAiAction("Find a hospital")} className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-900/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-50">
                                 <Stethoscope className="h-3.5 w-3.5" /> Health
                             </button>
                         </div>
@@ -724,7 +790,7 @@ export default function MapExplorerPage() {
                                 type="text" 
                                 value={chatInput}
                                 onChange={(e) => setChatInput(e.target.value)}
-                                placeholder="Type a message..."
+                                placeholder="Ask Co-pilot..."
                                 disabled={isAiTyping}
                                 className="w-full bg-[#09090b] border border-zinc-800 text-white rounded-xl py-3 pl-10 pr-12 text-sm focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 placeholder:text-zinc-600 transition-all disabled:opacity-50"
                             />
@@ -741,6 +807,7 @@ export default function MapExplorerPage() {
             </div>
         )}
 
+        {/* --- LOCATION DETAILS DRAWER --- */}
         <Sheet open={isDrawerOpen} onOpenChange={(open) => !open && !isNavigating.current && setIsDrawerOpen(false)}>
           <SheetContent side="bottom" className="rounded-t-2xl p-6 border-zinc-800 sm:max-w-md sm:mx-auto bg-zinc-950 text-white mb-[safe-area-inset-bottom] ring-1 ring-white/10">
             {locationDetails && (
