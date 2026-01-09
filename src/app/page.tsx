@@ -192,6 +192,9 @@ export default function MapExplorerPage() {
     window.speechSynthesis.speak(utterance);
   }, []);
 
+  // --- 3D MAP VISUALS ---
+
+  // 1. Add 3D Buildings
   const add3DBuildings = useCallback((instance: MapboxMap) => {
     if (!instance.getStyle()) return;
     const layers = instance.getStyle().layers;
@@ -213,6 +216,21 @@ export default function MapExplorerPage() {
             }
         }, labelLayerId);
     }
+  }, []);
+
+  // 2. Add Sky Layer for realistic horizon
+  const addSkyLayer = useCallback((instance: MapboxMap) => {
+      if(!instance.getLayer('sky')) {
+          instance.addLayer({
+              'id': 'sky',
+              'type': 'sky',
+              'paint': {
+                  'sky-type': 'atmosphere',
+                  'sky-atmosphere-sun': [0.0, 0.0],
+                  'sky-atmosphere-sun-intensity': 15
+              }
+          });
+      }
   }, []);
 
   const styleRouteLayers = useCallback((instance: MapboxMap) => {
@@ -252,7 +270,6 @@ export default function MapExplorerPage() {
       if (e.route && e.route.length > 0) {
         const route = e.route[0];
         const leg = route.legs[0];
-        // Heuristic to get next major instruction
         const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) 
             ? leg.steps[1].maneuver.instruction 
             : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
@@ -286,6 +303,7 @@ export default function MapExplorerPage() {
       antialias: true,
       logoPosition: 'bottom-left',
       cooperativeGestures: true,
+      maxPitch: 85, // Allow steep pitch for driver mode
     });
 
     map.current = mapInstance;
@@ -310,6 +328,7 @@ export default function MapExplorerPage() {
              if (isMounted.current && map.current) {
                 initializeDirectionsPlugin(mapInstance);
                 add3DBuildings(mapInstance);
+                addSkyLayer(mapInstance); // Add the sky for 3D effect
              }
         }, 500); 
     });
@@ -336,14 +355,14 @@ export default function MapExplorerPage() {
          if (prevLocation) distanceMoved = getDistanceFromLatLonInMeters(prevLocation[1], prevLocation[0], pos.latitude, pos.longitude);
 
          if (!showRecenterBtnRef.current) {
-             const targetZoom = Math.max(16, Math.min(18.5, 18.5 - (speedKmh / 100)));
+             const targetZoom = Math.max(16, Math.min(19, 19 - (speedKmh / 100)));
              
              if (distanceMoved > 3 || (now - lastCameraUpdate.current > 1500)) {
                  lastCameraUpdate.current = now;
                  mapInstance.easeTo({
                      center: [pos.longitude, pos.latitude],
                      zoom: targetZoom,
-                     pitch: 55, 
+                     pitch: 70, // MAINTAIN 3D DRIVER VIEW
                      bearing: pos.heading || mapInstance.getBearing(),
                      duration: 1000,
                      easing: (t) => t
@@ -366,7 +385,7 @@ export default function MapExplorerPage() {
       map.current = null;
       if (abortControllerRef.current) abortControllerRef.current.abort();
     }
-  }, [add3DBuildings, initializeDirectionsPlugin]);
+  }, [add3DBuildings, addSkyLayer, initializeDirectionsPlugin]);
 
   const clearAiMarkers = useCallback(() => {
       searchMarkers.current.forEach(m => m.remove());
@@ -438,6 +457,7 @@ export default function MapExplorerPage() {
     }
   }, [locationDetails]);
 
+  // --- START NAVIGATION & ENTER 3D MODE ---
   const handleStartNavigation = () => {
     if (!userLocation.current) {
       toast({ title: "កំពុងស្វែងរក...", description: "រង់ចាំសេវា GPS..." });
@@ -458,10 +478,11 @@ export default function MapExplorerPage() {
     setIsAiOpen(false);
     
     if(map.current) {
+        // ACTIVATING 3D DRIVER VIEW
         map.current.flyTo({ 
             center: userLocation.current, 
-            zoom: 18.5, 
-            pitch: 60, 
+            zoom: 19, 
+            pitch: 70, // Steep pitch for 3D view
             bearing: map.current.getBearing(), 
             essential: true, 
             duration: 2000 
@@ -472,10 +493,11 @@ export default function MapExplorerPage() {
   const handleRecenter = () => {
       if(!userLocation.current || !map.current) return;
       setShowRecenterBtn(false);
+      // Re-enter 3D view on recenter
       map.current.flyTo({ 
           center: userLocation.current, 
-          zoom: 18, 
-          pitch: 55, 
+          zoom: 19, 
+          pitch: 70, 
           bearing: map.current.getBearing(), 
           duration: 1200 
       });
@@ -495,6 +517,7 @@ export default function MapExplorerPage() {
     setLocationDetails(null);
     setIsDrawerOpen(false);
     setShowRecenterBtn(false);
+    // Reset camera to 2D view
     if(map.current && userLocation.current) map.current.flyTo({ center: userLocation.current, zoom: 14, pitch: 0, bearing: 0, duration: 1500 });
   }
 
