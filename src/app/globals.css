@@ -66,8 +66,6 @@
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
-    
-    /* Font smoothing for better legibility on dark mode */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -77,129 +75,131 @@
 html {
   height: 100%;
   width: 100%;
-  overflow: hidden; /* Prevent page scrolling */
-  touch-action: none; /* Disable browser pinch-zoom/pan on the page itself */
-  -webkit-tap-highlight-color: transparent; /* Remove tap highlight on mobile */
+  overflow: hidden;
+  touch-action: none; 
+  -webkit-tap-highlight-color: transparent;
 }
 
 body, #__next {
-  /* Use dvh (Dynamic Viewport Height) to handle mobile address bars correctly */
   height: 100dvh; 
   width: 100%;
   padding: 0;
   margin: 0;
   overflow: hidden;
-  overscroll-behavior: none; /* Prevent "pull-to-refresh" bounce effect */
+  overscroll-behavior: none;
   -webkit-overflow-scrolling: touch;
-  /* Updated font variable to match layout.tsx */
   font-family: var(--font-kantumruy), ui-sans-serif, system-ui, sans-serif;
-  background-color: #09090b; /* Match dark theme background to prevent white flashes */
+  background-color: #09090b; 
 }
 
 /* Ensure Mapbox Popups also use the Khmer font */
 .mapboxgl-popup {
   font-family: var(--font-kantumruy), ui-sans-serif, system-ui, sans-serif !important;
+  z-index: 50 !important;
 }
 
-/* --- MAPBOX DIRECTIONS PLUGIN OVERRIDES ("NUCLEAR" OPTION) --- */
-/* 
-   We use opacity, visibility, and transform because the plugin 
-   aggressively adds 'display: block' via inline JS.
-*/
+/* --- MAPBOX UI CLEANUP --- */
+/* Hide Mapbox Logo & Attribution for cleaner "App" look (Optional) */
+.mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib {
+  display: none !important;
+}
 
-/* 1. Hide Origin (A), Destination (B), and Waypoints */
+/* --- DIRECTIONS PLUGIN OVERRIDES --- */
 .mapbox-directions-destination,
 .mapbox-directions-origin,
 .mapbox-directions-step {
   opacity: 0 !important;
   visibility: hidden !important;
-  width: 0 !important;
-  height: 0 !important;
   pointer-events: none !important;
   transform: scale(0) !important;
-  background: none !important;
-  border: none !important;
-  box-shadow: none !important;
-  transition: none !important; /* Performance: remove transition overhead */
 }
 
-/* 2. Hide any text inside markers (like the "A" or "B") */
 .mapbox-directions-destination *,
-.mapbox-directions-origin * {
-  display: none !important;
-}
-
-/* 3. Hide the white dots along the route line */
+.mapbox-directions-origin *,
 .mapbox-directions-route-summary,
 .mapbox-directions-instructions {
   display: none !important;
 }
 
-/* 4. Hide the Input Box Control Panel (Top Left) */
-.mapboxgl-ctrl-top-left .mapboxgl-ctrl-directions {
+.mapboxgl-ctrl-top-left .mapboxgl-ctrl-directions,
+.mapboxgl-ctrl-geolocate {
   display: none !important;
 }
 
-/* 5. Hide the default Geolocate Button (we trigger it programmatically) */
-.mapboxgl-ctrl-geolocate {
-    display: none !important;
+/* --- NAVIGATION MODE STYLES --- */
+
+/* 
+   When the app is in navigation mode (class 'nav-mode' added to container),
+   we hide the default blue dot because we use the custom 3D Arrow.
+*/
+.nav-mode .mapboxgl-user-location-dot,
+.nav-mode .mapboxgl-user-location-accuracy-circle {
+  display: none !important;
+  opacity: 0 !important;
 }
 
-/* --- CUSTOM MARKER STYLES --- */
+/* --- CUSTOM 3D NAVIGATION PUCK (ARROW) --- */
+.navigation-puck {
+  width: 50px;
+  height: 50px;
+  /* SVG Arrow: Blue body, white outline */
+  background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M50 0L90 85L50 65L10 85L50 0Z' fill='%233b82f6' stroke='white' stroke-width='6' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  z-index: 10;
+  pointer-events: none;
+  /* Drop shadow to make it float above the map */
+  filter: drop-shadow(0px 8px 6px rgba(0,0,0,0.6));
+  will-change: transform;
+  transform-origin: center center;
+}
 
-/* Ensure generic/custom markers (like your Red Pin) are visible */
+/* Optional: Faint pulse under the arrow */
+.navigation-puck::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 140%;
+    height: 140%;
+    transform: translate(-50%, -50%);
+    background: radial-gradient(circle, rgba(59,130,246,0.3) 0%, rgba(0,0,0,0) 70%);
+    z-index: -1;
+    border-radius: 50%;
+}
+
+/* --- STANDARD MARKER STYLES --- */
 .mapboxgl-marker {
   display: block;
-  will-change: transform; /* Hardware acceleration hint for mobile */
+  will-change: transform;
   cursor: pointer;
 }
 
-/* Custom User Location Dot (Pulsing Blue) */
+/* Default User Location Dot (Used when NOT navigating) */
 .mapboxgl-user-location-dot {
   display: block !important;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
-  background-color: #3b82f6; /* Tailwind Blue-500 */
-  border: 2px solid #fff;
+  background-color: #3b82f6;
+  border: 3px solid #fff;
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
   pointer-events: none;
 }
 
-/* The Pulse Ring */
 .mapboxgl-user-location-dot::before {
   content: "";
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background-color: rgba(59, 130, 246, 0.4);
   animation: pulse 2s infinite;
   z-index: -1;
-}
-
-/* Utility for fading out the loading screen */
-.loader-fade-out {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.5s ease-in-out;
-}
-
-/* Reduce logo size on mobile to save screen real estate */
-@media (max-width: 640px) {
-    .mapboxgl-ctrl-logo {
-        transform: scale(0.75);
-        transform-origin: bottom left;
-        margin: 0 !important;
-    }
-    .mapboxgl-ctrl-attrib {
-        transform: scale(0.75);
-        transform-origin: bottom right;
-        margin: 0 !important;
-    }
 }
 
 @keyframes pulse {
@@ -207,15 +207,11 @@ body, #__next {
   100% { transform: translate(-50%, -50%) scale(2.5); opacity: 0; }
 }
 
-/* --- SCROLLBAR UTILITIES (Cross-Browser) --- */
-
+/* --- SCROLLBAR UTILITIES --- */
 .scrollbar-thin {
-  /* Firefox */
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
-
-/* Webkit (Chrome, Safari, Edge) */
 .scrollbar-thin::-webkit-scrollbar {
   width: 6px;
 }

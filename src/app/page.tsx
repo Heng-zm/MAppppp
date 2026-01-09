@@ -19,7 +19,6 @@ import {
   X, MapPin, Navigation, LocateFixed, Clock, 
   ArrowRight, Volume2, VolumeX, Compass, Loader2, AlertTriangle, 
   Bot, Send, Sparkles, Fuel, Utensils, Coffee, Stethoscope, Search,
-  ChevronRight, Mic
 } from 'lucide-react';
 
 // --- FONT CONFIGURATION ---
@@ -33,9 +32,8 @@ const kantumruy = Kantumruy_Pro({
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
-// Default Center (Phnom Penh)
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; 
-const DEFAULT_ZOOM = 13;
+const DEFAULT_ZOOM = 15;
 const MAP_STYLE = 'mapbox://styles/mapbox/dark-v11';
 
 // --- UTILS ---
@@ -60,56 +58,34 @@ const mapFeaturesToResults = (features: any[], typeLabel: string): SearchResult[
     }));
 }
 
-// --- API SEARCH (UPDATED FOR KHMER) ---
+// --- API SEARCH ---
 const searchPlacesNearLocation = async (
-    query: string, 
-    center: [number, number], 
-    bbox?: mapboxgl.LngLatBounds,
-    signal?: AbortSignal
+    query: string, center: [number, number], bbox?: mapboxgl.LngLatBounds, signal?: AbortSignal
 ): Promise<SearchResult[]> => {
     if (!MAPBOX_TOKEN) return [];
-
     let searchQuery = query;
     let typeLabel = "ទីកន្លែង";
     
-    // Updated Regex to include Khmer keywords
     if (query.match(/gas|fuel|petrol|សាំង|ប្រេង/i)) { searchQuery = "petrol station, gas station"; typeLabel = "ប្រេង"; }
     else if (query.match(/food|eat|hungry|dinner|lunch|អាហារ|ញ៉ាំ|បាយ/i)) { searchQuery = "restaurant, food"; typeLabel = "អាហារ"; }
     else if (query.match(/coffee|cafe|drink|កាហ្វេ|ភេសជ្ជៈ/i)) { searchQuery = "coffee, cafe"; typeLabel = "កាហ្វេ"; }
     else if (query.match(/health|doctor|hospital|clinic|ពេទ្យ|សុខភាព|គ្លីនិក/i)) { searchQuery = "hospital, pharmacy, clinic"; typeLabel = "សុខភាព"; }
 
-    // Add language=km parameter
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=10&language=km&access_token=${MAPBOX_TOKEN}`;
-    
-    if (bbox) {
-        url += `&bbox=${bbox.getWest()},${bbox.getSouth()},${bbox.getEast()},${bbox.getNorth()}`;
-    }
+    if (bbox) url += `&bbox=${bbox.getWest()},${bbox.getSouth()},${bbox.getEast()},${bbox.getNorth()}`;
 
     try {
         const res = await fetch(url, { signal });
-        if (!res.ok) throw new Error('Mapbox API error');
         const data = await res.json();
-        
-        // Fallback
         if ((!data.features || data.features.length === 0) && bbox) {
             const fallbackUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=10&language=km&access_token=${MAPBOX_TOKEN}`;
             const fallbackRes = await fetch(fallbackUrl, { signal });
             const fallbackData = await fallbackRes.json();
-            
-            if (fallbackData.features) {
-                 return mapFeaturesToResults(fallbackData.features, typeLabel);
-            }
+            if (fallbackData.features) return mapFeaturesToResults(fallbackData.features, typeLabel);
             return [];
         }
-
         return mapFeaturesToResults(data.features || [], typeLabel);
-
-    } catch (error: any) {
-        if (error.name !== 'AbortError') {
-             console.error("Search failed:", error);
-        }
-        return [];
-    }
+    } catch { return []; }
 };
 
 interface Message { id: string; role: 'user' | 'assistant'; content: string; }
@@ -118,10 +94,12 @@ export default function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapboxMap | null>(null);
   
-  // Use any to avoid module augmentation type errors
   const directionsControl = useRef<any>(null);
   const geolocateControl = useRef<GeolocateControl | null>(null);
   const destinationMarker = useRef<Marker | null>(null);
+  const puckMarker = useRef<Marker | null>(null);
+  const puckElement = useRef<HTMLDivElement | null>(null);
+
   const searchMarkers = useRef<Marker[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   
@@ -136,7 +114,6 @@ export default function MapExplorerPage() {
 
   const { toast } = useToast();
   
-  // State
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
   const [isFetchingAddress, setIsFetchingAddress] = useState(false);
@@ -148,9 +125,7 @@ export default function MapExplorerPage() {
   
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([
-    { id: '1', role: 'assistant', content: "សួស្តី! តើអ្នកចង់ទៅណា? ខ្ញុំអាចជួយរកកន្លែងចាក់សាំង ឬកន្លែងញ៉ាំអីបាន។" }
-  ]);
+  const [messages, setMessages] = useState<Message[]>([{ id: '1', role: 'assistant', content: "សួស្តី! តើអ្នកចង់ទៅណា?" }]);
   const [isAiTyping, setIsAiTyping] = useState(false);
 
   const [routeDetails, setRouteDetails] = useState<{
@@ -166,64 +141,48 @@ export default function MapExplorerPage() {
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
 
-  // Handle focusing input when AI opens (desktop only to prevent keyboard jump on mobile)
   useEffect(() => {
     if (isAiOpen) {
         requestAnimationFrame(() => {
              chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-             if (window.matchMedia('(min-width: 768px)').matches) {
-                 chatInputRef.current?.focus();
-             }
+             if (window.matchMedia('(min-width: 768px)').matches) chatInputRef.current?.focus();
         });
     }
   }, [messages, isAiOpen]);
 
-  // Voice synthesis 
   const speak = useCallback((text: string) => {
     if (typeof window === 'undefined' || isMutedRef.current || !window.speechSynthesis) return;
     window.speechSynthesis.cancel(); 
-    
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
     const preferredVoice = voices.find(v => v.name.includes('Google') || v.name.includes('Samantha'));
     if (preferredVoice) utterance.voice = preferredVoice;
-    
     utterance.rate = 1.05; 
     window.speechSynthesis.speak(utterance);
   }, []);
 
-  // --- 3D MAP VISUALS ---
-
-  // 1. Add 3D Buildings
   const add3DBuildings = useCallback((instance: MapboxMap) => {
     if (!instance.getStyle()) return;
     const layers = instance.getStyle().layers;
     const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
-    
     if(!instance.getLayer('3d-buildings')) {
         instance.addLayer({
-            'id': '3d-buildings',
-            'source': 'composite',
-            'source-layer': 'building',
-            'filter': ['==', 'extrude', 'true'],
-            'type': 'fill-extrusion',
-            'minzoom': 14,
+            'id': '3d-buildings', 'source': 'composite', 'source-layer': 'building',
+            'filter': ['==', 'extrude', 'true'], 'type': 'fill-extrusion', 'minzoom': 14,
             'paint': {
-                'fill-extrusion-color': '#242424',
+                'fill-extrusion-color': '#2a2a2e',
                 'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.05, ['get', 'height']],
                 'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.05, ['get', 'min_height']],
-                'fill-extrusion-opacity': 0.85
+                'fill-extrusion-opacity': 0.95
             }
         }, labelLayerId);
     }
   }, []);
 
-  // 2. Add Sky Layer for realistic horizon
   const addSkyLayer = useCallback((instance: MapboxMap) => {
       if(!instance.getLayer('sky')) {
           instance.addLayer({
-              'id': 'sky',
-              'type': 'sky',
+              'id': 'sky', 'type': 'sky',
               'paint': {
                   'sky-type': 'atmosphere',
                   'sky-atmosphere-sun': [0.0, 0.0],
@@ -233,28 +192,42 @@ export default function MapExplorerPage() {
       }
   }, []);
 
-  const styleRouteLayers = useCallback((instance: MapboxMap) => {
+  // --- NEON ROUTE STYLING ---
+  const applyNeonRouteStyle = (instance: MapboxMap) => {
+      // Directions plugin creates these layers automatically, we just need to repaint them
+      
+      // 1. Casing (Thick Background)
       if (instance.getLayer('directions-route-line-casing')) {
-          instance.setPaintProperty('directions-route-line-casing', 'line-color', '#312e81');
-          instance.setPaintProperty('directions-route-line-casing', 'line-width', 12);
+          instance.setPaintProperty('directions-route-line-casing', 'line-color', '#1e1b4b'); // Dark Navy
+          instance.setPaintProperty('directions-route-line-casing', 'line-width', 16); // Thicker
+          instance.setPaintProperty('directions-route-line-casing', 'line-opacity', 0.9);
       }
+      
+      // 2. Main Line (Bright Neon)
       if (instance.getLayer('directions-route-line')) {
-          instance.setPaintProperty('directions-route-line', 'line-color', '#4f46e5');
-          instance.setPaintProperty('directions-route-line', 'line-width', 7);
+          instance.setPaintProperty('directions-route-line', 'line-color', '#3b82f6'); // Neon Blue
+          instance.setPaintProperty('directions-route-line', 'line-width', 9);
+          instance.setPaintProperty('directions-route-line', 'line-opacity', 1);
       }
-  }, []);
+      
+      // 3. Alternative routes (Dimmed)
+      if (instance.getLayer('directions-route-line-alt')) {
+          instance.setPaintProperty('directions-route-line-alt', 'line-color', '#4b5563');
+          instance.setPaintProperty('directions-route-line-alt', 'line-width', 6);
+      }
+  };
 
   const initializeDirectionsPlugin = useCallback((instance: MapboxMap) => {
     if(directionsControl.current) return; 
     
     const directions = new MapboxDirections({
         accessToken: MAPBOX_TOKEN, 
-        unit: 'metric',
+        unit: 'metric', 
         profile: 'mapbox/driving',
-        interactive: false,
+        interactive: false, 
         controls: { inputs: false, instructions: false, profileSwitcher: false },
-        alternatives: false,
-        flyTo: false,
+        alternatives: false, 
+        flyTo: false, 
         language: 'km'
     });
     
@@ -267,86 +240,89 @@ export default function MapExplorerPage() {
 
     directions.on('route', (e: any) => {
       if (!isMounted.current) return;
+      
+      // Apply neon style immediately when route is found
+      applyNeonRouteStyle(instance);
+
       if (e.route && e.route.length > 0) {
         const route = e.route[0];
         const leg = route.legs[0];
         const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) 
             ? leg.steps[1].maneuver.instruction 
             : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
-        
         const arrivalDate = new Date(Date.now() + route.duration * 1000);
         
         setRouteDetails({
-          distance: route.distance,
+          distance: route.distance, 
           duration: route.duration,
-          instruction: instructionText,
+          instruction: instructionText, 
           arrivalTime: arrivalDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         });
-        styleRouteLayers(instance);
       }
     });
-  }, [styleRouteLayers]);
+  }, []);
 
+  // --- MAP INIT ---
   useEffect(() => {
     isMounted.current = true;
     if (!MAPBOX_TOKEN || !mapContainer.current) return;
     if (map.current) return; 
 
     const mapInstance = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: MAP_STYLE,
-      center: DEFAULT_CENTER,
-      zoom: DEFAULT_ZOOM,
-      pitch: 0, 
-      bearing: 0,
-      attributionControl: false,
-      antialias: true,
-      logoPosition: 'bottom-left',
-      cooperativeGestures: true,
-      maxPitch: 85, // Allow steep pitch for driver mode
+      container: mapContainer.current, style: MAP_STYLE, center: DEFAULT_CENTER,
+      zoom: DEFAULT_ZOOM, pitch: 45, bearing: 0, attributionControl: false,
+      antialias: true, logoPosition: 'bottom-left', cooperativeGestures: true,
+      maxPitch: 85,
     });
-
     map.current = mapInstance;
     mapInstance.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
 
     const geolocate = new GeolocateControl({
       positionOptions: { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
-      trackUserLocation: true,
-      showUserHeading: true,
-      showUserLocation: true,
-      showAccuracyCircle: false,
+      trackUserLocation: true, showUserHeading: true, showUserLocation: true, showAccuracyCircle: false,
     });
     geolocateControl.current = geolocate;
     mapInstance.addControl(geolocate, 'top-right');
+
+    // Custom Puck
+    const el = document.createElement('div');
+    el.className = 'navigation-puck';
+    el.style.display = 'none';
+    puckElement.current = el;
+    puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
+        .setLngLat(DEFAULT_CENTER)
+        .addTo(mapInstance);
 
     mapInstance.on('load', () => {
         if (!isMounted.current) return;
         setIsMapLoaded(true); 
         geolocate.trigger();
-
         setTimeout(() => {
              if (isMounted.current && map.current) {
-                initializeDirectionsPlugin(mapInstance);
                 add3DBuildings(mapInstance);
-                addSkyLayer(mapInstance); // Add the sky for 3D effect
+                addSkyLayer(mapInstance);
+                initializeDirectionsPlugin(mapInstance);
              }
         }, 500); 
     });
 
     geolocate.on('geolocate', (e: any) => {
       if (!isMounted.current) return;
-
       const pos = e.coords;
+      const heading = pos.heading || 0;
       const speedKmh = pos.speed ? Math.round(pos.speed * 3.6) : 0;
       
-      setCurrentSpeed(prev => {
-          const diff = Math.abs(prev - speedKmh);
-          return diff > 3 ? speedKmh : prev;
-      });
+      setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 3 ? speedKmh : prev));
       
       const prevLocation = userLocation.current;
       userLocation.current = [pos.longitude, pos.latitude];
 
+      if (puckMarker.current) {
+          puckMarker.current.setLngLat([pos.longitude, pos.latitude]);
+          puckMarker.current.setRotation(heading);
+      }
+
+      // --- NAVIGATION CAMERA LOGIC ---
       if (isNavigating.current && directionsControl.current) {
          directionsControl.current.setOrigin([pos.longitude, pos.latitude]);
          
@@ -354,16 +330,19 @@ export default function MapExplorerPage() {
          let distanceMoved = 100;
          if (prevLocation) distanceMoved = getDistanceFromLatLonInMeters(prevLocation[1], prevLocation[0], pos.latitude, pos.longitude);
 
+         // FIX: Force Camera to Driver View if user isn't interacting
          if (!showRecenterBtnRef.current) {
-             const targetZoom = Math.max(16, Math.min(19, 19 - (speedKmh / 100)));
+             const targetZoom = Math.max(17.5, Math.min(20, 20 - (speedKmh / 100)));
              
-             if (distanceMoved > 3 || (now - lastCameraUpdate.current > 1500)) {
+             // Smoother threshold
+             if (distanceMoved > 2 || (now - lastCameraUpdate.current > 1000)) {
                  lastCameraUpdate.current = now;
                  mapInstance.easeTo({
                      center: [pos.longitude, pos.latitude],
                      zoom: targetZoom,
-                     pitch: 70, // MAINTAIN 3D DRIVER VIEW
-                     bearing: pos.heading || mapInstance.getBearing(),
+                     pitch: 78, // Force High Pitch
+                     bearing: heading, 
+                     padding: { top: 0, bottom: 250, left: 0, right: 0 }, 
                      duration: 1000,
                      easing: (t) => t
                  });
@@ -372,6 +351,7 @@ export default function MapExplorerPage() {
       }
     });
     
+    // Interactions disable auto-centering
     mapInstance.on('dragstart', () => { if(isNavigating.current) setShowRecenterBtn(true); });
     mapInstance.on('pitchstart', () => { if(isNavigating.current) setShowRecenterBtn(true); });
     mapInstance.on('click', (e) => {
@@ -394,7 +374,6 @@ export default function MapExplorerPage() {
 
   const handleMapSelection = useCallback((lngLat: { lng: number, lat: number }) => {
       if(!map.current) return;
-      
       setRouteDetails(null);
       setShowRecenterBtn(false);
       lastSpokenInstruction.current = ""; 
@@ -403,14 +382,11 @@ export default function MapExplorerPage() {
       if (destinationMarker.current) destinationMarker.current.remove();
       clearAiMarkers();
 
-      const newMarker = new Marker({ color: '#ef4444' })
-        .setLngLat(lngLat)
-        .addTo(map.current);
+      const newMarker = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current);
       destinationMarker.current = newMarker;
 
       setLocationDetails(lngLat);
       setIsDrawerOpen(true);
-
       map.current.flyTo({ center: lngLat, zoom: 16, offset: [0, 150], essential: true });
   }, [clearAiMarkers]);
 
@@ -421,11 +397,9 @@ export default function MapExplorerPage() {
   }, [handleMapSelection]);
   
   useEffect(() => {
-    if (routeDetails?.instruction && isNavigating.current) {
-        if (lastSpokenInstruction.current !== routeDetails.instruction) {
-            speak(routeDetails.instruction);
-            lastSpokenInstruction.current = routeDetails.instruction;
-        }
+    if (routeDetails?.instruction && isNavigating.current && lastSpokenInstruction.current !== routeDetails.instruction) {
+        speak(routeDetails.instruction);
+        lastSpokenInstruction.current = routeDetails.instruction;
     }
   }, [routeDetails, speak]);
 
@@ -457,7 +431,7 @@ export default function MapExplorerPage() {
     }
   }, [locationDetails]);
 
-  // --- START NAVIGATION & ENTER 3D MODE ---
+  // --- START NAVIGATION ---
   const handleStartNavigation = () => {
     if (!userLocation.current) {
       toast({ title: "កំពុងស្វែងរក...", description: "រង់ចាំសេវា GPS..." });
@@ -470,6 +444,9 @@ export default function MapExplorerPage() {
     setShowRecenterBtn(false);
     if (!isMuted) speak("ចាប់ផ្តើមការធ្វើដំណើរ។ សូមបើកបរដោយសុវត្ថិភាព។");
     
+    mapContainer.current?.classList.add('nav-mode');
+    if (puckElement.current) puckElement.current.style.display = 'block';
+
     if (directionsControl.current) {
       directionsControl.current.setOrigin(userLocation.current);
       directionsControl.current.setDestination([locationDetails.lng, locationDetails.lat]);
@@ -478,27 +455,30 @@ export default function MapExplorerPage() {
     setIsAiOpen(false);
     
     if(map.current) {
-        // ACTIVATING 3D DRIVER VIEW
+        // Initial Fly-in
         map.current.flyTo({ 
             center: userLocation.current, 
             zoom: 19, 
-            pitch: 70, // Steep pitch for 3D view
+            pitch: 78, 
             bearing: map.current.getBearing(), 
+            padding: { top: 0, bottom: 250, left: 0, right: 0 },
             essential: true, 
             duration: 2000 
         });
+        // Apply styles again just in case
+        applyNeonRouteStyle(map.current);
     }
   }
 
   const handleRecenter = () => {
       if(!userLocation.current || !map.current) return;
       setShowRecenterBtn(false);
-      // Re-enter 3D view on recenter
       map.current.flyTo({ 
           center: userLocation.current, 
           zoom: 19, 
-          pitch: 70, 
+          pitch: 78, 
           bearing: map.current.getBearing(), 
+          padding: { top: 0, bottom: 250, left: 0, right: 0 },
           duration: 1200 
       });
   }
@@ -510,6 +490,10 @@ export default function MapExplorerPage() {
   const clearRoute = () => {
     isNavigating.current = false;
     window.speechSynthesis.cancel();
+    
+    mapContainer.current?.classList.remove('nav-mode');
+    if (puckElement.current) puckElement.current.style.display = 'none';
+
     if (directionsControl.current) directionsControl.current.removeRoutes();
     if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; }
     clearAiMarkers();
@@ -517,23 +501,20 @@ export default function MapExplorerPage() {
     setLocationDetails(null);
     setIsDrawerOpen(false);
     setShowRecenterBtn(false);
-    // Reset camera to 2D view
-    if(map.current && userLocation.current) map.current.flyTo({ center: userLocation.current, zoom: 14, pitch: 0, bearing: 0, duration: 1500 });
+    
+    if(map.current && userLocation.current) {
+        map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1500 });
+    }
   }
 
   const performAiAction = async (input: string) => {
     if(!input.trim()) return;
-    
     if (abortControllerRef.current) abortControllerRef.current.abort();
     abortControllerRef.current = new AbortController();
-    
     setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: input }]);
     setChatInput("");
     setIsAiTyping(true);
-
-    if(typeof window !== 'undefined' && window.innerWidth < 768) {
-        (document.activeElement as HTMLElement)?.blur();
-    }
+    if(typeof window !== 'undefined' && window.innerWidth < 768) (document.activeElement as HTMLElement)?.blur();
 
     const lowerMsg = input.toLowerCase();
     
@@ -541,101 +522,59 @@ export default function MapExplorerPage() {
         clearRoute();
         setIsAiTyping(false);
         setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "ខ្ញុំបានលុបផ្លូវ និងកំណត់ផែនទីឡើងវិញហើយ។" }]);
-    
     } else if (lowerMsg.match(/where am i|location|locate|ទីតាំង/)) {
-        if (geolocateControl.current) geolocateControl.current.trigger();
+        geolocateControl.current?.trigger();
         setIsAiTyping(false);
         setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "កំពុងធ្វើបច្ចុប្បន្នភាពទីតាំងរបស់អ្នក។" }]);
-    
     } else {
         const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
-        
-        // Handle undefined bounds safely
         const bounds = map.current?.getBounds() ?? undefined;
-
         clearAiMarkers();
-        
         const results = await searchPlacesNearLocation(input, center, bounds, abortControllerRef.current.signal);
-        
         if (abortControllerRef.current.signal.aborted) return;
 
         if (map.current && results.length > 0) {
             const fitBounds = new LngLatBounds();
-            
             if(userLocation.current) fitBounds.extend(userLocation.current);
-
             results.forEach(res => {
                 const el = document.createElement('div');
-                
-                let bgClass = "bg-indigo-500";
-                let iconChar = "P";
+                let bgClass = "bg-indigo-500", iconChar = "P";
                 if (res.type === "ប្រេង") { bgClass = "bg-orange-500"; iconChar = "⛽"; }
-                if (res.type === "អាហារ") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
-                if (res.type === "កាហ្វេ") { bgClass = "bg-amber-500"; iconChar = "☕"; }
-                if (res.type === "សុខភាព") { bgClass = "bg-emerald-500"; iconChar = "🏥"; }
+                else if (res.type === "អាហារ") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
+                else if (res.type === "កាហ្វេ") { bgClass = "bg-amber-500"; iconChar = "☕"; }
+                else if (res.type === "សុខភាព") { bgClass = "bg-emerald-500"; iconChar = "🏥"; }
 
                 el.className = `w-9 h-9 ${bgClass} rounded-full border-[3px] border-zinc-900 shadow-xl cursor-pointer hover:scale-110 transition-transform flex items-center justify-center text-white text-sm font-bold ${kantumruy.className}`;
                 el.innerText = iconChar;
-
                 const popupHTML = `
                     <div class="${kantumruy.className} text-zinc-900 min-w-[160px]">
                         <h3 class="font-bold text-base mb-1">${res.name}</h3>
-                        <div class="flex items-center gap-1 text-xs text-zinc-600 mb-2">
-                             📍 ${res.address}
-                        </div>
+                        <div class="flex items-center gap-1 text-xs text-zinc-600 mb-2">📍 ${res.address}</div>
                         <button onclick="window.dispatchEvent(new CustomEvent('nav-to', {detail: {lng:${res.lng}, lat:${res.lat}}}))" 
                             class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold py-2 px-3 rounded-md transition-colors ${kantumruy.className}">
                             ទៅកាន់ទីនេះ
                         </button>
-                    </div>
-                `;
-
-                const marker = new Marker(el)
-                    .setLngLat([res.lng, res.lat])
-                    .setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false, maxWidth: '220px' }).setHTML(popupHTML))
-                    .addTo(map.current!);
-                
+                    </div>`;
+                const marker = new Marker(el).setLngLat([res.lng, res.lat])
+                    .setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false, maxWidth: '220px' }).setHTML(popupHTML)).addTo(map.current!);
                 el.addEventListener('click', () => marker.togglePopup());
                 searchMarkers.current.push(marker);
                 fitBounds.extend([res.lng, res.lat]);
             });
-
             map.current.fitBounds(fitBounds, { padding: 80, maxZoom: 15 });
-            setIsDrawerOpen(false); 
-            setIsAiOpen(false); // Auto close AI modal on success to show map results
+            setIsDrawerOpen(false); setIsAiOpen(false);
             toast({ title: "បានរកឃើញ!", description: `បានរកឃើញ ${results.length} កន្លែង។` });
         } else {
             setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "មិនមានទីតាំងនៅជិតនេះទេ។" }]);
         }
-
         setIsAiTyping(false);
     }
   }
-
-  const handleFormSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    performAiAction(chatInput);
-  };
-
+  const handleFormSubmit = (e: React.FormEvent) => { e.preventDefault(); performAiAction(chatInput); };
   const formatDistance = (d: number) => d > 1000 ? `${(d / 1000).toFixed(1)} គ.ម` : `${d.toFixed(0)} ម`;
-  const formatDuration = (s: number) => {
-    const m = Math.round(s / 60);
-    return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)} ម៉ោង ${m % 60} នាទី`;
-  }
+  const formatDuration = (s: number) => { const m = Math.round(s / 60); return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)} ម៉ោង ${m % 60} នាទី`; }
 
-  if (!MAPBOX_TOKEN) {
-    return (
-        <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}>
-            <Card className="w-full max-w-md bg-zinc-900 border-red-900/50">
-                <CardContent className="flex flex-col items-center gap-4 p-6">
-                    <AlertTriangle className="h-8 w-8 text-red-500" />
-                    <h2 className="text-xl font-bold">បាត់ Token</h2>
-                    <p className="text-center text-zinc-400">Mapbox Access Token មិនមាននៅក្នុង .env.local</p>
-                </CardContent>
-            </Card>
-        </div>
-    );
-  }
+  if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">បាត់ Token</h2><p className="text-center text-zinc-400">Mapbox Access Token មិនមាននៅក្នុង .env.local</p></CardContent></Card></div>;
 
   return (
     <div className={`relative h-[100dvh] w-full overflow-hidden bg-zinc-950 text-zinc-50 ${kantumruy.className}`}>
@@ -690,10 +629,9 @@ export default function MapExplorerPage() {
           </div>
         )}
 
-        {/* --- BOTTOM CONTROLS & SEARCH (UX OPTIMIZED) --- */}
+        {/* --- BOTTOM CONTROLS & SEARCH --- */}
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none">
             
-            {/* 1. Recenter & Compass Buttons (Floating Right) */}
             <div className="flex justify-end gap-2 pointer-events-auto pb-2">
                  {!isNavigating.current && (
                     <Button size="icon" className="h-10 w-10 rounded-full bg-zinc-900/90 border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass}>
@@ -707,7 +645,6 @@ export default function MapExplorerPage() {
                  )}
             </div>
 
-            {/* 2. Quick Action Chips (Horizontal Scroll) - Only when NOT navigating */}
             {!isNavigating.current && (
                 <div className="flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1">
                     <Button onClick={() => performAiAction("Gas")} variant="secondary" className="rounded-full shadow-lg bg-zinc-900/90 text-zinc-100 border border-zinc-800 px-4 h-9 text-xs font-medium shrink-0">
@@ -725,79 +662,37 @@ export default function MapExplorerPage() {
                 </div>
             )}
 
-            {/* 3. Search Bar Trigger - Opens AI Modal (Only when NOT navigating) */}
             {!isNavigating.current && (
                 <div className="pointer-events-auto">
-                    <button 
-                        onClick={() => setIsAiOpen(true)}
-                        className="w-full bg-[#18181b] border border-zinc-800 rounded-full h-12 px-4 shadow-2xl flex items-center gap-3 text-zinc-400 active:scale-[0.98] transition-transform"
-                    >
-                        <Search className="h-5 w-5 text-indigo-500" />
-                        <span className="text-sm font-medium flex-1 text-left">ស្វែងរកទីកន្លែង...</span>
-                        <div className="bg-zinc-800 p-1.5 rounded-full">
-                            <Sparkles className="h-4 w-4 text-zinc-300" />
-                        </div>
+                    <button onClick={() => setIsAiOpen(true)} className="w-full bg-[#18181b] border border-zinc-800 rounded-full h-12 px-4 shadow-2xl flex items-center gap-3 text-zinc-400 active:scale-[0.98] transition-transform">
+                        <Search className="h-5 w-5 text-indigo-500" /><span className="text-sm font-medium flex-1 text-left">ស្វែងរកទីកន្លែង...</span><div className="bg-zinc-800 p-1.5 rounded-full"><Sparkles className="h-4 w-4 text-zinc-300" /></div>
                     </button>
                 </div>
             )}
         </div>
 
-        {/* --- AI CHAT MODAL (Bottom Sheet Style) --- */}
+        {/* --- AI CHAT MODAL --- */}
         {isAiOpen && (
             <div className="absolute inset-0 z-40 flex flex-col justify-end sm:justify-center sm:items-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-                {/* Backdrop click to close */}
                 <div className="absolute inset-0" onClick={() => setIsAiOpen(false)} />
-                
                 <div className="w-full sm:max-w-md bg-[#18181b] border-t sm:border border-zinc-800 sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-10 sm:zoom-in-95 duration-200 ring-1 ring-white/10 max-h-[85dvh] z-50">
                     <div className="flex items-center justify-between p-4 border-b border-zinc-800/50 bg-[#18181b]">
-                        <div className="flex items-center gap-2">
-                             <div className="p-1.5 bg-indigo-500/10 rounded-md">
-                                <Bot className="h-5 w-5 text-indigo-400" />
-                             </div>
-                             <span className="font-semibold text-zinc-200 text-sm">ជំនួយការ AI</span>
-                        </div>
-                        <Button variant="ghost" size="icon" onClick={() => setIsAiOpen(false)} className="h-8 w-8 rounded-full">
-                            <X className="h-4 w-4" />
-                        </Button>
+                        <div className="flex items-center gap-2"><div className="p-1.5 bg-indigo-500/10 rounded-md"><Bot className="h-5 w-5 text-indigo-400" /></div><span className="font-semibold text-zinc-200 text-sm">ជំនួយការ AI</span></div>
+                        <Button variant="ghost" size="icon" onClick={() => setIsAiOpen(false)} className="h-8 w-8 rounded-full"><X className="h-4 w-4" /></Button>
                     </div>
-
                     <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-[#18181b] scrollbar-thin scrollbar-thumb-zinc-800 min-h-[300px]">
                         {messages.map((msg) => (
                             <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-sm leading-relaxed shadow-sm ${
-                                    msg.role === 'user' 
-                                    ? 'bg-[#4f46e5] text-white rounded-tr-none' 
-                                    : 'bg-[#27272a] text-zinc-300 border border-zinc-800/50 rounded-tl-none'
-                                }`}>
-                                    {msg.content}
-                                </div>
+                                <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-sm leading-relaxed shadow-sm ${msg.role === 'user' ? 'bg-[#4f46e5] text-white rounded-tr-none' : 'bg-[#27272a] text-zinc-300 border border-zinc-800/50 rounded-tl-none'}`}>{msg.content}</div>
                             </div>
                         ))}
-                        {isAiTyping && (
-                             <div className="flex justify-start">
-                                <div className="bg-[#27272a] rounded-2xl px-4 py-3 border border-zinc-800/50 flex gap-1 items-center rounded-tl-none">
-                                    <span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                                    <span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                                    <span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce"></span>
-                                </div>
-                            </div>
-                        )}
+                        {isAiTyping && (<div className="flex justify-start"><div className="bg-[#27272a] rounded-2xl px-4 py-3 border border-zinc-800/50 flex gap-1 items-center rounded-tl-none"><span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span><span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce [animation-delay:-0.15s]"></span><span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce"></span></div></div>)}
                         <div ref={chatEndRef} />
                     </div>
-
                     <div className="p-4 bg-[#18181b] border-t border-zinc-800/50">
                         <form onSubmit={handleFormSubmit} className="relative group flex items-center gap-2">
-                            <Input 
-                                ref={chatInputRef}
-                                value={chatInput}
-                                onChange={(e) => setChatInput(e.target.value)}
-                                placeholder="សរសេរសារ..."
-                                disabled={isAiTyping}
-                                className="bg-[#09090b] border-zinc-800 focus-visible:ring-indigo-500/50 text-white"
-                            />
-                            <Button type="submit" disabled={!chatInput.trim() || isAiTyping} size="icon" className="bg-[#4f46e5] hover:bg-[#4338ca] shrink-0">
-                                <Send className="h-4 w-4" />
-                            </Button>
+                            <Input ref={chatInputRef} value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="សរសេរសារ..." disabled={isAiTyping} className="bg-[#09090b] border-zinc-800 focus-visible:ring-indigo-500/50 text-white" />
+                            <Button type="submit" disabled={!chatInput.trim() || isAiTyping} size="icon" className="bg-[#4f46e5] hover:bg-[#4338ca] shrink-0"><Send className="h-4 w-4" /></Button>
                         </form>
                     </div>
                 </div>
