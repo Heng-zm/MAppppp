@@ -1,4 +1,4 @@
-import type {Config} from 'tailwindcss';
+import type { Config } from 'tailwindcss';
 
 export default {
   darkMode: ['class'],
@@ -10,8 +10,14 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        body: ['Noto Sans Khmer', 'Inter', 'sans-serif'],
-        headline: ['Noto Sans Khmer', 'Inter', 'sans-serif'],
+        // Maps to local Google Sans via var(--font-sans)
+        sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        // Maps to Kantumruy Pro via var(--font-khmer)
+        khmer: ['var(--font-khmer)', 'sans-serif'],
+        
+        // Optional: Map your existing body/headline keys to these new fonts too
+        body: ['var(--font-sans)', 'var(--font-khmer)', 'sans-serif'],
+        headline: ['var(--font-sans)', 'var(--font-khmer)', 'sans-serif'],
         code: ['monospace'],
       },
       colors: {
