@@ -105,6 +105,9 @@ export default function MapExplorerPage() {
   
   const userLocation = useRef<[number, number] | null>(null);
   const isNavigating = useRef<boolean>(false);
+  
+  // UX State Refs
+  const userIsInteracting = useRef<boolean>(false); // NEW: Prevents camera fighting
   const lastCameraUpdate = useRef<number>(0);
   const lastSpokenInstruction = useRef<string>("");
   const isMounted = useRef<boolean>(false);
@@ -114,6 +117,7 @@ export default function MapExplorerPage() {
 
   const { toast } = useToast();
   
+  // React State
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
   const [isFetchingAddress, setIsFetchingAddress] = useState(false);
@@ -141,6 +145,7 @@ export default function MapExplorerPage() {
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
 
+  // Focus Chat
   useEffect(() => {
     if (isAiOpen) {
         requestAnimationFrame(() => {
@@ -161,6 +166,8 @@ export default function MapExplorerPage() {
     window.speechSynthesis.speak(utterance);
   }, []);
 
+  // --- MAP LAYERS ---
+  
   const add3DBuildings = useCallback((instance: MapboxMap) => {
     if (!instance.getStyle()) return;
     const layers = instance.getStyle().layers;
@@ -192,29 +199,49 @@ export default function MapExplorerPage() {
       }
   }, []);
 
-  // --- NEON ROUTE STYLING ---
-  const applyNeonRouteStyle = (instance: MapboxMap) => {
-      // Directions plugin creates these layers automatically, we just need to repaint them
-      
-      // 1. Casing (Thick Background)
-      if (instance.getLayer('directions-route-line-casing')) {
-          instance.setPaintProperty('directions-route-line-casing', 'line-color', '#1e1b4b'); // Dark Navy
-          instance.setPaintProperty('directions-route-line-casing', 'line-width', 16); // Thicker
-          instance.setPaintProperty('directions-route-line-casing', 'line-opacity', 0.9);
-      }
-      
-      // 2. Main Line (Bright Neon)
-      if (instance.getLayer('directions-route-line')) {
-          instance.setPaintProperty('directions-route-line', 'line-color', '#3b82f6'); // Neon Blue
-          instance.setPaintProperty('directions-route-line', 'line-width', 9);
-          instance.setPaintProperty('directions-route-line', 'line-opacity', 1);
-      }
-      
-      // 3. Alternative routes (Dimmed)
-      if (instance.getLayer('directions-route-line-alt')) {
-          instance.setPaintProperty('directions-route-line-alt', 'line-color', '#4b5563');
-          instance.setPaintProperty('directions-route-line-alt', 'line-width', 6);
-      }
+  // --- ROUTING LOGIC ---
+
+  const drawNeonRoute = (instance: MapboxMap, routeData: any) => {
+      // 1. Remove old custom layers if they exist
+      if (instance.getLayer('custom-route-core')) instance.removeLayer('custom-route-core');
+      if (instance.getLayer('custom-route-casing')) instance.removeLayer('custom-route-casing');
+      if (instance.getSource('custom-route-source')) instance.removeSource('custom-route-source');
+
+      // 2. Add Source
+      instance.addSource('custom-route-source', {
+          type: 'geojson',
+          data: {
+              type: 'Feature',
+              properties: {},
+              geometry: routeData.geometry
+          }
+      });
+
+      // 3. Add Casing Layer (The Glow) - Put it BEFORE 3D buildings so it's on the ground
+      instance.addLayer({
+          id: 'custom-route-casing',
+          type: 'line',
+          source: 'custom-route-source',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+              'line-color': '#172554', // Deep Blue/Black
+              'line-width': 16,
+              'line-opacity': 0.8
+          }
+      }, '3d-buildings'); // Insert before buildings layer
+
+      // 4. Add Core Layer (The Neon Line)
+      instance.addLayer({
+          id: 'custom-route-core',
+          type: 'line',
+          source: 'custom-route-source',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+              'line-color': '#3b82f6', // Neon Blue
+              'line-width': 8,
+              'line-opacity': 1
+          }
+      }, '3d-buildings');
   };
 
   const initializeDirectionsPlugin = useCallback((instance: MapboxMap) => {
@@ -234,18 +261,18 @@ export default function MapExplorerPage() {
     instance.addControl(directions, 'top-left');
     directionsControl.current = directions;
 
-    // Hide default controls
     const ctrlContainer = document.querySelector('.mapboxgl-ctrl-directions');
     if (ctrlContainer) (ctrlContainer as HTMLElement).style.display = 'none';
 
     directions.on('route', (e: any) => {
       if (!isMounted.current) return;
       
-      // Apply neon style immediately when route is found
-      applyNeonRouteStyle(instance);
-
       if (e.route && e.route.length > 0) {
         const route = e.route[0];
+        
+        // DRAW THE CUSTOM LINE HERE
+        drawNeonRoute(instance, route);
+
         const leg = route.legs[0];
         const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) 
             ? leg.steps[1].maneuver.instruction 
@@ -262,7 +289,7 @@ export default function MapExplorerPage() {
     });
   }, []);
 
-  // --- MAP INIT ---
+  // --- MAP INITIALIZATION ---
   useEffect(() => {
     isMounted.current = true;
     if (!MAPBOX_TOKEN || !mapContainer.current) return;
@@ -306,6 +333,7 @@ export default function MapExplorerPage() {
         }, 500); 
     });
 
+    // --- GEOLOCATION & CAMERA LOGIC ---
     geolocate.on('geolocate', (e: any) => {
       if (!isMounted.current) return;
       const pos = e.coords;
@@ -317,12 +345,12 @@ export default function MapExplorerPage() {
       const prevLocation = userLocation.current;
       userLocation.current = [pos.longitude, pos.latitude];
 
+      // Update Puck
       if (puckMarker.current) {
           puckMarker.current.setLngLat([pos.longitude, pos.latitude]);
           puckMarker.current.setRotation(heading);
       }
 
-      // --- NAVIGATION CAMERA LOGIC ---
       if (isNavigating.current && directionsControl.current) {
          directionsControl.current.setOrigin([pos.longitude, pos.latitude]);
          
@@ -330,17 +358,17 @@ export default function MapExplorerPage() {
          let distanceMoved = 100;
          if (prevLocation) distanceMoved = getDistanceFromLatLonInMeters(prevLocation[1], prevLocation[0], pos.latitude, pos.longitude);
 
-         // FIX: Force Camera to Driver View if user isn't interacting
-         if (!showRecenterBtnRef.current) {
+         // FIX: ONLY update camera if user is NOT interacting (prevents fighting/snap-back)
+         if (!userIsInteracting.current && !showRecenterBtnRef.current) {
              const targetZoom = Math.max(17.5, Math.min(20, 20 - (speedKmh / 100)));
              
-             // Smoother threshold
-             if (distanceMoved > 2 || (now - lastCameraUpdate.current > 1000)) {
+             // Throttle updates for smoothness
+             if (distanceMoved > 2 || (now - lastCameraUpdate.current > 1500)) {
                  lastCameraUpdate.current = now;
                  mapInstance.easeTo({
                      center: [pos.longitude, pos.latitude],
                      zoom: targetZoom,
-                     pitch: 78, // Force High Pitch
+                     pitch: 78, // Driver 3D View
                      bearing: heading, 
                      padding: { top: 0, bottom: 250, left: 0, right: 0 }, 
                      duration: 1000,
@@ -351,9 +379,18 @@ export default function MapExplorerPage() {
       }
     });
     
-    // Interactions disable auto-centering
-    mapInstance.on('dragstart', () => { if(isNavigating.current) setShowRecenterBtn(true); });
-    mapInstance.on('pitchstart', () => { if(isNavigating.current) setShowRecenterBtn(true); });
+    // --- INTERACTION HANDLERS (Stop Camera Fighting) ---
+    const handleInteractionStart = () => {
+        if (isNavigating.current) {
+            userIsInteracting.current = true; // Stop auto-camera
+            setShowRecenterBtn(true); // Show "Recenter" button
+        }
+    };
+
+    mapInstance.on('dragstart', handleInteractionStart);
+    mapInstance.on('pitchstart', handleInteractionStart);
+    mapInstance.on('rotatestart', handleInteractionStart);
+    
     mapInstance.on('click', (e) => {
       if(isNavigating.current) return; 
       handleMapSelection(e.lngLat);
@@ -377,9 +414,16 @@ export default function MapExplorerPage() {
       setRouteDetails(null);
       setShowRecenterBtn(false);
       lastSpokenInstruction.current = ""; 
+      userIsInteracting.current = false;
       
       if (directionsControl.current) directionsControl.current.removeRoutes();
       if (destinationMarker.current) destinationMarker.current.remove();
+      
+      // Clean up custom route layer
+      if (map.current.getLayer('custom-route-core')) map.current.removeLayer('custom-route-core');
+      if (map.current.getLayer('custom-route-casing')) map.current.removeLayer('custom-route-casing');
+      if (map.current.getSource('custom-route-source')) map.current.removeSource('custom-route-source');
+
       clearAiMarkers();
 
       const newMarker = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current);
@@ -441,6 +485,7 @@ export default function MapExplorerPage() {
     if (!locationDetails) return;
     
     isNavigating.current = true;
+    userIsInteracting.current = false; // Reset interaction flag
     setShowRecenterBtn(false);
     if (!isMuted) speak("ចាប់ផ្តើមការធ្វើដំណើរ។ សូមបើកបរដោយសុវត្ថិភាព។");
     
@@ -455,7 +500,6 @@ export default function MapExplorerPage() {
     setIsAiOpen(false);
     
     if(map.current) {
-        // Initial Fly-in
         map.current.flyTo({ 
             center: userLocation.current, 
             zoom: 19, 
@@ -465,18 +509,20 @@ export default function MapExplorerPage() {
             essential: true, 
             duration: 2000 
         });
-        // Apply styles again just in case
-        applyNeonRouteStyle(map.current);
     }
   }
 
   const handleRecenter = () => {
       if(!userLocation.current || !map.current) return;
+      
+      // Reset interaction state
+      userIsInteracting.current = false;
       setShowRecenterBtn(false);
+      
       map.current.flyTo({ 
           center: userLocation.current, 
           zoom: 19, 
-          pitch: 78, 
+          pitch: 78, // Force back to 3D View
           bearing: map.current.getBearing(), 
           padding: { top: 0, bottom: 250, left: 0, right: 0 },
           duration: 1200 
@@ -489,6 +535,7 @@ export default function MapExplorerPage() {
 
   const clearRoute = () => {
     isNavigating.current = false;
+    userIsInteracting.current = false;
     window.speechSynthesis.cancel();
     
     mapContainer.current?.classList.remove('nav-mode');
@@ -496,6 +543,12 @@ export default function MapExplorerPage() {
 
     if (directionsControl.current) directionsControl.current.removeRoutes();
     if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; }
+    
+    // Clean layers
+    if (map.current?.getLayer('custom-route-core')) map.current.removeLayer('custom-route-core');
+    if (map.current?.getLayer('custom-route-casing')) map.current.removeLayer('custom-route-casing');
+    if (map.current?.getSource('custom-route-source')) map.current.removeSource('custom-route-source');
+
     clearAiMarkers();
     setRouteDetails(null);
     setLocationDetails(null);
