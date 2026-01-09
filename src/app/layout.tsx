@@ -1,26 +1,20 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter, Noto_Sans_Khmer } from 'next/font/google';
+import { Kantumruy_Pro } from 'next/font/google';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
 
-// Configure Inter (Latin)
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-inter',
+// Configure Kantumruy Pro (Covers both Latin and Khmer characters)
+const kantumruy = Kantumruy_Pro({
+  subsets: ['khmer', 'latin'],
+  variable: '--font-kantumruy',
   display: 'swap',
-});
-
-// Configure Noto Sans Khmer (for Cambodia map labels)
-const notoSansKhmer = Noto_Sans_Khmer({
-  subsets: ['khmer'],
-  variable: '--font-khmer',
-  display: 'swap',
+  weight: ['400', '500', '600', '700'],
 });
 
 export const metadata: Metadata = {
   title: 'Map Explorer',
   description: 'Interactive map application created with Next.js and Mapbox.',
-  // manifest: '/manifest.json', // <-- Commented out to fix Cloud CORS error
+  // manifest: '/manifest.json', 
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
@@ -44,7 +38,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        {/* Mapbox GL CSS */}
         <link href="https://api.mapbox.com/mapbox-gl-js/v3.5.1/mapbox-gl.css" rel="stylesheet" />
+        {/* Mapbox Directions CSS */}
         <link
           rel="stylesheet"
           href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-directions/v4.3.0/mapbox-gl-directions.css"
@@ -52,7 +48,8 @@ export default function RootLayout({
         />
       </head>
       <body 
-        className={`${inter.variable} ${notoSansKhmer.variable} font-sans antialiased bg-zinc-950 text-zinc-50`}
+        // Apply the font variable and the className globally
+        className={`${kantumruy.variable} ${kantumruy.className} antialiased bg-zinc-950 text-zinc-50 overflow-hidden`}
       >
         {children}
         <Toaster />

@@ -58,14 +58,12 @@
   }
 
   * {
-    /* Replaced @apply border-border with standard CSS */
     border-color: hsl(var(--border));
     border-style: solid;
     border-width: 0;
   }
   
   body {
-    /* Replaced @apply bg-background text-foreground with standard CSS */
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
     
@@ -93,8 +91,14 @@ body, #__next {
   overflow: hidden;
   overscroll-behavior: none; /* Prevent "pull-to-refresh" bounce effect */
   -webkit-overflow-scrolling: touch;
-  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  /* Updated font variable to match layout.tsx */
+  font-family: var(--font-kantumruy), ui-sans-serif, system-ui, sans-serif;
   background-color: #09090b; /* Match dark theme background to prevent white flashes */
+}
+
+/* Ensure Mapbox Popups also use the Khmer font */
+.mapboxgl-popup {
+  font-family: var(--font-kantumruy), ui-sans-serif, system-ui, sans-serif !important;
 }
 
 /* --- MAPBOX DIRECTIONS PLUGIN OVERRIDES ("NUCLEAR" OPTION) --- */
