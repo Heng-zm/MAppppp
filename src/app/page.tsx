@@ -12,9 +12,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { 
-  X, MapPin, Navigation, LocateFixed, Clock, 
-  ArrowRight, Volume2, VolumeX, Compass, Loader2, AlertTriangle, 
-  Bot, Send, Sparkles, Fuel, Utensils, Coffee, Stethoscope, Search,
+  X, MapPin, Navigation, LocateFixed, 
+  Volume2, VolumeX, Compass, Loader2, AlertTriangle, 
+  Bot, Send, Sparkles, Fuel, Utensils, Coffee, Search,
   Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind
 } from 'lucide-react';
@@ -28,7 +28,7 @@ const kantumruy = Kantumruy_Pro({
 
 // --- CONFIG ---
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
-const WEATHER_API_KEY = process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY; // NEW API KEY
+const WEATHER_API_KEY = process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY;
 
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
@@ -53,7 +53,7 @@ const mapFeaturesToResults = (features: any[], typeLabel: string): SearchResult[
         lng: f.center[0],
         lat: f.center[1],
         name: f.text,
-        address: (f.properties?.address || f.place_name?.split(',').slice(1).join(',').trim()) || "Mapbox Location",
+        address: (f.properties?.address || f.place_name?.split(',').slice(1).join(',').trim()) || "ទីតាំង",
         type: typeLabel
     }));
 }
@@ -64,12 +64,13 @@ const searchPlacesNearLocation = async (
 ): Promise<SearchResult[]> => {
     if (!MAPBOX_TOKEN) return [];
     let searchQuery = query;
-    let typeLabel = "Place";
+    let typeLabel = "ទីកន្លែង";
     
-    if (query.match(/gas|fuel|petrol/i)) { searchQuery = "petrol station, gas station"; typeLabel = "Gas"; }
-    else if (query.match(/food|eat|hungry|dinner|lunch/i)) { searchQuery = "restaurant, food"; typeLabel = "Food"; }
-    else if (query.match(/coffee|cafe|drink/i)) { searchQuery = "coffee, cafe"; typeLabel = "Coffee"; }
-    else if (query.match(/health|doctor|hospital|clinic/i)) { searchQuery = "hospital, pharmacy, clinic"; typeLabel = "Health"; }
+    // Translation mapping for search intent
+    if (query.match(/gas|fuel|petrol|ប្រេង|សាំង/i)) { searchQuery = "gas station"; typeLabel = "ប្រេង"; }
+    else if (query.match(/food|eat|hungry|dinner|lunch|អាហារ|បាយ/i)) { searchQuery = "restaurant"; typeLabel = "អាហារ"; }
+    else if (query.match(/coffee|cafe|drink|កាហ្វេ/i)) { searchQuery = "coffee"; typeLabel = "កាហ្វេ"; }
+    else if (query.match(/health|doctor|hospital|clinic|ពេទ្យ|សុខភាព/i)) { searchQuery = "hospital"; typeLabel = "សុខភាព"; }
 
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=10&language=km&access_token=${MAPBOX_TOKEN}`;
     if (bbox) url += `&bbox=${bbox.getWest()},${bbox.getSouth()},${bbox.getEast()},${bbox.getNorth()}`;
@@ -78,6 +79,7 @@ const searchPlacesNearLocation = async (
         const res = await fetch(url, { signal });
         const data = await res.json();
         if ((!data.features || data.features.length === 0) && bbox) {
+            // Fallback search without bbox
             const fallbackUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?proximity=${center[0]},${center[1]}&limit=10&language=km&access_token=${MAPBOX_TOKEN}`;
             const fallbackRes = await fetch(fallbackUrl, { signal });
             const fallbackData = await fallbackRes.json();
@@ -93,11 +95,11 @@ type WeatherData = { temp: number; condition: string; description: string };
 
 const getWeatherIcon = (condition: string) => {
     const c = condition.toLowerCase();
-    if (c.includes('rain') || c.includes('drizzle')) return <CloudRain className="h-5 w-5 text-blue-400" />;
-    if (c.includes('thunder')) return <CloudLightning className="h-5 w-5 text-yellow-400" />;
+    if (c.includes('rain') || c.includes('drizzle') || c.includes('ភ្លៀង')) return <CloudRain className="h-5 w-5 text-blue-400" />;
+    if (c.includes('thunder') || c.includes('រន្ទះ')) return <CloudLightning className="h-5 w-5 text-yellow-400" />;
     if (c.includes('snow')) return <Snowflake className="h-5 w-5 text-white" />;
-    if (c.includes('cloud')) return <Cloud className="h-5 w-5 text-gray-400" />;
-    if (c.includes('clear') || c.includes('sun')) return <Sun className="h-5 w-5 text-orange-400" />;
+    if (c.includes('cloud') || c.includes('ពពក')) return <Cloud className="h-5 w-5 text-gray-400" />;
+    if (c.includes('clear') || c.includes('sun') || c.includes('ស្រឡះ')) return <Sun className="h-5 w-5 text-orange-400" />;
     return <Wind className="h-5 w-5 text-zinc-400" />;
 };
 
@@ -105,10 +107,10 @@ const getWeatherIcon = (condition: string) => {
 const ManeuverIcon = ({ instruction }: { instruction: string }) => {
     const text = instruction.toLowerCase();
     const iconClass = "h-10 w-10 text-white";
-    if (text.includes('left')) return <CornerUpLeft className={iconClass} />;
-    if (text.includes('right')) return <CornerUpRight className={iconClass} />;
-    if (text.includes('straight') || text.includes('continue')) return <ArrowUp className={iconClass} />;
-    if (text.includes('uturn') || text.includes('u-turn')) return <Zap className={iconClass} />;
+    if (text.includes('left') || text.includes('ឆ្វេង')) return <CornerUpLeft className={iconClass} />;
+    if (text.includes('right') || text.includes('ស្តាំ')) return <CornerUpRight className={iconClass} />;
+    if (text.includes('straight') || text.includes('continue') || text.includes('ត្រង់')) return <ArrowUp className={iconClass} />;
+    if (text.includes('uturn') || text.includes('ត្រឡប់')) return <Zap className={iconClass} />;
     return <Navigation className={iconClass} />;
 }
 
@@ -130,8 +132,6 @@ export default function MapExplorerPage() {
   const isNavigating = useRef<boolean>(false);
   
   const userIsInteracting = useRef<boolean>(false); 
-  const lastCameraUpdate = useRef<number>(0);
-  const lastSpokenInstruction = useRef<string>("");
   const isMounted = useRef<boolean>(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -154,7 +154,8 @@ export default function MapExplorerPage() {
   
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([{ id: '1', role: 'assistant', content: "Hello! Where do you want to go?" }]);
+  // Initial message in Khmer
+  const [messages, setMessages] = useState<Message[]>([{ id: '1', role: 'assistant', content: "សួស្តី! តើអ្នកចង់ទៅណា?" }]);
   const [isAiTyping, setIsAiTyping] = useState(false);
 
   const [routeDetails, setRouteDetails] = useState<{
@@ -166,6 +167,7 @@ export default function MapExplorerPage() {
 
   const showRecenterBtnRef = useRef(false);
   const isMutedRef = useRef(false);
+  const lastSpokenInstruction = useRef<string>("");
   
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
@@ -184,17 +186,19 @@ export default function MapExplorerPage() {
     window.speechSynthesis.cancel(); 
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
-    const preferredVoice = voices.find(v => v.name.includes('Google') || v.name.includes('Samantha'));
+    // Try to find a Khmer voice, fallback to Google/English
+    const preferredVoice = voices.find(v => v.lang.includes('km') || v.name.includes('Google') || v.name.includes('Samantha'));
     if (preferredVoice) utterance.voice = preferredVoice;
     utterance.rate = 1.05; 
     window.speechSynthesis.speak(utterance);
   }, []);
 
-  // --- WEATHER FETCHING ---
+  // --- WEATHER FETCHING (Khmer Lang) ---
   const fetchWeather = useCallback(async (lat: number, lon: number) => {
       if (!WEATHER_API_KEY) return;
       try {
-          const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${WEATHER_API_KEY}`);
+          // Added &lang=km for Khmer description
+          const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&lang=km&appid=${WEATHER_API_KEY}`);
           const data = await res.json();
           if (data.main && data.weather) {
               setWeather({
@@ -211,6 +215,7 @@ export default function MapExplorerPage() {
     if (!instance.getStyle()) return;
     const layers = instance.getStyle().layers;
     const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
+    
     if(!instance.getLayer('3d-buildings')) {
         instance.addLayer({
             'id': '3d-buildings', 'source': 'composite', 'source-layer': 'building',
@@ -226,7 +231,9 @@ export default function MapExplorerPage() {
   }, []);
 
   const addTrafficLayer = useCallback((instance: MapboxMap) => {
+      if (!instance.getStyle()) return;
       if (instance.getSource('mapbox-traffic')) return;
+      
       instance.addSource('mapbox-traffic', { type: 'vector', url: 'mapbox://mapbox.mapbox-traffic-v1' });
       const layers = instance.getStyle().layers;
       const roadLabelId = layers?.find((layer) => layer.type === 'symbol' && layer.source === 'composite')?.id;
@@ -251,8 +258,10 @@ export default function MapExplorerPage() {
 
   const toggleTraffic = () => {
       if (!map.current) return;
-      map.current.setLayoutProperty('traffic', 'visibility', isTrafficVisible ? 'none' : 'visible');
-      setIsTrafficVisible(!isTrafficVisible);
+      if (map.current.getLayer('traffic')) {
+          map.current.setLayoutProperty('traffic', 'visibility', isTrafficVisible ? 'none' : 'visible');
+          setIsTrafficVisible(!isTrafficVisible);
+      }
   };
 
   const drawBlueRoute = (instance: MapboxMap, geojson: any) => {
@@ -288,23 +297,26 @@ export default function MapExplorerPage() {
       }, labelLayerId);
   };
 
+  // --- ROUTING (Khmer Lang) ---
   const fetchRoute = async (start: [number, number], end: [number, number]) => {
       if (!MAPBOX_TOKEN) return;
-      const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=en&overview=full&access_token=${MAPBOX_TOKEN}`;
+      // Added &language=km
+      const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
       try {
           const res = await fetch(url);
           const data = await res.json();
           if (data.code !== 'Ok') {
-              toast({ title: "Error", description: "Route not found.", variant: "destructive" });
+              toast({ title: "កំហុស", description: "រកផ្លូវមិនឃើញ", variant: "destructive" });
               return;
           }
           const route = data.routes[0];
           if (map.current) drawBlueRoute(map.current, { type: 'Feature', geometry: route.geometry });
 
           const leg = route.legs[0];
+          // Default instruction fallback if empty
           const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) 
             ? leg.steps[1].maneuver.instruction 
-            : (leg.steps[0]?.maneuver.instruction || "Follow Route");
+            : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
           
           const arrivalDate = new Date(Date.now() + route.duration * 1000);
           
@@ -341,7 +353,10 @@ export default function MapExplorerPage() {
 
     const geolocate = new GeolocateControl({
       positionOptions: { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
-      trackUserLocation: true, showUserHeading: true, showUserLocation: true, showAccuracyCircle: false,
+      trackUserLocation: true, 
+      showUserHeading: true, 
+      showUserLocation: false, // Using custom puck
+      showAccuracyCircle: false,
     });
     geolocateControl.current = geolocate;
     mapInstance.addControl(geolocate, 'top-right');
@@ -350,7 +365,9 @@ export default function MapExplorerPage() {
     el.className = 'navigation-puck';
     el.style.display = 'none'; 
     puckElement.current = el;
-    puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(DEFAULT_CENTER).addTo(mapInstance);
+    puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
+        .setLngLat(DEFAULT_CENTER)
+        .addTo(mapInstance);
 
     mapInstance.on('load', () => {
         if (!isMounted.current) return;
@@ -364,17 +381,18 @@ export default function MapExplorerPage() {
         }, 500); 
     });
 
+    // --- OPTIMIZED FLUID MOTION ---
     geolocate.on('geolocate', (e: any) => {
       if (!isMounted.current) return;
       const pos = e.coords;
       const heading = pos.heading || 0;
       const speedKmh = pos.speed ? Math.round(pos.speed * 3.6) : 0;
+      
       setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 3 ? speedKmh : prev));
       
       const prevLocation = userLocation.current;
       userLocation.current = [pos.longitude, pos.latitude];
 
-      // Fetch weather if not yet fetched (lazy load)
       if (!weather && userLocation.current) {
           fetchWeather(pos.latitude, pos.longitude);
       }
@@ -384,25 +402,25 @@ export default function MapExplorerPage() {
           puckMarker.current.setRotation(heading);
       }
 
+      // NAV CAMERA LOGIC (Fluid)
       if (isNavigating.current) {
-         const now = Date.now();
-         let distanceMoved = 100;
-         if (prevLocation) distanceMoved = getDistanceFromLatLonInMeters(prevLocation[1], prevLocation[0], pos.latitude, pos.longitude);
-
          if (!userIsInteracting.current && !showRecenterBtnRef.current) {
-             const targetZoom = Math.max(17.5, Math.min(20, 20 - (speedKmh / 100)));
-             if (distanceMoved > 2 || (now - lastCameraUpdate.current > 1500)) {
-                 lastCameraUpdate.current = now;
-                 mapInstance.easeTo({
-                     center: [pos.longitude, pos.latitude],
-                     zoom: targetZoom,
-                     pitch: 70, 
-                     bearing: heading, 
-                     padding: { top: 0, bottom: 200, left: 0, right: 0 }, 
-                     duration: 1000,
-                     easing: (t) => t
-                 });
-             }
+             
+             // Dynamic Zoom: 15 to 20
+             const targetZoom = Math.max(15, 20 - (speedKmh / 50));
+             
+             // Dynamic Pitch: 45 to 75
+             const targetPitch = Math.min(75, 45 + (speedKmh / 3));
+
+             mapInstance.easeTo({
+                 center: [pos.longitude, pos.latitude],
+                 bearing: heading, // Lock rotation
+                 zoom: targetZoom,
+                 pitch: targetPitch,
+                 padding: { top: 0, bottom: 300, left: 0, right: 0 }, 
+                 duration: 2000, 
+                 easing: (t) => t
+             });
          }
       }
     });
@@ -415,6 +433,7 @@ export default function MapExplorerPage() {
     };
     mapInstance.on('dragstart', handleInteractionStart);
     mapInstance.on('pitchstart', handleInteractionStart);
+    mapInstance.on('zoomstart', handleInteractionStart);
     
     mapInstance.on('click', (e) => {
       if(isNavigating.current) return; 
@@ -423,6 +442,9 @@ export default function MapExplorerPage() {
 
     return () => {
       isMounted.current = false;
+      if (destinationMarker.current) destinationMarker.current.remove();
+      if (puckMarker.current) puckMarker.current.remove();
+      searchMarkers.current.forEach(m => m.remove());
       mapInstance.remove();
       map.current = null;
       if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -480,15 +502,16 @@ export default function MapExplorerPage() {
             return;
         }
         try {
-          const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=en`);
+          // Added &lang=km
+          const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=km`);
           const data = await response.json();
           if (isMounted.current && data.features && data.features.length > 0) {
             setAddressDetails(data.features[0].properties);
           } else {
-            setAddressDetails({ formatted: "Unknown Location" });
+            setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" });
           }
         } catch {
-          setAddressDetails({ formatted: "Unknown Location" });
+          setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" });
         } finally {
           if (isMounted.current) setIsFetchingAddress(false);
         }
@@ -500,7 +523,7 @@ export default function MapExplorerPage() {
   // --- ACTIONS ---
   const handleStartNavigation = () => {
     if (!userLocation.current) {
-      toast({ title: "Searching GPS...", description: "Please wait." });
+      toast({ title: "កំពុងស្វែងរក GPS...", description: "សូមរង់ចាំបន្តិច" });
       geolocateControl.current?.trigger();
       return;
     }
@@ -511,7 +534,7 @@ export default function MapExplorerPage() {
     isNavigating.current = true;
     userIsInteracting.current = false; 
     setShowRecenterBtn(false);
-    if (!isMuted) speak("Starting navigation. Drive safely.");
+    if (!isMuted) speak("ចាប់ផ្តើមការនាំផ្លូវ");
     
     mapContainer.current?.classList.add('nav-mode');
     if (puckElement.current) puckElement.current.style.display = 'block';
@@ -554,7 +577,7 @@ export default function MapExplorerPage() {
   const clearRoute = () => {
     isNavigating.current = false;
     userIsInteracting.current = false;
-    window.speechSynthesis.cancel();
+    if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
     
     mapContainer.current?.classList.remove('nav-mode');
     if (puckElement.current) puckElement.current.style.display = 'none';
@@ -587,14 +610,14 @@ export default function MapExplorerPage() {
 
     const lowerMsg = input.toLowerCase();
     
-    if (lowerMsg.match(/clear|reset|cancel|stop/)) {
+    if (lowerMsg.match(/clear|reset|cancel|stop|ឈប់|លុប/)) {
         clearRoute();
         setIsAiTyping(false);
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "Route cleared." }]);
-    } else if (lowerMsg.match(/where am i|location/)) {
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "បានលុបផ្លូវហើយ" }]);
+    } else if (lowerMsg.match(/where am i|location|ខ្ញុំនៅឯណា|ទីតាំង/)) {
         geolocateControl.current?.trigger();
         setIsAiTyping(false);
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "Locating you..." }]);
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "កំពុងកំណត់ទីតាំង..." }]);
     } else {
         const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
         const bounds = map.current?.getBounds() ?? undefined;
@@ -608,10 +631,10 @@ export default function MapExplorerPage() {
             results.forEach(res => {
                 const el = document.createElement('div');
                 let bgClass = "bg-indigo-500", iconChar = "P";
-                if (res.type === "Gas") { bgClass = "bg-orange-500"; iconChar = "⛽"; }
-                else if (res.type === "Food") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
-                else if (res.type === "Coffee") { bgClass = "bg-amber-500"; iconChar = "☕"; }
-                else if (res.type === "Health") { bgClass = "bg-emerald-500"; iconChar = "🏥"; }
+                if (res.type === "ប្រេង") { bgClass = "bg-orange-500"; iconChar = "⛽"; }
+                else if (res.type === "អាហារ") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
+                else if (res.type === "កាហ្វេ") { bgClass = "bg-amber-500"; iconChar = "☕"; }
+                else if (res.type === "សុខភាព") { bgClass = "bg-emerald-500"; iconChar = "🏥"; }
 
                 el.className = `w-9 h-9 ${bgClass} rounded-full border-[3px] border-zinc-900 shadow-xl cursor-pointer hover:scale-110 transition-transform flex items-center justify-center text-white text-sm font-bold ${kantumruy.className}`;
                 el.innerText = iconChar;
@@ -622,7 +645,7 @@ export default function MapExplorerPage() {
                         <div class="flex items-center gap-1 text-xs text-zinc-600 mb-2">📍 ${res.address}</div>
                         <button onclick="window.dispatchEvent(new CustomEvent('nav-to', {detail: {lng:${res.lng}, lat:${res.lat}}}))" 
                             class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold py-2 px-3 rounded-md transition-colors ${kantumruy.className}">
-                            Navigate Here
+                            នាំផ្លូវទៅទីនេះ
                         </button>
                     </div>`;
                     
@@ -634,16 +657,21 @@ export default function MapExplorerPage() {
             });
             map.current.fitBounds(fitBounds, { padding: 80, maxZoom: 15 });
             setIsDrawerOpen(false); setIsAiOpen(false);
-            toast({ title: "Found!", description: `Found ${results.length} places.` });
+            toast({ title: "ជោគជ័យ!", description: `រកឃើញ ${results.length} កន្លែង` });
         } else {
-            setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "No results found." }]);
+            setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "រកមិនឃើញលទ្ធផលទេ" }]);
         }
         setIsAiTyping(false);
     }
   }
   const handleFormSubmit = (e: React.FormEvent) => { e.preventDefault(); performAiAction(chatInput); };
-  const formatDistance = (d: number) => d > 1000 ? `${(d / 1000).toFixed(1)} km` : `${d.toFixed(0)} m`;
-  const formatDuration = (s: number) => { const m = Math.round(s / 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`; }
+  
+  // Khmer Unit Formatting
+  const formatDistance = (d: number) => d > 1000 ? `${(d / 1000).toFixed(1)} គ.ម` : `${d.toFixed(0)} ម៉ែត្រ`;
+  const formatDuration = (s: number) => { 
+      const m = Math.round(s / 60); 
+      return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`; 
+  }
 
   if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Missing Token</h2><p className="text-center text-zinc-400">Mapbox Access Token is missing.</p></CardContent></Card></div>;
 
@@ -671,24 +699,26 @@ export default function MapExplorerPage() {
             border-right: 6px solid transparent;
             border-bottom: 10px solid #3b82f6;
           }
+          .no-scrollbar::-webkit-scrollbar { display: none; }
+          .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         `}</style>
         
         {/* Loading Overlay */}
         <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950 text-white transition-opacity duration-700 pointer-events-none ${isMapLoaded ? 'opacity-0' : 'opacity-100'}`}>
             <Loader2 className="h-10 w-10 animate-spin text-indigo-500 mb-4" />
-            <p className="text-zinc-500 text-xs tracking-widest uppercase">Initializing...</p>
+            <p className="text-zinc-500 text-xs tracking-widest uppercase">កំពុងដំណើរការ...</p>
         </div>
 
         <div ref={mapContainer} className="absolute inset-0 w-full h-full" />
 
-        {/* --- WEATHER WIDGET (Top Left for Free Roam) --- */}
+        {/* --- WEATHER WIDGET --- */}
         {!isNavigating.current && weather && (
             <div className="absolute top-4 left-4 z-20 pointer-events-none">
                 <div className="bg-[#18181b]/90 backdrop-blur-md border border-zinc-800 rounded-full px-3 py-1.5 flex items-center gap-2 shadow-xl animate-in fade-in zoom-in-95">
                     {getWeatherIcon(weather.condition)}
                     <div className="flex flex-col">
                         <span className="text-sm font-bold text-white leading-none">{weather.temp}°</span>
-                        <span className="text-[10px] text-zinc-400 capitalize">{weather.condition}</span>
+                        <span className="text-[10px] text-zinc-400 capitalize">{weather.description}</span>
                     </div>
                 </div>
             </div>
@@ -741,7 +771,7 @@ export default function MapExplorerPage() {
                              <span className="text-[9px] text-zinc-500 font-bold uppercase">km/h</span>
                         </div>
                         <Button size="lg" onClick={clearRoute} className="h-12 px-6 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-lg shadow-red-900/20">
-                            Exit
+                            ចាកចេញ
                         </Button>
                     </div>
                 </div>
@@ -763,19 +793,19 @@ export default function MapExplorerPage() {
 
                 <div className="flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1">
                     <Button onClick={() => performAiAction("Gas")} variant="secondary" className="rounded-full shadow-lg bg-zinc-900/95 border-zinc-800 px-5 h-10 text-sm font-medium shrink-0">
-                        <Fuel className="h-4 w-4 mr-2 text-orange-500" /> Gas
+                        <Fuel className="h-4 w-4 mr-2 text-orange-500" /> ប្រេង
                     </Button>
                     <Button onClick={() => performAiAction("Food")} variant="secondary" className="rounded-full shadow-lg bg-zinc-900/95 border-zinc-800 px-5 h-10 text-sm font-medium shrink-0">
-                        <Utensils className="h-4 w-4 mr-2 text-rose-500" /> Food
+                        <Utensils className="h-4 w-4 mr-2 text-rose-500" /> អាហារ
                     </Button>
                     <Button onClick={() => performAiAction("Coffee")} variant="secondary" className="rounded-full shadow-lg bg-zinc-900/95 border-zinc-800 px-5 h-10 text-sm font-medium shrink-0">
-                        <Coffee className="h-4 w-4 mr-2 text-amber-500" /> Coffee
+                        <Coffee className="h-4 w-4 mr-2 text-amber-500" /> កាហ្វេ
                     </Button>
                 </div>
 
                 <div className="pointer-events-auto">
                     <button onClick={() => setIsAiOpen(true)} className="w-full bg-[#18181b] border border-zinc-800 rounded-full h-14 px-5 shadow-2xl flex items-center gap-3 text-zinc-400 active:scale-[0.98] transition-transform">
-                        <Search className="h-6 w-6 text-indigo-500" /><span className="text-base font-medium flex-1 text-left">Where to?</span><div className="bg-zinc-800 p-2 rounded-full"><Sparkles className="h-5 w-5 text-zinc-300" /></div>
+                        <Search className="h-6 w-6 text-indigo-500" /><span className="text-base font-medium flex-1 text-left">តើអ្នកចង់ទៅណា?</span><div className="bg-zinc-800 p-2 rounded-full"><Sparkles className="h-5 w-5 text-zinc-300" /></div>
                     </button>
                 </div>
             </div>
@@ -785,7 +815,7 @@ export default function MapExplorerPage() {
         {isNavigating.current && showRecenterBtn && (
              <div className="absolute bottom-32 right-4 z-20 pointer-events-auto pb-[safe-area-inset-bottom]">
                 <Button onClick={handleRecenter} className="h-14 w-14 rounded-full bg-zinc-900 border border-zinc-700 shadow-2xl text-blue-500 flex flex-col items-center justify-center gap-0 hover:bg-zinc-800">
-                    <LocateFixed className="h-6 w-6" /><span className="text-[9px] font-bold uppercase">Center</span>
+                    <LocateFixed className="h-6 w-6" /><span className="text-[9px] font-bold uppercase">ទីតាំងខ្ញុំ</span>
                 </Button>
              </div>
         )}
@@ -796,7 +826,7 @@ export default function MapExplorerPage() {
                 <div className="absolute inset-0" onClick={() => setIsAiOpen(false)} />
                 <div className="w-full bg-[#18181b] border-t border-zinc-800 rounded-t-2xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-10 h-[80dvh] z-50">
                     <div className="flex items-center justify-between p-4 border-b border-zinc-800/50">
-                        <div className="flex items-center gap-2"><div className="p-1.5 bg-indigo-500/10 rounded-md"><Bot className="h-5 w-5 text-indigo-400" /></div><span className="font-semibold text-zinc-200">AI Copilot</span></div>
+                        <div className="flex items-center gap-2"><div className="p-1.5 bg-indigo-500/10 rounded-md"><Bot className="h-5 w-5 text-indigo-400" /></div><span className="font-semibold text-zinc-200">ជំនួយការ AI</span></div>
                         <Button variant="ghost" size="icon" onClick={() => setIsAiOpen(false)} className="h-9 w-9 rounded-full"><X className="h-5 w-5" /></Button>
                     </div>
                     <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-[#18181b] scrollbar-thin">
@@ -810,7 +840,7 @@ export default function MapExplorerPage() {
                     </div>
                     <div className="p-4 bg-[#18181b] border-t border-zinc-800/50 pb-[safe-area-inset-bottom]">
                         <form onSubmit={handleFormSubmit} className="relative group flex items-center gap-2 mb-2">
-                            <Input ref={chatInputRef} value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Type a destination..." disabled={isAiTyping} className="bg-[#09090b] border-zinc-800 h-12 text-base text-white" />
+                            <Input ref={chatInputRef} value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="វាយបញ្ចូលគោលដៅ..." disabled={isAiTyping} className="bg-[#09090b] border-zinc-800 h-12 text-base text-white" />
                             <Button type="submit" disabled={!chatInput.trim() || isAiTyping} size="icon" className="bg-[#4f46e5] hover:bg-[#4338ca] shrink-0 h-12 w-12"><Send className="h-5 w-5" /></Button>
                         </form>
                     </div>
@@ -825,7 +855,7 @@ export default function MapExplorerPage() {
               <div className="space-y-6 pb-2">
                 <SheetHeader className="text-left space-y-1">
                    <SheetTitle className="text-2xl font-bold line-clamp-2 leading-tight text-white flex items-start justify-between">
-                        {isFetchingAddress ? <Skeleton className="h-8 w-2/3 bg-zinc-800" /> : (addressDetails?.formatted || "Selected Location")}
+                        {isFetchingAddress ? <Skeleton className="h-8 w-2/3 bg-zinc-800" /> : (addressDetails?.formatted || "ទីតាំងដែលបានជ្រើសរើស")}
                    </SheetTitle>
                    <SheetDescription asChild>
                       <div className="flex items-center gap-2 text-zinc-400 text-sm">
@@ -839,7 +869,7 @@ export default function MapExplorerPage() {
                     onClick={handleStartNavigation}
                     disabled={isFetchingAddress || !userLocation.current}
                   >
-                    {userLocation.current ? <><Navigation className="h-6 w-6" /> Start Navigation</> : <><Loader2 className="h-6 w-6 animate-spin" /> Locating GPS</>}
+                    {userLocation.current ? <><Navigation className="h-6 w-6" /> ចាប់ផ្តើមនាំផ្លូវ</> : <><Loader2 className="h-6 w-6 animate-spin" /> កំពុងស្វែងរក GPS</>}
                   </Button>
                 </SheetFooter>
               </div>
