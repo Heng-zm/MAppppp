@@ -16,7 +16,7 @@ import {
   Fuel, Utensils, Coffee, Search,
   Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind,
-  ArrowRight
+  ArrowRight, Clock, History
 } from 'lucide-react';
 
 // --- FONT ---
@@ -37,7 +37,16 @@ const DEFAULT_ZOOM = 15;
 const MAP_STYLE = 'mapbox://styles/mapbox/dark-v11';
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
 
-// --- HELPERS ---
+// --- UTILS ---
+function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371; 
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return (R * c) * 1000;
+}
+
 const getTenKmBbox = (lon: number, lat: number) => {
     const radiusKm = 10;
     const latDelta = radiusKm / 111;
@@ -58,8 +67,8 @@ const mapFeaturesToResults = (features: any[], typeLabel: string): SearchResult[
     return features.map((f: any) => ({
         lng: f.center[0],
         lat: f.center[1],
-        name: f.text,
-        address: (f.properties?.address || f.place_name?.split(',').slice(1).join(',').trim()) || "ទីតាំង",
+        name: f.text_km || f.text, // Prefer Khmer Name if available
+        address: (f.properties?.address || f.place_name_km || f.place_name) || "ទីតាំង",
         type: typeLabel
     }));
 };
@@ -153,21 +162,31 @@ export default function MapExplorerPage() {
       } catch (err) { console.error("Weather fetch failed", err); }
   }, [weather]);
 
-  // --- SEARCH LOGIC (Manual & Autocomplete) ---
+  // --- IMPROVED KHMER SEARCH LOGIC ---
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
     if (!MAPBOX_TOKEN) return [];
     
+    let searchQuery = query;
     let typeLabel = "ទីកន្លែង";
-    if (query.match(/gas|fuel|station|ប្រេង|សាំង/i)) typeLabel = "ប្រេង";
-    else if (query.match(/food|restaurant|cafe|coffee|អាហារ|កាហ្វេ/i)) typeLabel = "អាហារ";
 
-    // Build URL
-    let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_TOKEN}&language=km&limit=10`;
+    // 1. Khmer Keyword Mapping (Translate intent for better API results)
+    const lowerQuery = query.toLowerCase();
+    if (lowerQuery.match(/gas|fuel|petrol|station|ប្រេង|សាំង|បូមសាំង/i)) { searchQuery = "gas station"; typeLabel = "ប្រេង"; }
+    else if (lowerQuery.match(/food|eat|hungry|restaurant|អាហារ|បាយ|ហាងបាយ/i)) { searchQuery = "restaurant"; typeLabel = "អាហារ"; }
+    else if (lowerQuery.match(/coffee|cafe|drink|កាហ្វេ|ភេសជ្ជៈ/i)) { searchQuery = "coffee"; typeLabel = "កាហ្វេ"; }
+    else if (lowerQuery.match(/hospital|clinic|doctor|ពេទ្យ|មន្ទីរពេទ្យ|គ្លីនិក/i)) { searchQuery = "hospital"; typeLabel = "សុខភាព"; }
+    else if (lowerQuery.match(/school|university|សាលា|សកលវិទ្យាល័យ/i)) { searchQuery = "school"; typeLabel = "អប់រំ"; }
+    else if (lowerQuery.match(/bank|atm|ធនាគារ|លុយ/i)) { searchQuery = "bank"; typeLabel = "ធនាគារ"; }
+
+    // 2. Build URL with Language & Country Priorities
+    let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${MAPBOX_TOKEN}`;
     
-    // Proximity (Bias towards user)
-    url += `&proximity=${center[0]},${center[1]}`;
+    // Add Parameters
+    url += `&language=km`; // Prefer Khmer results
+    url += `&country=kh`;   // Restrict to Cambodia
+    url += `&limit=10`;
+    url += `&proximity=${center[0]},${center[1]}`; // Bias towards user location
 
-    // BBox (Strict limit for categories like Gas/Food)
     if (bboxOnly) {
         const bboxString = getTenKmBbox(center[0], center[1]);
         url += `&bbox=${bboxString}`;
@@ -182,6 +201,7 @@ export default function MapExplorerPage() {
 
   const fetchRoute = async (start: [number, number], end: [number, number]) => {
       if (!MAPBOX_TOKEN) return;
+      // Add &language=km to route request
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
       try {
           const res = await fetch(url);
@@ -398,6 +418,7 @@ export default function MapExplorerPage() {
             return;
         }
         try {
+          // Add &lang=km to Reverse Geocoding
           const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=km`);
           const data = await response.json();
           if (isMounted.current) {
@@ -571,6 +592,7 @@ export default function MapExplorerPage() {
               handleCategorySearch={handleCategorySearch}
               handleAutocomplete={handleAutocomplete}
               onSelectLocation={(loc: SearchResult) => handleMapSelection(loc)}
+              userLocation={userLocation}
            />
         )}
 
@@ -691,13 +713,18 @@ NavigationHUD.displayName = "NavigationHUD";
 
 const BottomControls = memo(({ 
     isTrafficVisible, toggleTraffic, resetCompass, 
-    handleCategorySearch, handleAutocomplete, onSelectLocation 
+    handleCategorySearch, handleAutocomplete, onSelectLocation, userLocation
 }: any) => {
     const [query, setQuery] = useState("");
     const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
     const [isSearching, setIsSearching] = useState(false);
+    const [history, setHistory] = useState<SearchResult[]>([]);
 
-    // Debounce Search
+    useEffect(() => {
+        const saved = localStorage.getItem('map_history');
+        if (saved) setHistory(JSON.parse(saved));
+    }, []);
+
     useEffect(() => {
         const timeoutId = setTimeout(async () => {
             if (query.trim().length > 1) {
@@ -708,19 +735,36 @@ const BottomControls = memo(({
             } else {
                 setSuggestions([]);
             }
-        }, 300); // 300ms debounce
+        }, 300);
         return () => clearTimeout(timeoutId);
     }, [query, handleAutocomplete]);
 
     const handleSelect = (s: SearchResult) => {
         setQuery("");
         setSuggestions([]);
+        const newHistory = [s, ...history.filter(h => h.name !== s.name)].slice(0, 5);
+        setHistory(newHistory);
+        localStorage.setItem('map_history', JSON.stringify(newHistory));
         onSelectLocation(s);
+    }
+
+    const calcDist = (lat: number, lng: number) => {
+        if(!userLocation.current) return null;
+        return formatDistance(getDistanceFromLatLonInMeters(userLocation.current[1], userLocation.current[0], lat, lng));
+    }
+
+    // Helper for local dist calc (Duplicated from top to keep Component pure)
+    function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
+      const R = 6371; 
+      const dLat = (lat2 - lat1) * (Math.PI / 180);
+      const dLon = (lon2 - lon1) * (Math.PI / 180);
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return (R * c) * 1000;
     }
 
     return (
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
-            {/* Quick Actions (Traffic & Compass) */}
             <div className="flex justify-end gap-2 pointer-events-auto pb-2">
                 <Button size="icon" onClick={toggleTraffic} className={`h-12 w-12 rounded-full border shadow-xl transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/90 border-zinc-700 text-zinc-400'}`}>
                     <Layers className="h-6 w-6" />
@@ -730,9 +774,8 @@ const BottomControls = memo(({
                 </Button>
             </div>
 
-            {/* Category Chips */}
-            {suggestions.length === 0 && (
-            <div className="flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1">
+            {query.length === 0 && (
+            <div className="flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1 animate-in slide-in-from-bottom-2 duration-300">
                 <Button onClick={() => handleCategorySearch("gas station")} variant="secondary" className="rounded-full shadow-lg bg-zinc-900/95 border-zinc-800 px-5 h-10 text-sm font-medium shrink-0">
                     <Fuel className="h-4 w-4 mr-2 text-orange-500" /> ប្រេង
                 </Button>
@@ -745,39 +788,57 @@ const BottomControls = memo(({
             </div>
             )}
 
-            {/* Search Bar & Suggestions */}
-            <div className="pointer-events-auto flex flex-col gap-2 relative">
-                {/* Suggestions List */}
-                {suggestions.length > 0 && (
-                    <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-md border-zinc-800 max-h-[50vh] overflow-y-auto shadow-2xl z-30">
+            <div className="pointer-events-auto flex flex-col gap-2 relative group">
+                {(suggestions.length > 0 || (query.length === 0 && history.length > 0)) && (
+                    <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-md border-zinc-800 max-h-[50vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-200">
                         <CardContent className="p-0">
-                            {suggestions.map((s, i) => (
+                            {query.length === 0 && history.length > 0 && (
+                                <div className="border-b border-zinc-800/50">
+                                    <div className="px-3 py-2 text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Recent</div>
+                                    {history.map((s, i) => (
+                                        <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-3 hover:bg-zinc-800 cursor-pointer transition-colors flex items-center gap-3">
+                                            <div className="bg-zinc-800/50 p-2 rounded-full shrink-0"><Clock className="h-4 w-4 text-zinc-400" /></div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="text-sm font-bold text-zinc-200 truncate">{s.name}</div>
+                                                <div className="text-xs text-zinc-500 truncate">{s.address}</div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {suggestions.map((s, i) => {
+                                const dist = calcDist(s.lat, s.lng);
+                                return (
                                 <div key={i} onClick={() => handleSelect(s)} className="p-3 border-b border-zinc-800/50 hover:bg-zinc-800 cursor-pointer transition-colors flex items-center gap-3">
                                     <div className="bg-zinc-800 p-2 rounded-full shrink-0"><MapPin className="h-4 w-4 text-zinc-400" /></div>
-                                    <div className="min-w-0">
-                                        <div className="text-sm font-bold text-zinc-200 truncate">{s.name}</div>
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex justify-between items-center">
+                                            <div className="text-sm font-bold text-zinc-200 truncate pr-2">{s.name}</div>
+                                            {dist && <span className="text-[10px] font-mono bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded border border-indigo-500/20 shrink-0">{dist}</span>}
+                                        </div>
                                         <div className="text-xs text-zinc-500 truncate">{s.address}</div>
                                     </div>
-                                    <ArrowRight className="h-4 w-4 text-zinc-600 ml-auto" />
+                                    <ArrowRight className="h-4 w-4 text-zinc-600 ml-auto shrink-0" />
                                 </div>
-                            ))}
+                            )})}
                         </CardContent>
                     </Card>
                 )}
 
-                {/* Input Field */}
-                <div className="relative shadow-2xl">
+                <div className="relative shadow-2xl transition-transform active:scale-[0.99]">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-zinc-400" />
                     <input 
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
+                        onFocus={() => { if(history.length > 0) setSuggestions([]); }} 
                         placeholder="ស្វែងរកទីតាំង..." 
                         className="w-full h-14 pl-12 pr-10 rounded-full bg-[#18181b] border border-zinc-800 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base"
                     />
                     {isSearching ? (
                         <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-indigo-500 animate-spin" />
                     ) : query.length > 0 && (
-                        <button onClick={() => { setQuery(""); setSuggestions([]); }} className="absolute right-4 top-1/2 -translate-y-1/2 p-1 bg-zinc-800 rounded-full">
+                        <button onClick={() => { setQuery(""); setSuggestions([]); }} className="absolute right-4 top-1/2 -translate-y-1/2 p-1 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors">
                             <X className="h-3 w-3 text-zinc-300" />
                         </button>
                     )}
