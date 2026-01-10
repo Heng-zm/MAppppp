@@ -16,13 +16,13 @@ import {
   Fuel, Utensils, Coffee, Search,
   Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind,
-  ArrowRight, Clock, History
+  ArrowRight, Clock, History, Navigation as NavIcon
 } from 'lucide-react';
 
-// --- FONT ---
+// --- FONT CONFIG ---
 const kantumruy = Kantumruy_Pro({
   subsets: ['khmer', 'latin'], 
-  weight: ['400', '500', '700'],
+  weight: ['400', '500', '600', '700'],
   display: 'swap',
 });
 
@@ -67,7 +67,7 @@ const mapFeaturesToResults = (features: any[], typeLabel: string): SearchResult[
     return features.map((f: any) => ({
         lng: f.center[0],
         lat: f.center[1],
-        name: f.text_km || f.text, // Prefer Khmer Name if available
+        name: f.text_km || f.text, 
         address: (f.properties?.address || f.place_name_km || f.place_name) || "ទីតាំង",
         type: typeLabel
     }));
@@ -85,12 +85,12 @@ const getWeatherIcon = (condition: string) => {
 
 const ManeuverIcon = memo(({ instruction }: { instruction: string }) => {
     const text = instruction.toLowerCase();
-    const iconClass = "h-10 w-10 text-white";
+    const iconClass = "h-8 w-8 text-white";
     if (text.includes('left') || text.includes('ឆ្វេង')) return <CornerUpLeft className={iconClass} />;
     if (text.includes('right') || text.includes('ស្តាំ')) return <CornerUpRight className={iconClass} />;
     if (text.includes('straight') || text.includes('continue') || text.includes('ត្រង់')) return <ArrowUp className={iconClass} />;
     if (text.includes('uturn') || text.includes('ត្រឡប់')) return <Zap className={iconClass} />;
-    return <Navigation className={iconClass} />;
+    return <NavIcon className={iconClass} />;
 });
 ManeuverIcon.displayName = 'ManeuverIcon';
 
@@ -162,14 +162,13 @@ export default function MapExplorerPage() {
       } catch (err) { console.error("Weather fetch failed", err); }
   }, [weather]);
 
-  // --- IMPROVED KHMER SEARCH LOGIC ---
+  // --- KHMER SEARCH LOGIC ---
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
     if (!MAPBOX_TOKEN) return [];
     
     let searchQuery = query;
     let typeLabel = "ទីកន្លែង";
 
-    // 1. Khmer Keyword Mapping (Translate intent for better API results)
     const lowerQuery = query.toLowerCase();
     if (lowerQuery.match(/gas|fuel|petrol|station|ប្រេង|សាំង|បូមសាំង/i)) { searchQuery = "gas station"; typeLabel = "ប្រេង"; }
     else if (lowerQuery.match(/food|eat|hungry|restaurant|អាហារ|បាយ|ហាងបាយ/i)) { searchQuery = "restaurant"; typeLabel = "អាហារ"; }
@@ -178,14 +177,11 @@ export default function MapExplorerPage() {
     else if (lowerQuery.match(/school|university|សាលា|សកលវិទ្យាល័យ/i)) { searchQuery = "school"; typeLabel = "អប់រំ"; }
     else if (lowerQuery.match(/bank|atm|ធនាគារ|លុយ/i)) { searchQuery = "bank"; typeLabel = "ធនាគារ"; }
 
-    // 2. Build URL with Language & Country Priorities
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${MAPBOX_TOKEN}`;
-    
-    // Add Parameters
-    url += `&language=km`; // Prefer Khmer results
-    url += `&country=kh`;   // Restrict to Cambodia
+    url += `&language=km`; 
+    url += `&country=kh`;   
     url += `&limit=10`;
-    url += `&proximity=${center[0]},${center[1]}`; // Bias towards user location
+    url += `&proximity=${center[0]},${center[1]}`;
 
     if (bboxOnly) {
         const bboxString = getTenKmBbox(center[0], center[1]);
@@ -201,7 +197,6 @@ export default function MapExplorerPage() {
 
   const fetchRoute = async (start: [number, number], end: [number, number]) => {
       if (!MAPBOX_TOKEN) return;
-      // Add &language=km to route request
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
       try {
           const res = await fetch(url);
@@ -418,7 +413,6 @@ export default function MapExplorerPage() {
             return;
         }
         try {
-          // Add &lang=km to Reverse Geocoding
           const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=km`);
           const data = await response.json();
           if (isMounted.current) {
@@ -501,7 +495,6 @@ export default function MapExplorerPage() {
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
     clearSearchMarkers();
     
-    // Use BBox for categories to keep it strict
     const results = await searchPlaces(query, center, true);
 
     if (map.current && results.length > 0) {
@@ -519,12 +512,7 @@ export default function MapExplorerPage() {
             el.innerText = iconChar;
             
             const marker = new Marker(el).setLngLat([res.lng, res.lat]).addTo(map.current!);
-            
-            // Marker Click
-            el.addEventListener('click', () => {
-                 handleMapSelection({ lng: res.lng, lat: res.lat });
-            });
-
+            el.addEventListener('click', () => { handleMapSelection({ lng: res.lng, lat: res.lat }); });
             searchMarkers.current.push(marker);
             fitBounds.extend([res.lng, res.lat]);
         });
@@ -536,7 +524,6 @@ export default function MapExplorerPage() {
     }
   }
 
-  // --- AUTOCOMPLETE HANDLER ---
   const handleAutocomplete = async (query: string) => {
     if (!query.trim()) return [];
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
@@ -605,26 +592,31 @@ export default function MapExplorerPage() {
         )}
 
         <Sheet open={isDrawerOpen} onOpenChange={(open) => !open && !isNavigating.current && setIsDrawerOpen(false)}>
-          <SheetContent side="bottom" className={`rounded-t-2xl p-6 border-zinc-800 bg-zinc-950 text-white ring-1 ring-white/10 z-50 pb-[safe-area-inset-bottom] ${kantumruy.className}`}>
+          <SheetContent side="bottom" className={`rounded-t-3xl p-6 border-t border-zinc-800 bg-[#18181b]/95 backdrop-blur-xl text-white ring-1 ring-white/10 z-50 pb-[safe-area-inset-bottom] ${kantumruy.className}`}>
             {locationDetails && (
               <div className="space-y-6 pb-2">
                 <SheetHeader className="text-left space-y-1">
-                   <SheetTitle className="text-2xl font-bold line-clamp-2 leading-tight text-white flex items-start justify-between">
-                        {isFetchingAddress ? <Skeleton className="h-8 w-2/3 bg-zinc-800" /> : (addressDetails?.formatted || "ទីតាំងដែលបានជ្រើសរើស")}
-                   </SheetTitle>
-                   <SheetDescription asChild>
-                      <div className="flex items-center gap-2 text-zinc-400 text-sm">
-                        {isFetchingAddress ? <Skeleton className="h-5 w-1/3 bg-zinc-800" /> : <><MapPin className="h-4 w-4 text-zinc-500" />{locationDetails.lat.toFixed(5)}, {locationDetails.lng.toFixed(5)}</>}
-                      </div>
-                   </SheetDescription>
+                   <div className="flex items-center gap-3 mb-2">
+                       <div className="h-10 w-10 rounded-full bg-indigo-500/20 flex items-center justify-center">
+                           <MapPin className="h-5 w-5 text-indigo-400" />
+                       </div>
+                       <div className="flex-1 min-w-0">
+                           <SheetTitle className="text-xl font-bold line-clamp-1 text-white">
+                                {isFetchingAddress ? <Skeleton className="h-6 w-32 bg-zinc-800" /> : (addressDetails?.name || "ទីតាំងដែលបានជ្រើសរើស")}
+                           </SheetTitle>
+                           <SheetDescription className="text-zinc-400 text-xs line-clamp-1">
+                                {isFetchingAddress ? <Skeleton className="h-4 w-48 bg-zinc-800" /> : addressDetails?.formatted}
+                           </SheetDescription>
+                       </div>
+                   </div>
                 </SheetHeader>
                 <SheetFooter>
                   <Button 
-                    className="w-full gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white h-14 text-lg font-bold shadow-indigo-900/20 shadow-lg rounded-xl" 
+                    className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" 
                     onClick={handleStartNavigation}
                     disabled={isFetchingAddress || !userLocation.current}
                   >
-                    {userLocation.current ? <><Navigation className="h-6 w-6" /> ចាប់ផ្តើមនាំផ្លូវ</> : <><Loader2 className="h-6 w-6 animate-spin" /> កំពុងស្វែងរក GPS</>}
+                    {userLocation.current ? <><Navigation className="h-5 w-5" /> ចាប់ផ្តើមនាំផ្លូវ</> : <><Loader2 className="h-5 w-5 animate-spin" /> កំពុងស្វែងរក GPS</>}
                   </Button>
                 </SheetFooter>
               </div>
@@ -643,7 +635,7 @@ const WeatherWidget = memo(({ weather, isNavigating }: { weather: WeatherData | 
     if (isNavigating || !weather) return null;
     return (
         <div className="absolute top-4 left-4 z-20 pointer-events-none">
-            <div className="bg-[#18181b]/90 backdrop-blur-md border border-zinc-800 rounded-full px-3 py-1.5 flex items-center gap-2 shadow-xl animate-in fade-in zoom-in-95">
+            <div className="bg-[#18181b]/80 backdrop-blur-xl border border-white/10 rounded-full px-3 py-1.5 flex items-center gap-2 shadow-2xl animate-in fade-in zoom-in-95">
                 {getWeatherIcon(weather.condition)}
                 <div className="flex flex-col">
                     <span className="text-sm font-bold text-white leading-none">{weather.temp}°</span>
@@ -659,49 +651,44 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, weather, curren
     return (
         <>
         <div className="absolute top-0 left-0 right-0 z-30 pt-2 px-2 pointer-events-none pb-[safe-area-inset-top]">
-            <Card className="w-full max-w-md mx-auto shadow-2xl bg-[#18181b]/95 backdrop-blur-xl border-zinc-800 text-white pointer-events-auto rounded-xl ring-1 ring-white/10 overflow-hidden">
-                <CardContent className="p-0">
-                    <div className="flex items-center p-3 gap-3">
-                        <div className="bg-green-600 h-12 w-12 rounded-lg flex items-center justify-center shadow-lg shrink-0">
-                            <ManeuverIcon instruction={routeDetails.instruction} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                            <div className="text-xl font-bold leading-tight break-words">{routeDetails.instruction}</div>
-                        </div>
-                        <Button variant="ghost" size="icon" onClick={() => setIsMuted(!isMuted)} className="h-10 w-10 rounded-full bg-zinc-800/50 hover:bg-zinc-700">
-                            {isMuted ? <VolumeX className="h-5 w-5 text-zinc-400" /> : <Volume2 className="h-5 w-5 text-green-400" />}
-                        </Button>
+            <div className="w-full max-w-md mx-auto shadow-2xl bg-[#18181b] border-b-4 border-emerald-500 rounded-xl overflow-hidden pointer-events-auto ring-1 ring-white/10">
+                <div className="flex items-center p-4 gap-4">
+                    <div className="bg-emerald-600 h-14 w-14 rounded-lg flex items-center justify-center shadow-lg shrink-0">
+                        <ManeuverIcon instruction={routeDetails.instruction} />
                     </div>
-                </CardContent>
-            </Card>
+                    <div className="flex-1 min-w-0">
+                        <div className="text-2xl font-bold leading-tight break-words text-white">{routeDetails.instruction}</div>
+                    </div>
+                    <Button variant="ghost" size="icon" onClick={() => setIsMuted(!isMuted)} className="h-10 w-10 rounded-full bg-zinc-800/50 hover:bg-zinc-700">
+                        {isMuted ? <VolumeX className="h-5 w-5 text-zinc-400" /> : <Volume2 className="h-5 w-5 text-emerald-400" />}
+                    </Button>
+                </div>
+            </div>
         </div>
 
         <div className="absolute bottom-0 left-0 right-0 z-30 pb-[safe-area-inset-bottom]">
-            <div className="bg-[#18181b]/95 backdrop-blur-md border-t border-zinc-800 p-4 flex items-center justify-between">
+            <div className="bg-[#18181b]/95 backdrop-blur-xl border-t border-zinc-800 p-5 flex items-center justify-between shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
                 <div className="flex flex-col gap-1">
-                    <div className="flex items-center gap-3">
-                        <span className="text-3xl font-bold text-green-400 leading-none">{formatDuration(routeDetails.duration)}</span>
-                        {weather && (
-                            <div className="flex items-center gap-1 bg-zinc-800 px-2 py-0.5 rounded-full border border-zinc-700">
-                                {getWeatherIcon(weather.condition)}
-                                <span className="text-xs text-zinc-300">{weather.temp}°</span>
-                            </div>
-                        )}
+                    <div className="flex items-baseline gap-2">
+                        <span className="text-4xl font-bold text-emerald-400 leading-none tracking-tight">{formatDuration(routeDetails.duration)}</span>
+                        <span className="text-sm text-zinc-400 font-medium">remaining</span>
                     </div>
                     <div className="flex items-center gap-2 text-zinc-400 text-sm font-medium">
-                        <span>{formatDistance(routeDetails.distance)}</span>
-                        <span>•</span>
+                        <span className="text-white">{formatDistance(routeDetails.distance)}</span>
+                        <span className="w-1 h-1 rounded-full bg-zinc-600"></span>
                         <span>{routeDetails.arrivalTime}</span>
                     </div>
                 </div>
                 
-                <div className="flex items-center gap-3">
-                        <div className="flex flex-col items-center justify-center bg-zinc-800/50 h-12 w-12 rounded-xl border border-zinc-700/50">
-                            <span className="text-lg font-bold text-white leading-none">{currentSpeed}</span>
-                            <span className="text-[9px] text-zinc-500 font-bold uppercase">km/h</span>
-                    </div>
-                    <Button size="lg" onClick={onClearRoute} className="h-12 px-6 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-lg shadow-red-900/20">
-                        ចាកចេញ
+                <div className="flex items-center gap-4">
+                        <div className="flex flex-col items-center justify-center bg-zinc-900 h-14 w-14 rounded-full border-2 border-zinc-700 ring-2 ring-black/50 shadow-inner relative">
+                            <span className="text-xl font-bold text-white leading-none z-10">{currentSpeed}</span>
+                            <span className="text-[8px] text-zinc-500 font-bold uppercase z-10 mt-0.5">km/h</span>
+                            {/* Circular Progress (Visual only) */}
+                            <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none"><circle cx="28" cy="28" r="26" fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="163" strokeDashoffset={163 - (Math.min(currentSpeed, 120)/120)*163} className="transition-all duration-500" /></svg>
+                        </div>
+                    <Button size="icon" onClick={onClearRoute} className="h-12 w-12 rounded-full bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 shadow-lg">
+                        <X className="h-6 w-6" />
                     </Button>
                 </div>
             </div>
@@ -753,7 +740,7 @@ const BottomControls = memo(({
         return formatDistance(getDistanceFromLatLonInMeters(userLocation.current[1], userLocation.current[0], lat, lng));
     }
 
-    // Helper for local dist calc (Duplicated from top to keep Component pure)
+    // Helper for local dist calc
     function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
       const R = 6371; 
       const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -765,41 +752,42 @@ const BottomControls = memo(({
 
     return (
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
-            <div className="flex justify-end gap-2 pointer-events-auto pb-2">
-                <Button size="icon" onClick={toggleTraffic} className={`h-12 w-12 rounded-full border shadow-xl transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/90 border-zinc-700 text-zinc-400'}`}>
-                    <Layers className="h-6 w-6" />
+            {/* Quick Actions (Traffic & Compass) */}
+            <div className="flex justify-end gap-3 pointer-events-auto pb-2">
+                <Button size="icon" onClick={toggleTraffic} className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
+                    <Layers className="h-5 w-5" />
                 </Button>
-                <Button size="icon" className="h-12 w-12 rounded-full bg-zinc-900/90 border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass}>
-                    <Compass className="h-6 w-6" />
+                <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass}>
+                    <Compass className="h-5 w-5" />
                 </Button>
             </div>
 
-            {query.length === 0 && (
-            <div className="flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1 animate-in slide-in-from-bottom-2 duration-300">
-                <Button onClick={() => handleCategorySearch("gas station")} variant="secondary" className="rounded-full shadow-lg bg-zinc-900/95 border-zinc-800 px-5 h-10 text-sm font-medium shrink-0">
-                    <Fuel className="h-4 w-4 mr-2 text-orange-500" /> ប្រេង
+            {/* Category Chips - Slide away on search */}
+            <div className={`flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1 transition-all duration-300 ease-out ${query.length > 0 ? 'opacity-0 translate-y-4 pointer-events-none h-0' : 'opacity-100 translate-y-0 h-10'}`}>
+                <Button onClick={() => handleCategorySearch("gas station")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
+                    <Fuel className="h-3.5 w-3.5 mr-2 text-orange-400" /> ប្រេង
                 </Button>
-                <Button onClick={() => handleCategorySearch("restaurant")} variant="secondary" className="rounded-full shadow-lg bg-zinc-900/95 border-zinc-800 px-5 h-10 text-sm font-medium shrink-0">
-                    <Utensils className="h-4 w-4 mr-2 text-rose-500" /> អាហារ
+                <Button onClick={() => handleCategorySearch("restaurant")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
+                    <Utensils className="h-3.5 w-3.5 mr-2 text-rose-400" /> អាហារ
                 </Button>
-                <Button onClick={() => handleCategorySearch("coffee")} variant="secondary" className="rounded-full shadow-lg bg-zinc-900/95 border-zinc-800 px-5 h-10 text-sm font-medium shrink-0">
-                    <Coffee className="h-4 w-4 mr-2 text-amber-500" /> កាហ្វេ
+                <Button onClick={() => handleCategorySearch("coffee")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
+                    <Coffee className="h-3.5 w-3.5 mr-2 text-amber-400" /> កាហ្វេ
                 </Button>
             </div>
-            )}
 
+            {/* Search Bar & Suggestions */}
             <div className="pointer-events-auto flex flex-col gap-2 relative group">
                 {(suggestions.length > 0 || (query.length === 0 && history.length > 0)) && (
-                    <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-md border-zinc-800 max-h-[50vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-200">
+                    <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[45vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
                         <CardContent className="p-0">
                             {query.length === 0 && history.length > 0 && (
-                                <div className="border-b border-zinc-800/50">
-                                    <div className="px-3 py-2 text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Recent</div>
+                                <div className="border-b border-white/5">
+                                    <div className="px-4 py-2.5 text-[10px] uppercase font-bold text-zinc-500 tracking-wider flex items-center gap-1 bg-zinc-900/50 sticky top-0 backdrop-blur-md z-10"><History className="h-3 w-3" /> Recent</div>
                                     {history.map((s, i) => (
-                                        <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-3 hover:bg-zinc-800 cursor-pointer transition-colors flex items-center gap-3">
-                                            <div className="bg-zinc-800/50 p-2 rounded-full shrink-0"><Clock className="h-4 w-4 text-zinc-400" /></div>
+                                        <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-3.5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group">
+                                            <div className="bg-zinc-800/50 p-2 rounded-full shrink-0 group-hover:bg-zinc-700 transition-colors"><Clock className="h-4 w-4 text-zinc-400" /></div>
                                             <div className="min-w-0 flex-1">
-                                                <div className="text-sm font-bold text-zinc-200 truncate">{s.name}</div>
+                                                <div className="text-sm font-medium text-zinc-200 truncate">{s.name}</div>
                                                 <div className="text-xs text-zinc-500 truncate">{s.address}</div>
                                             </div>
                                         </div>
@@ -810,36 +798,36 @@ const BottomControls = memo(({
                             {suggestions.map((s, i) => {
                                 const dist = calcDist(s.lat, s.lng);
                                 return (
-                                <div key={i} onClick={() => handleSelect(s)} className="p-3 border-b border-zinc-800/50 hover:bg-zinc-800 cursor-pointer transition-colors flex items-center gap-3">
-                                    <div className="bg-zinc-800 p-2 rounded-full shrink-0"><MapPin className="h-4 w-4 text-zinc-400" /></div>
+                                <div key={i} onClick={() => handleSelect(s)} className="p-3.5 border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group last:border-0">
+                                    <div className="bg-zinc-800/80 p-2 rounded-full shrink-0 group-hover:bg-indigo-500/20 transition-colors"><MapPin className="h-4 w-4 text-zinc-400 group-hover:text-indigo-400" /></div>
                                     <div className="min-w-0 flex-1">
-                                        <div className="flex justify-between items-center">
-                                            <div className="text-sm font-bold text-zinc-200 truncate pr-2">{s.name}</div>
-                                            {dist && <span className="text-[10px] font-mono bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded border border-indigo-500/20 shrink-0">{dist}</span>}
+                                        <div className="flex justify-between items-center mb-0.5">
+                                            <div className="text-sm font-semibold text-zinc-200 truncate pr-2">{s.name}</div>
+                                            {dist && <span className="text-[10px] font-bold bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-md border border-indigo-500/20 shrink-0">{dist}</span>}
                                         </div>
                                         <div className="text-xs text-zinc-500 truncate">{s.address}</div>
                                     </div>
-                                    <ArrowRight className="h-4 w-4 text-zinc-600 ml-auto shrink-0" />
+                                    <ArrowRight className="h-4 w-4 text-zinc-600 ml-auto shrink-0 group-hover:text-zinc-400" />
                                 </div>
                             )})}
                         </CardContent>
                     </Card>
                 )}
 
-                <div className="relative shadow-2xl transition-transform active:scale-[0.99]">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-zinc-400" />
+                <div className="relative shadow-2xl transition-all duration-300 ease-out active:scale-[0.99]">
+                    <Search className={`absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 transition-colors ${isSearching ? 'text-indigo-400' : 'text-zinc-400'}`} />
                     <input 
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         onFocus={() => { if(history.length > 0) setSuggestions([]); }} 
                         placeholder="ស្វែងរកទីតាំង..." 
-                        className="w-full h-14 pl-12 pr-10 rounded-full bg-[#18181b] border border-zinc-800 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base"
+                        className="w-full h-14 pl-12 pr-12 rounded-full bg-[#18181b]/90 backdrop-blur-md border border-white/10 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]"
                     />
                     {isSearching ? (
                         <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-indigo-500 animate-spin" />
                     ) : query.length > 0 && (
-                        <button onClick={() => { setQuery(""); setSuggestions([]); }} className="absolute right-4 top-1/2 -translate-y-1/2 p-1 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors">
-                            <X className="h-3 w-3 text-zinc-300" />
+                        <button onClick={() => { setQuery(""); setSuggestions([]); }} className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors text-zinc-400 hover:text-white">
+                            <X className="h-3.5 w-3.5" />
                         </button>
                     )}
                 </div>

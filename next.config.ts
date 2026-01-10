@@ -1,4 +1,4 @@
-import type {NextConfig} from 'next';
+import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   /* config options here */
@@ -27,7 +27,13 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_GEOAPIFY_API_KEY: '8f2ab2d784bc4371bb0cb2c3bd0361a4',
   },
-  allowedDevOrigins: ['*'],
+  experimental: {
+    allowedDevOrigins: [
+      'localhost:9002',
+      // This allows the cloud environment to connect to Next.js HMR
+      '9002-firebase-studio-1753343822984.cluster-iktsryn7xnhpexlu6255bftka4.cloudworkstations.dev',
+    ],
+  },
 };
 
 export default nextConfig;
