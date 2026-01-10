@@ -10,7 +10,6 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFo
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { 
   X, MapPin, Navigation, LocateFixed, 
   Volume2, VolumeX, Compass, Loader2, AlertTriangle, 
@@ -350,7 +349,7 @@ export default function MapExplorerPage() {
     }
   }, [fetchWeather]);
 
-  const clearAiMarkers = useCallback(() => {
+  const clearSearchMarkers = useCallback(() => {
       searchMarkers.current.forEach(m => m.remove());
       searchMarkers.current = [];
   }, []);
@@ -367,13 +366,13 @@ export default function MapExplorerPage() {
       if (map.current.getSource('custom-route-source')) map.current.removeSource('custom-route-source');
       
       if (destinationMarker.current) destinationMarker.current.remove();
-      clearAiMarkers();
+      clearSearchMarkers();
 
       destinationMarker.current = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current);
       setLocationDetails(lngLat);
       setIsDrawerOpen(true);
       map.current.flyTo({ center: lngLat, zoom: 16, offset: [0, 150], essential: true });
-  }, [clearAiMarkers]);
+  }, [clearSearchMarkers]);
 
   useEffect(() => {
     const handleNavEvent = (e: any) => { if(e.detail) handleMapSelection(e.detail); }
@@ -465,7 +464,7 @@ export default function MapExplorerPage() {
     layers.forEach(l => { if(map.current?.getLayer(l)) map.current?.removeLayer(l); });
     if (map.current?.getSource('custom-route-source')) map.current.removeSource('custom-route-source');
 
-    clearAiMarkers();
+    clearSearchMarkers();
     setRouteDetails(null);
     setLocationDetails(null);
     setIsDrawerOpen(false);
@@ -474,12 +473,12 @@ export default function MapExplorerPage() {
     if(map.current && userLocation.current) {
         map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1500 });
     }
-  }, [clearAiMarkers]);
+  }, [clearSearchMarkers]);
 
   // --- TRIGGER CATEGORY SEARCH (Buttons) ---
   const handleCategorySearch = async (query: string) => {
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
-    clearAiMarkers();
+    clearSearchMarkers();
     
     // Use BBox for categories to keep it strict
     const results = await searchPlaces(query, center, true);
@@ -520,7 +519,6 @@ export default function MapExplorerPage() {
   const handleAutocomplete = async (query: string) => {
     if (!query.trim()) return [];
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
-    // Use AbortController inside component state if needed, but for simplicity here we rely on fetch logic
     return await searchPlaces(query, center, false); 
   }
 
