@@ -335,15 +335,27 @@ export default function MapExplorerPage() {
           puckMarker.current.setRotation(heading);
       }
 
-      if (isNavigating.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
-             const targetZoom = Math.max(15, 20 - (speedKmh / 50));
-             const targetPitch = Math.min(75, 45 + (speedKmh / 3));
-             mapInstance.easeTo({
-                 center: [pos.longitude, pos.latitude], bearing: heading,
-                 zoom: targetZoom, pitch: targetPitch,
-                 padding: { top: 0, bottom: 300, left: 0, right: 0 }, 
-                 duration: 2000, easing: (t) => t
-             });
+      // --- TURN-FOLLOWING CAMERA LOGIC ---
+      if (!userIsInteracting.current && !showRecenterBtnRef.current) {
+             const isMoving = speedKmh > 3; // Jitter protection
+             
+             if (isNavigating.current) {
+                 mapInstance.easeTo({
+                     center: [pos.longitude, pos.latitude],
+                     bearing: isMoving ? heading : mapInstance.getBearing(), // Rotate map left/right
+                     pitch: 60,
+                     zoom: 18,
+                     padding: { top: 0, bottom: 200, left: 0, right: 0 }, 
+                     duration: 1000,
+                     easing: (t) => t
+                 });
+             } else {
+                 // Idle Mode: Just follow pos, don't rotate forcefully unless desired
+                 mapInstance.easeTo({
+                     center: [pos.longitude, pos.latitude],
+                     duration: 1000
+                 });
+             }
       }
     });
     

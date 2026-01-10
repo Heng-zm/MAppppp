@@ -58,16 +58,12 @@
   }
 
   * {
-    border-color: hsl(var(--border));
-    border-style: solid;
-    border-width: 0;
+    @apply border-border;
   }
   
   body {
-    background-color: hsl(var(--background));
-    color: hsl(var(--foreground));
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
 
@@ -78,10 +74,12 @@ html {
   overflow: hidden;
   touch-action: none; 
   -webkit-tap-highlight-color: transparent;
+  /* Prevent bounce effect on iOS */
+  position: fixed; 
 }
 
 body, #__next {
-  height: 100dvh; 
+  height: 100dvh; /* Dynamic Viewport Height for mobile browsers */
   width: 100%;
   padding: 0;
   margin: 0;
@@ -99,12 +97,12 @@ body, #__next {
 }
 
 /* --- MAPBOX UI CLEANUP --- */
-/* Hide Mapbox Logo & Attribution for cleaner "App" look (Optional) */
+/* Hide Mapbox Logo & Attribution for cleaner "App" look (Optional - check license) */
 .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib {
   display: none !important;
 }
 
-/* --- DIRECTIONS PLUGIN OVERRIDES --- */
+/* --- DIRECTIONS PLUGIN OVERRIDES (If installed) --- */
 .mapbox-directions-destination,
 .mapbox-directions-origin,
 .mapbox-directions-step {
