@@ -1,15 +1,21 @@
 'use client';
 
+// ==========================================
+// 1. IMPORTS
+// ==========================================
 import React, { useRef, useEffect, useState, useCallback, memo } from 'react';
 import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap } from 'mapbox-gl';
 import { Kantumruy_Pro } from 'next/font/google'; 
 import 'mapbox-gl/dist/mapbox-gl.css';
 
+// UI Components
 import { useToast } from "@/hooks/use-toast";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
+
+// Icons
 import { 
   X, MapPin, Navigation, LocateFixed, 
   Volume2, VolumeX, Compass, Loader2, AlertTriangle, 
@@ -17,28 +23,32 @@ import {
   Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind,
   ArrowRight, Clock, History, Navigation as NavIcon,
-  Crosshair
+  Crosshair, Store, GraduationCap, Banknote,
+  ChevronDown, ChevronUp, Trash2
 } from 'lucide-react';
 
-// --- FONT CONFIG ---
+// ==========================================
+// 2. CONFIG & HELPERS
+// ==========================================
+
 const kantumruy = Kantumruy_Pro({
   subsets: ['khmer', 'latin'], 
   weight: ['400', '500', '600', '700'],
   display: 'swap',
 });
 
-// --- CONFIG ---
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const WEATHER_API_KEY = process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY;
 
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
-const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; 
+const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const MAP_STYLE = 'mapbox://styles/mapbox/dark-v11';
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
 
 // --- UTILS ---
+
 function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371; 
   const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -50,13 +60,6 @@ function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number,
 
 const lerp = (start: number, end: number, amt: number) => (1 - amt) * start + amt * end;
 
-const getTenKmBbox = (lon: number, lat: number) => {
-    const radiusKm = 10;
-    const latDelta = radiusKm / 111;
-    const lonDelta = radiusKm / (111 * Math.cos(lat * (Math.PI / 180)));
-    return `${lon - lonDelta},${lat - latDelta},${lon + lonDelta},${lat + latDelta}`;
-};
-
 const formatDistance = (d: number) => d > 1000 ? `${(d / 1000).toFixed(1)} គ.ម` : `${d.toFixed(0)} ម៉ែត្រ`;
 
 const formatDuration = (s: number) => { 
@@ -64,16 +67,37 @@ const formatDuration = (s: number) => {
     return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`; 
 };
 
+// Component to highlight matching text in search results
+const HighlightMatch = ({ text, match }: { text: string, match: string }) => {
+    if (!match) return <span>{text}</span>;
+    const parts = text.split(new RegExp(`(${match})`, 'gi'));
+    return (
+        <span>
+            {parts.map((part, i) => 
+                part.toLowerCase() === match.toLowerCase() ? <span key={i} className="text-indigo-400 font-bold">{part}</span> : part
+            )}
+        </span>
+    );
+};
+
 type SearchResult = { lng: number, lat: number, name: string, type: string, address: string };
 
-const mapFeaturesToResults = (features: any[], typeLabel: string): SearchResult[] => {
-    return features.map((f: any) => ({
-        lng: f.center[0],
-        lat: f.center[1],
-        name: f.text_km || f.text, 
-        address: (f.properties?.address || f.place_name_km || f.place_name) || "ទីតាំង",
-        type: typeLabel
-    }));
+const mapFeaturesToResults = (features: any[]): SearchResult[] => {
+    return features.map((f: any) => {
+        // Smart Name: Prefer Khmer
+        const name = f.text_km || f.text;
+        // Clean Address: Remove redundant "Cambodia"
+        const rawAddress = (f.properties?.address || f.place_name_km || f.place_name) || "";
+        const cleanAddress = rawAddress.replace(", Cambodia", "").replace(", កម្ពុជា", "");
+
+        return {
+            lng: f.center[0],
+            lat: f.center[1],
+            name: name, 
+            address: cleanAddress,
+            type: f.properties?.category || "general"
+        }
+    });
 };
 
 const getWeatherIcon = (condition: string) => {
@@ -97,24 +121,23 @@ const ManeuverIcon = memo(({ instruction }: { instruction: string }) => {
 });
 ManeuverIcon.displayName = 'ManeuverIcon';
 
-// --- TYPES ---
 type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; };
 
 // ==========================================
-// MAIN COMPONENT
+// 3. MAIN COMPONENT
 // ==========================================
 export default function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapboxMap | null>(null);
   const geolocateControl = useRef<GeolocateControl | null>(null);
+  
   const destinationMarker = useRef<Marker | null>(null);
   const puckMarker = useRef<Marker | null>(null);
   const puckElement = useRef<HTMLDivElement | null>(null);
   const searchMarkers = useRef<Marker[]>([]);
-  const userLocation = useRef<[number, number] | null>(null);
   
-  // Logic Refs
+  const userLocation = useRef<[number, number] | null>(null);
   const isNavigating = useRef<boolean>(false);
   const userIsInteracting = useRef<boolean>(false); 
   const isMounted = useRef<boolean>(false);
@@ -122,14 +145,12 @@ export default function MapExplorerPage() {
   const lastSpokenInstruction = useRef<string>("");
   const lastWeatherFetchTime = useRef<number>(0);
 
-  // Animation Refs
   const currentPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const currentHeading = useRef<number>(0);
   const targetHeading = useRef<number>(0);
   const animationFrameId = useRef<number>(0);
 
-  // UI State
   const { toast } = useToast();
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
@@ -143,10 +164,8 @@ export default function MapExplorerPage() {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
 
-  // Sync State with Refs
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
 
-  // --- AUDIO FEEDBACK ---
   const speak = useCallback((text: string) => {
     if (typeof window === 'undefined' || isMuted || !window.speechSynthesis) return;
     window.speechSynthesis.cancel(); 
@@ -158,7 +177,6 @@ export default function MapExplorerPage() {
     window.speechSynthesis.speak(utterance);
   }, [isMuted]);
 
-  // --- WEATHER ---
   const fetchWeather = useCallback(async (lat: number, lon: number) => {
       const now = Date.now();
       if (!WEATHER_API_KEY || (now - lastWeatherFetchTime.current < WEATHER_REFRESH_RATE && weather)) return;
@@ -176,43 +194,48 @@ export default function MapExplorerPage() {
       } catch (err) { console.error("Weather error", err); }
   }, [weather]);
 
-  // --- SEARCH ---
+  // --- POWERFUL SEARCH FUNCTION ---
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
     if (!MAPBOX_TOKEN) return [];
     
+    // 1. Keyword Mapping
     let searchQuery = query;
-    let typeLabel = "ទីកន្លែង";
-
     const lowerQuery = query.toLowerCase();
-    if (lowerQuery.match(/gas|fuel|petrol|station|ប្រេង|សាំង|បូមសាំង/i)) { searchQuery = "gas station"; typeLabel = "ប្រេង"; }
-    else if (lowerQuery.match(/food|eat|hungry|restaurant|អាហារ|បាយ|ហាងបាយ/i)) { searchQuery = "restaurant"; typeLabel = "អាហារ"; }
-    else if (lowerQuery.match(/coffee|cafe|drink|កាហ្វេ|ភេសជ្ជៈ/i)) { searchQuery = "coffee"; typeLabel = "កាហ្វេ"; }
-    else if (lowerQuery.match(/hospital|clinic|doctor|ពេទ្យ|មន្ទីរពេទ្យ|គ្លីនិក/i)) { searchQuery = "hospital"; typeLabel = "សុខភាព"; }
-    else if (lowerQuery.match(/school|university|សាលា|សកលវិទ្យាល័យ/i)) { searchQuery = "school"; typeLabel = "អប់រំ"; }
-    else if (lowerQuery.match(/bank|atm|ធនាគារ|លុយ/i)) { searchQuery = "bank"; typeLabel = "ធនាគារ"; }
 
+    if (lowerQuery.match(/gas|fuel|station|ប្រេង|សាំង|បូមសាំង/i)) searchQuery = "gas station";
+    else if (lowerQuery.match(/food|eat|restaurant|អាហារ|បាយ|ហាងបាយ/i)) searchQuery = "restaurant";
+    else if (lowerQuery.match(/coffee|cafe|drink|កាហ្វេ|ភេសជ្ជៈ/i)) searchQuery = "coffee";
+    else if (lowerQuery.match(/hospital|clinic|doctor|ពេទ្យ|មន្ទីរពេទ្យ|គ្លីនិក/i)) searchQuery = "hospital";
+    else if (lowerQuery.match(/school|university|សាលា|សកលវិទ្យាល័យ/i)) searchQuery = "school";
+    else if (lowerQuery.match(/bank|atm|ធនាគារ|លុយ/i)) searchQuery = "bank";
+
+    // 2. Build URL with Khmer optimization
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${MAPBOX_TOKEN}`;
-    url += `&language=km`; 
+    url += `&language=km,en`; // Prefer Khmer, fallback English
     url += `&country=kh`;   
+    url += `&types=poi,address,place`; // Filter noise
     url += `&limit=10`;
+    url += `&fuzzyMatch=true`; // Handle typos
     url += `&proximity=${center[0]},${center[1]}`;
 
     if (bboxOnly) {
-        const bboxString = getTenKmBbox(center[0], center[1]);
-        url += `&bbox=${bboxString}`;
+        const radiusKm = 15; 
+        const latDelta = radiusKm / 111;
+        const lonDelta = radiusKm / (111 * Math.cos(center[1] * (Math.PI / 180)));
+        const bbox = `${center[0] - lonDelta},${center[1] - latDelta},${center[0] + lonDelta},${center[1] + latDelta}`;
+        url += `&bbox=${bbox}`;
     }
 
     try {
         const res = await fetch(url, { signal });
         const data = await res.json();
-        return mapFeaturesToResults(data.features || [], typeLabel);
+        return mapFeaturesToResults(data.features || []);
     } catch (err: any) {
         if (err.name !== 'AbortError') console.error(err);
         return []; 
     }
   };
 
-  // --- ROUTING ---
   const fetchRoute = async (start: [number, number], end: [number, number]) => {
       if (!MAPBOX_TOKEN) return;
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
@@ -240,7 +263,6 @@ export default function MapExplorerPage() {
       } catch (error) { console.error("Fetch Error:", error); }
   };
 
-  // --- LAYERS ---
   const add3DBuildings = (instance: MapboxMap) => {
     if (instance.getLayer('3d-buildings')) return;
     const layers = instance.getStyle().layers;
@@ -260,8 +282,6 @@ export default function MapExplorerPage() {
   const addTrafficLayer = (instance: MapboxMap) => {
       if (instance.getSource('mapbox-traffic')) return;
       instance.addSource('mapbox-traffic', { type: 'vector', url: 'mapbox://mapbox.mapbox-traffic-v1' });
-      const layers = instance.getStyle().layers;
-      const roadLabelId = layers?.find((layer) => layer.type === 'symbol' && layer.source === 'composite')?.id;
       instance.addLayer({
           'id': 'traffic', 'type': 'line', 'source': 'mapbox-traffic', 'source-layer': 'traffic', 'minzoom': 12,
           'layout': { 'line-join': 'round', 'line-cap': 'round' },
@@ -277,14 +297,12 @@ export default function MapExplorerPage() {
               ],
               'line-opacity': 0.8
           }
-      }, roadLabelId);
+      });
   };
 
   const drawBlueRoute = (instance: MapboxMap, geojson: any) => {
       if (!geojson || !geojson.geometry) return;
-      const layers = instance.getStyle().layers;
-      const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
-
+      
       if (instance.getSource('custom-route-source')) {
           (instance.getSource('custom-route-source') as mapboxgl.GeoJSONSource).setData(geojson);
       } else {
@@ -293,21 +311,26 @@ export default function MapExplorerPage() {
               id: 'custom-route-casing', type: 'line', source: 'custom-route-source',
               layout: { 'line-join': 'round', 'line-cap': 'round' },
               paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 }
-          }, labelLayerId); 
+          }); 
           instance.addLayer({
               id: 'custom-route-core', type: 'line', source: 'custom-route-source',
               layout: { 'line-join': 'round', 'line-cap': 'round' },
               paint: { 'line-color': '#4285F4', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 4, 18, 14 ], 'line-opacity': 1 }
-          }, labelLayerId);
+          });
       }
   };
 
-  // --- ANIMATION LOOP ---
+  const removeRouteLayers = (instance: MapboxMap) => {
+      if(instance.getLayer('custom-route-core')) instance.removeLayer('custom-route-core');
+      if(instance.getLayer('custom-route-casing')) instance.removeLayer('custom-route-casing');
+      if(instance.getSource('custom-route-source')) instance.removeSource('custom-route-source');
+  };
+
   const animatePuck = () => {
       if (!puckMarker.current || !isMounted.current) return;
 
-      const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.1);
-      const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.1);
+      const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
+      const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
       const newHeading = lerp(currentHeading.current, targetHeading.current, 0.1);
 
       currentPuckPos.current = [newLng, newLat];
@@ -321,22 +344,30 @@ export default function MapExplorerPage() {
               center: [newLng, newLat],
               bearing: newHeading, 
               duration: 0, 
-              padding: { top: 0, bottom: 200, left: 0, right: 0 }
+              padding: { top: 0, bottom: 200, left: 0, right: 0 } 
           });
       }
 
       animationFrameId.current = requestAnimationFrame(animatePuck);
   };
 
-  // --- MAP INIT ---
+  // --- MAP INITIALIZATION ---
   useEffect(() => {
     isMounted.current = true;
     if (!MAPBOX_TOKEN || !mapContainer.current || map.current) return;
 
     const mapInstance = new mapboxgl.Map({
-      container: mapContainer.current, style: MAP_STYLE, center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, 
-      pitch: 45, bearing: 0, attributionControl: false, antialias: true, logoPosition: 'bottom-left', 
-      cooperativeGestures: true, maxPitch: 85,
+      container: mapContainer.current, 
+      style: MAP_STYLE, 
+      center: DEFAULT_CENTER, 
+      zoom: DEFAULT_ZOOM, 
+      pitch: 45, 
+      bearing: 0, 
+      attributionControl: false, 
+      antialias: true, 
+      logoPosition: 'bottom-left', 
+      cooperativeGestures: false, 
+      maxPitch: 85,
     });
     map.current = mapInstance;
     mapInstance.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
@@ -352,7 +383,7 @@ export default function MapExplorerPage() {
     mapInstance.addControl(geolocate, 'top-right');
 
     const el = document.createElement('div');
-    el.className = 'navigation-puck';
+    el.className = 'navigation-puck'; 
     el.style.display = 'none'; 
     puckElement.current = el;
     puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
@@ -361,10 +392,10 @@ export default function MapExplorerPage() {
     mapInstance.on('load', () => {
         if (!isMounted.current) return;
         setIsMapLoaded(true); 
-        geolocate.trigger();
+        geolocate.trigger(); 
         add3DBuildings(mapInstance);
         addTrafficLayer(mapInstance); 
-        animatePuck();
+        animatePuck(); 
     });
 
     geolocate.on('geolocate', (e: any) => {
@@ -373,7 +404,7 @@ export default function MapExplorerPage() {
       const heading = pos.heading || 0;
       const speedKmh = pos.speed ? Math.round(pos.speed * 3.6) : 0;
       
-      setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev));
+      setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); 
       userLocation.current = [pos.longitude, pos.latitude];
       
       if (puckElement.current) puckElement.current.style.display = 'block';
@@ -421,9 +452,7 @@ export default function MapExplorerPage() {
       lastSpokenInstruction.current = ""; 
       userIsInteracting.current = false;
       
-      const layers = ['custom-route-core', 'custom-route-casing'];
-      layers.forEach(l => { if(map.current?.getLayer(l)) map.current?.removeLayer(l); });
-      if (map.current.getSource('custom-route-source')) map.current.removeSource('custom-route-source');
+      removeRouteLayers(map.current);
       
       if (destinationMarker.current) destinationMarker.current.remove();
       destinationMarker.current = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current);
@@ -549,10 +578,7 @@ export default function MapExplorerPage() {
     mapContainer.current?.classList.remove('nav-mode');
     
     if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; }
-    
-    const layers = ['custom-route-core', 'custom-route-casing'];
-    layers.forEach(l => { if(map.current?.getLayer(l)) map.current?.removeLayer(l); });
-    if (map.current?.getSource('custom-route-source')) map.current.removeSource('custom-route-source');
+    if(map.current) removeRouteLayers(map.current);
 
     clearSearchMarkers();
     setRouteDetails(null);
@@ -578,9 +604,14 @@ export default function MapExplorerPage() {
         results.forEach(res => {
             const el = document.createElement('div');
             let bgClass = "bg-indigo-500", iconChar = "P";
-            if (res.type === "ប្រេង") { bgClass = "bg-orange-500"; iconChar = "⛽"; }
-            else if (res.type === "អាហារ") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
-            else if (res.type === "កាហ្វេ") { bgClass = "bg-amber-500"; iconChar = "☕"; }
+            
+            // Map types to Emoji/Colors for visual feedback
+            if (query === "gas station") { bgClass = "bg-orange-500"; iconChar = "⛽"; }
+            else if (query === "restaurant") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
+            else if (query === "coffee") { bgClass = "bg-amber-500"; iconChar = "☕"; }
+            else if (query === "hospital") { bgClass = "bg-red-600"; iconChar = "🏥"; }
+            else if (query === "school") { bgClass = "bg-blue-500"; iconChar = "🎓"; }
+            else if (query === "bank") { bgClass = "bg-emerald-600"; iconChar = "🏦"; }
 
             el.className = `w-9 h-9 ${bgClass} rounded-full border-[3px] border-zinc-900 shadow-xl cursor-pointer hover:scale-110 transition-transform flex items-center justify-center text-white text-sm font-bold ${kantumruy.className}`;
             el.innerText = iconChar;
@@ -630,17 +661,15 @@ export default function MapExplorerPage() {
           .mapboxgl-popup { z-index: 10 !important; }
         `}</style>
         
-        {/* Loading Overlay */}
         <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950 text-white transition-opacity duration-700 pointer-events-none ${isMapLoaded ? 'opacity-0' : 'opacity-100'}`}>
             <Loader2 className="h-10 w-10 animate-spin text-indigo-500 mb-4" />
             <p className="text-zinc-500 text-xs tracking-widest uppercase">កំពុងដំណើរការ...</p>
         </div>
 
-        <div ref={mapContainer} className="absolute inset-0 w-full h-full" />
+        <div ref={mapContainer} className="absolute inset-0 w-full h-full touch-none" />
 
         <WeatherWidget weather={weather} isNavigating={isNavigating.current} />
 
-        {/* --- NAVIGATION HUD OR BOTTOM SEARCH CONTROLS --- */}
         {routeDetails ? (
            <NavigationHUD 
               routeDetails={routeDetails} 
@@ -663,7 +692,6 @@ export default function MapExplorerPage() {
            />
         )}
 
-        {/* --- RECENTER BUTTON --- */}
         {isNavigating.current && showRecenterBtn && (
              <div className="absolute bottom-32 right-4 z-20 pointer-events-auto pb-[safe-area-inset-bottom] animate-in zoom-in-50 duration-300">
                 <Button onClick={handleRecenter} className="h-14 w-14 rounded-full bg-zinc-900 border border-zinc-700 shadow-2xl text-blue-500 flex flex-col items-center justify-center gap-0 hover:bg-zinc-800 transition-transform active:scale-90">
@@ -672,7 +700,6 @@ export default function MapExplorerPage() {
              </div>
         )}
 
-        {/* --- DETAILS DRAWER --- */}
         <Sheet open={isDrawerOpen} onOpenChange={(open) => !open && !isNavigating.current && setIsDrawerOpen(false)}>
           <SheetContent side="bottom" className={`rounded-t-3xl p-6 border-t border-zinc-800 bg-[#18181b]/95 backdrop-blur-xl text-white ring-1 ring-white/10 z-50 pb-[safe-area-inset-bottom] ${kantumruy.className}`}>
             {locationDetails && (
@@ -770,7 +797,6 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, weather, curren
                     <div className="flex flex-col items-center justify-center bg-zinc-900 h-14 w-14 rounded-full border-2 border-zinc-700 ring-2 ring-black/50 shadow-inner relative">
                         <span className="text-xl font-bold text-white leading-none z-10">{currentSpeed}</span>
                         <span className="text-[8px] text-zinc-500 font-bold uppercase z-10 mt-0.5">km/h</span>
-                        {/* Circular Progress (Visual only) */}
                         <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none"><circle cx="28" cy="28" r="26" fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="163" strokeDashoffset={163 - (Math.min(currentSpeed, 120)/120)*163} className="transition-all duration-500" /></svg>
                     </div>
                     <Button size="icon" onClick={onClearRoute} className="h-12 w-12 rounded-full bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 shadow-lg">
@@ -792,12 +818,24 @@ const BottomControls = memo(({
     const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [history, setHistory] = useState<SearchResult[]>([]);
+    const [isHistoryExpanded, setIsHistoryExpanded] = useState(true);
     const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         const saved = localStorage.getItem('map_history');
         if (saved) setHistory(JSON.parse(saved));
     }, []);
+
+    const updateHistory = (newHistory: SearchResult[]) => {
+        setHistory(newHistory);
+        localStorage.setItem('map_history', JSON.stringify(newHistory));
+    };
+
+    const removeFromHistory = (e: React.MouseEvent, itemToRemove: SearchResult) => {
+        e.stopPropagation(); 
+        const newHistory = history.filter(item => item.name !== itemToRemove.name);
+        updateHistory(newHistory);
+    };
 
     useEffect(() => {
         const controller = new AbortController();
@@ -829,10 +867,9 @@ const BottomControls = memo(({
         setQuery("");
         setSuggestions([]);
         const newHistory = [s, ...history.filter(h => h.name !== s.name)].slice(0, 5);
-        setHistory(newHistory);
-        localStorage.setItem('map_history', JSON.stringify(newHistory));
+        updateHistory(newHistory);
         onSelectLocation(s);
-        inputRef.current?.blur(); // Dismiss Keyboard on Mobile
+        inputRef.current?.blur(); 
     }
 
     const calcDist = (lat: number, lng: number) => {
@@ -840,19 +877,8 @@ const BottomControls = memo(({
         return formatDistance(getDistanceFromLatLonInMeters(userLocation.current[1], userLocation.current[0], lat, lng));
     }
 
-    // Helper for local dist calc
-    function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
-      const R = 6371; 
-      const dLat = (lat2 - lat1) * (Math.PI / 180);
-      const dLon = (lon2 - lon1) * (Math.PI / 180);
-      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return (R * c) * 1000;
-    }
-
     return (
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
-            {/* Quick Actions (Traffic & Compass) */}
             <div className="flex justify-end gap-3 pointer-events-auto pb-2">
                  <Button size="icon" onClick={handleUserLocationClick} className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
                     <Crosshair className="h-5 w-5" />
@@ -865,7 +891,6 @@ const BottomControls = memo(({
                 </Button>
             </div>
 
-            {/* Category Chips - Slide away on search */}
             <div className={`flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1 transition-all duration-300 ease-out ${query.length > 0 ? 'opacity-0 translate-y-4 pointer-events-none h-0' : 'opacity-100 translate-y-0 h-10'}`}>
                 <Button onClick={() => handleCategorySearch("gas station")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
                     <Fuel className="h-3.5 w-3.5 mr-2 text-orange-400" /> ប្រេង
@@ -876,29 +901,60 @@ const BottomControls = memo(({
                 <Button onClick={() => handleCategorySearch("coffee")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
                     <Coffee className="h-3.5 w-3.5 mr-2 text-amber-400" /> កាហ្វេ
                 </Button>
+                <Button onClick={() => handleCategorySearch("bank")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
+                    <Banknote className="h-3.5 w-3.5 mr-2 text-emerald-400" /> ធនាគារ
+                </Button>
+                 <Button onClick={() => handleCategorySearch("school")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
+                    <GraduationCap className="h-3.5 w-3.5 mr-2 text-blue-400" /> សាលា
+                </Button>
             </div>
 
-            {/* Search Bar & Suggestions */}
             <div className="pointer-events-auto flex flex-col gap-2 relative group">
                 {(suggestions.length > 0 || (query.length === 0 && history.length > 0)) && (
                     <>
-                        {/* Backdrop to dismiss search */}
                         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[-1] animate-in fade-in" onClick={() => {setSuggestions([]); setQuery("")}} />
                         
                         <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[45vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
                             <CardContent className="p-0">
+                                
                                 {query.length === 0 && history.length > 0 && (
-                                    <div className="border-b border-white/5">
-                                        <div className="px-4 py-2.5 text-[10px] uppercase font-bold text-zinc-500 tracking-wider flex items-center gap-1 bg-zinc-900/50 sticky top-0 backdrop-blur-md z-10"><History className="h-3 w-3" /> Recent</div>
-                                        {history.map((s, i) => (
-                                            <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-3.5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group">
-                                                <div className="bg-zinc-800/50 p-2 rounded-full shrink-0 group-hover:bg-zinc-700 transition-colors"><Clock className="h-4 w-4 text-zinc-400" /></div>
-                                                <div className="min-w-0 flex-1">
-                                                    <div className="text-sm font-medium text-zinc-200 truncate">{s.name}</div>
-                                                    <div className="text-xs text-zinc-500 truncate">{s.address}</div>
-                                                </div>
+                                    <div className="border-b border-white/5 transition-all duration-300">
+                                        <div 
+                                            onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
+                                            className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-white/5 transition-colors bg-zinc-900/50 sticky top-0 backdrop-blur-md z-10"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <History className="h-3.5 w-3.5 text-indigo-400" />
+                                                <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
+                                                    Recent History ({history.length})
+                                                </span>
                                             </div>
-                                        ))}
+                                            {isHistoryExpanded ? (
+                                                <ChevronUp className="h-4 w-4 text-zinc-500" />
+                                            ) : (
+                                                <ChevronDown className="h-4 w-4 text-zinc-500" />
+                                            )}
+                                        </div>
+
+                                        <div className={`overflow-hidden transition-all duration-300 ${isHistoryExpanded ? 'max-h-60 opacity-100' : 'max-h-0 opacity-0'}`}>
+                                            {history.map((s, i) => (
+                                                <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-3.5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group relative pl-4">
+                                                    <div className="bg-zinc-800/50 p-2 rounded-full shrink-0 group-hover:bg-zinc-700 transition-colors">
+                                                        <Clock className="h-4 w-4 text-zinc-400" />
+                                                    </div>
+                                                    <div className="min-w-0 flex-1 pr-8">
+                                                        <div className="text-sm font-medium text-zinc-200 truncate">{s.name}</div>
+                                                        <div className="text-xs text-zinc-500 truncate">{s.address}</div>
+                                                    </div>
+                                                    <button 
+                                                        onClick={(e) => removeFromHistory(e, s)}
+                                                        className="absolute right-2 p-2 rounded-full hover:bg-red-500/20 text-zinc-600 hover:text-red-400 transition-colors"
+                                                    >
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
                                 )}
 
@@ -909,7 +965,9 @@ const BottomControls = memo(({
                                         <div className="bg-zinc-800/80 p-2 rounded-full shrink-0 group-hover:bg-indigo-500/20 transition-colors"><MapPin className="h-4 w-4 text-zinc-400 group-hover:text-indigo-400" /></div>
                                         <div className="min-w-0 flex-1">
                                             <div className="flex justify-between items-center mb-0.5">
-                                                <div className="text-sm font-semibold text-zinc-200 truncate pr-2">{s.name}</div>
+                                                <div className="text-sm font-semibold text-zinc-200 truncate pr-2">
+                                                    <HighlightMatch text={s.name} match={query} />
+                                                </div>
                                                 {dist && <span className="text-[10px] font-bold bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-md border border-indigo-500/20 shrink-0">{dist}</span>}
                                             </div>
                                             <div className="text-xs text-zinc-500 truncate">{s.address}</div>
