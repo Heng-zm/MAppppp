@@ -24,7 +24,8 @@ import {
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind,
   ArrowRight, Clock, History, Navigation as NavIcon,
   Crosshair, Store, GraduationCap, Banknote,
-  ChevronDown, ChevronUp, Trash2
+  ChevronDown, ChevronUp, Trash2,
+  Phone, Globe, Info
 } from 'lucide-react';
 
 // ==========================================
@@ -67,9 +68,18 @@ const formatDuration = (s: number) => {
     return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`; 
 };
 
+// Simplify Geometry for Geoapify API (Max URL length limits)
+const simplifyGeometry = (coordinates: number[][]) => {
+    if (!coordinates || coordinates.length === 0) return "";
+    // Take roughly every 5th point to reduce size, but keep start/end
+    const simplified = coordinates.filter((_, i) => i % 5 === 0 || i === coordinates.length - 1);
+    const str = simplified.map(c => `${c[0]},${c[1]}`).join(',');
+    return `line_string:${str}`;
+};
+
 // Component to highlight matching text in search results
 const HighlightMatch = ({ text, match }: { text: string, match: string }) => {
-    if (!match) return <span>{text}</span>;
+    if (!match || !text) return <span>{text}</span>;
     const parts = text.split(new RegExp(`(${match})`, 'gi'));
     return (
         <span>
@@ -84,11 +94,14 @@ type SearchResult = { lng: number, lat: number, name: string, type: string, addr
 
 const mapFeaturesToResults = (features: any[]): SearchResult[] => {
     return features.map((f: any) => {
-        // Smart Name: Prefer Khmer
         const name = f.text_km || f.text;
-        // Clean Address: Remove redundant "Cambodia"
         const rawAddress = (f.properties?.address || f.place_name_km || f.place_name) || "";
-        const cleanAddress = rawAddress.replace(", Cambodia", "").replace(", កម្ពុជា", "");
+        const cleanAddress = rawAddress
+            .replace(", Cambodia", "")
+            .replace(", កម្ពុជា", "")
+            .replace(name, "")
+            .trim()
+            .replace(/^,\s*/, ""); 
 
         return {
             lng: f.center[0],
@@ -136,6 +149,7 @@ export default function MapExplorerPage() {
   const puckMarker = useRef<Marker | null>(null);
   const puckElement = useRef<HTMLDivElement | null>(null);
   const searchMarkers = useRef<Marker[]>([]);
+  const routeGeoJSON = useRef<any>(null); // Store route for Along-Route search
   
   const userLocation = useRef<[number, number] | null>(null);
   const isNavigating = useRef<boolean>(false);
@@ -144,6 +158,7 @@ export default function MapExplorerPage() {
   const showRecenterBtnRef = useRef(false);
   const lastSpokenInstruction = useRef<string>("");
   const lastWeatherFetchTime = useRef<number>(0);
+  const addressAbortController = useRef<AbortController | null>(null);
 
   const currentPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
@@ -154,7 +169,9 @@ export default function MapExplorerPage() {
   const { toast } = useToast();
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
+  const [richPlaceDetails, setRichPlaceDetails] = useState<any>(null); // X-Ray Data
   const [isFetchingAddress, setIsFetchingAddress] = useState(false);
+  const [isFetchingRichDetails, setIsFetchingRichDetails] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [showRecenterBtn, setShowRecenterBtn] = useState(false);
@@ -163,19 +180,37 @@ export default function MapExplorerPage() {
   const [isTrafficVisible, setIsTrafficVisible] = useState(true);
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
+
+  // Voice Init
+  useEffect(() => {
+    const updateVoices = () => {
+        if (typeof window !== 'undefined' && window.speechSynthesis) {
+            setAvailableVoices(window.speechSynthesis.getVoices());
+        }
+    };
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = updateVoices;
+        updateVoices();
+    }
+    return () => { if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null; };
+  }, []);
 
   const speak = useCallback((text: string) => {
     if (typeof window === 'undefined' || isMuted || !window.speechSynthesis) return;
     window.speechSynthesis.cancel(); 
+    
     const utterance = new SpeechSynthesisUtterance(text);
-    const voices = window.speechSynthesis.getVoices();
-    const preferredVoice = voices.find(v => v.lang.includes('km') || v.name.includes('Google') || v.name.includes('Samantha'));
+    const preferredVoice = availableVoices.find(v => v.lang.includes('km')) || 
+                           availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')) || 
+                           availableVoices.find(v => v.name.includes('Samantha'));
+    
     if (preferredVoice) utterance.voice = preferredVoice;
-    utterance.rate = 1.05; 
+    utterance.rate = 1.0; 
     window.speechSynthesis.speak(utterance);
-  }, [isMuted]);
+  }, [isMuted, availableVoices]);
 
   const fetchWeather = useCallback(async (lat: number, lon: number) => {
       const now = Date.now();
@@ -183,6 +218,7 @@ export default function MapExplorerPage() {
       lastWeatherFetchTime.current = now;
       try {
           const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&lang=km&appid=${WEATHER_API_KEY}`);
+          if (!res.ok) throw new Error("Weather API Error");
           const data = await res.json();
           if (data.main && data.weather) {
               setWeather({
@@ -194,11 +230,10 @@ export default function MapExplorerPage() {
       } catch (err) { console.error("Weather error", err); }
   }, [weather]);
 
-  // --- POWERFUL SEARCH FUNCTION ---
+  // --- MAPBOX SEARCH (Standard) ---
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
     if (!MAPBOX_TOKEN) return [];
     
-    // 1. Keyword Mapping
     let searchQuery = query;
     const lowerQuery = query.toLowerCase();
 
@@ -209,17 +244,11 @@ export default function MapExplorerPage() {
     else if (lowerQuery.match(/school|university|សាលា|សកលវិទ្យាល័យ/i)) searchQuery = "school";
     else if (lowerQuery.match(/bank|atm|ធនាគារ|លុយ/i)) searchQuery = "bank";
 
-    // 2. Build URL with Khmer optimization
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${MAPBOX_TOKEN}`;
-    url += `&language=km,en`; // Prefer Khmer, fallback English
-    url += `&country=kh`;   
-    url += `&types=poi,address,place`; // Filter noise
-    url += `&limit=10`;
-    url += `&fuzzyMatch=true`; // Handle typos
-    url += `&proximity=${center[0]},${center[1]}`;
+    url += `&language=km,en&country=kh&types=poi,address,place&limit=10&fuzzyMatch=true&proximity=${center[0]},${center[1]}`;
 
     if (bboxOnly) {
-        const radiusKm = 15; 
+        const radiusKm = 10; 
         const latDelta = radiusKm / 111;
         const lonDelta = radiusKm / (111 * Math.cos(center[1] * (Math.PI / 180)));
         const bbox = `${center[0] - lonDelta},${center[1] - latDelta},${center[0] + lonDelta},${center[1] + latDelta}`;
@@ -242,11 +271,15 @@ export default function MapExplorerPage() {
       try {
           const res = await fetch(url);
           const data = await res.json();
-          if (data.code !== 'Ok') {
+          if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
               toast({ title: "កំហុស", description: "រកផ្លូវមិនឃើញ ឬមានបញ្ហាបច្ចេកទេស", variant: "destructive" });
               return;
           }
           const route = data.routes[0];
+          
+          // Store Geometry for "Along Route" search
+          routeGeoJSON.current = route.geometry.coordinates;
+
           if (map.current) drawBlueRoute(map.current, { type: 'Feature', geometry: route.geometry });
 
           const leg = route.legs[0];
@@ -261,6 +294,29 @@ export default function MapExplorerPage() {
               arrivalTime: new Date(Date.now() + route.duration * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
           });
       } catch (error) { console.error("Fetch Error:", error); }
+  };
+
+  // --- GEOAPIFY: PLACE X-RAY ---
+  const fetchRichDetails = async (lat: number, lng: number) => {
+    const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY;
+    if (!apiKey) return;
+    
+    setIsFetchingRichDetails(true);
+    setRichPlaceDetails(null);
+
+    try {
+        const url = `https://api.geoapify.com/v2/place-details?lat=${lat}&lon=${lng}&features=details,contact,opening_hours&apiKey=${apiKey}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.features && data.features.length > 0) {
+            setRichPlaceDetails(data.features[0].properties);
+        }
+    } catch (e) {
+        console.error("X-Ray Failed", e);
+    } finally {
+        setIsFetchingRichDetails(false);
+    }
   };
 
   const add3DBuildings = (instance: MapboxMap) => {
@@ -284,7 +340,7 @@ export default function MapExplorerPage() {
       instance.addSource('mapbox-traffic', { type: 'vector', url: 'mapbox://mapbox.mapbox-traffic-v1' });
       instance.addLayer({
           'id': 'traffic', 'type': 'line', 'source': 'mapbox-traffic', 'source-layer': 'traffic', 'minzoom': 12,
-          'layout': { 'line-join': 'round', 'line-cap': 'round' },
+          'layout': { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' },
           'paint': {
               'line-width': 2.5,
               'line-color': [
@@ -327,11 +383,15 @@ export default function MapExplorerPage() {
   };
 
   const animatePuck = () => {
-      if (!puckMarker.current || !isMounted.current) return;
+      if (!puckMarker.current || !isMounted.current || !map.current) return;
 
       const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
-      const newHeading = lerp(currentHeading.current, targetHeading.current, 0.1);
+      
+      let diff = targetHeading.current - currentHeading.current;
+      while (diff < -180) diff += 360;
+      while (diff > 180) diff -= 360;
+      const newHeading = currentHeading.current + diff * 0.1;
 
       currentPuckPos.current = [newLng, newLat];
       currentHeading.current = newHeading;
@@ -339,7 +399,7 @@ export default function MapExplorerPage() {
       puckMarker.current.setLngLat([newLng, newLat]);
       puckMarker.current.setRotation(newHeading);
 
-      if (isNavigating.current && !userIsInteracting.current && !showRecenterBtnRef.current && map.current) {
+      if (isNavigating.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           map.current.easeTo({
               center: [newLng, newLat],
               bearing: newHeading, 
@@ -420,6 +480,7 @@ export default function MapExplorerPage() {
             setShowRecenterBtn(true); 
         } 
     };
+    mapInstance.on('touchstart', handleInteractionStart);
     mapInstance.on('dragstart', handleInteractionStart);
     mapInstance.on('pitchstart', handleInteractionStart);
     mapInstance.on('zoomstart', handleInteractionStart);
@@ -460,6 +521,9 @@ export default function MapExplorerPage() {
       setLocationDetails(lngLat);
       setIsDrawerOpen(true);
       
+      // Trigger X-Ray
+      fetchRichDetails(lngLat.lat, lngLat.lng);
+
       map.current.flyTo({ 
           center: lngLat, 
           zoom: 16, 
@@ -484,6 +548,10 @@ export default function MapExplorerPage() {
 
   useEffect(() => {
     if (locationDetails) {
+      if (addressAbortController.current) addressAbortController.current.abort();
+      const controller = new AbortController();
+      addressAbortController.current = controller;
+
       const fetchAddress = async () => {
         setIsFetchingAddress(true);
         const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY; 
@@ -495,15 +563,19 @@ export default function MapExplorerPage() {
         }
 
         try {
-          const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=km`);
+          const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=km`, {
+              signal: controller.signal
+          });
           const data = await response.json();
-          if (isMounted.current) {
+          if (isMounted.current && !controller.signal.aborted) {
              setAddressDetails((data.features && data.features.length > 0) ? data.features[0].properties : { formatted: "ទីតាំងមិនស្គាល់" });
           }
-        } catch {
-          if (isMounted.current) setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" });
+        } catch (error: any) {
+          if (error.name !== 'AbortError' && isMounted.current) {
+             setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" });
+          }
         } finally {
-          if (isMounted.current) setIsFetchingAddress(false);
+          if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false);
         }
       };
       fetchAddress();
@@ -545,6 +617,7 @@ export default function MapExplorerPage() {
       if(!userLocation.current || !map.current) return;
       userIsInteracting.current = false; 
       setShowRecenterBtn(false);
+      showRecenterBtnRef.current = false;
       
       map.current.flyTo({ 
           center: userLocation.current, 
@@ -573,6 +646,7 @@ export default function MapExplorerPage() {
   const clearRoute = useCallback(() => {
     isNavigating.current = false;
     userIsInteracting.current = false;
+    routeGeoJSON.current = null;
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
     
     mapContainer.current?.classList.remove('nav-mode');
@@ -591,55 +665,97 @@ export default function MapExplorerPage() {
     }
   }, [clearSearchMarkers]);
 
+  // Helper for Markers
+  const plotSearchResults = (results: SearchResult[], query: string) => {
+    if (!map.current || results.length === 0) {
+        toast({ title: "បរាជ័យ", description: "រកមិនឃើញលទ្ធផលទេ" });
+        return;
+    }
+    const fitBounds = new LngLatBounds();
+    if(userLocation.current) fitBounds.extend(userLocation.current);
+    
+    results.forEach(res => {
+        const el = document.createElement('div');
+        let bgClass = "bg-indigo-500", iconChar = "P";
+        if (query === "gas station" || res.type.includes('fuel')) { bgClass = "bg-orange-500"; iconChar = "⛽"; }
+        else if (query === "restaurant" || res.type.includes('catering')) { bgClass = "bg-rose-500"; iconChar = "🍔"; }
+        else if (query === "coffee" || res.type.includes('cafe')) { bgClass = "bg-amber-500"; iconChar = "☕"; }
+        else if (query === "hospital" || res.type.includes('health')) { bgClass = "bg-red-600"; iconChar = "🏥"; }
+        else if (query === "school" || res.type.includes('education')) { bgClass = "bg-blue-500"; iconChar = "🎓"; }
+        else if (query === "bank" || res.type.includes('financial')) { bgClass = "bg-emerald-600"; iconChar = "🏦"; }
+
+        el.className = `w-9 h-9 ${bgClass} rounded-full border-[3px] border-zinc-900 shadow-xl cursor-pointer hover:scale-110 transition-transform flex items-center justify-center text-white text-sm font-bold ${kantumruy.className}`;
+        el.innerText = iconChar;
+        
+        const marker = new Marker(el).setLngLat([res.lng, res.lat]).addTo(map.current!);
+        el.addEventListener('click', (e) => { 
+            e.stopPropagation(); 
+            handleMapSelection({ lng: res.lng, lat: res.lat }); 
+        });
+        searchMarkers.current.push(marker);
+        fitBounds.extend([res.lng, res.lat]);
+    });
+    
+    map.current.fitBounds(fitBounds, { padding: 80, maxZoom: 15 });
+    toast({ title: "ជោគជ័យ!", description: `រកឃើញ ${results.length} កន្លែង` });
+  };
+
   const handleCategorySearch = async (query: string) => {
+    const geoKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY;
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
     clearSearchMarkers();
-    
-    const results = await searchPlaces(query, center, true);
 
-    if (map.current && results.length > 0) {
-        const fitBounds = new LngLatBounds();
-        if(userLocation.current) fitBounds.extend(userLocation.current);
-        
-        results.forEach(res => {
-            const el = document.createElement('div');
-            let bgClass = "bg-indigo-500", iconChar = "P";
-            
-            // Map types to Emoji/Colors for visual feedback
-            if (query === "gas station") { bgClass = "bg-orange-500"; iconChar = "⛽"; }
-            else if (query === "restaurant") { bgClass = "bg-rose-500"; iconChar = "🍔"; }
-            else if (query === "coffee") { bgClass = "bg-amber-500"; iconChar = "☕"; }
-            else if (query === "hospital") { bgClass = "bg-red-600"; iconChar = "🏥"; }
-            else if (query === "school") { bgClass = "bg-blue-500"; iconChar = "🎓"; }
-            else if (query === "bank") { bgClass = "bg-emerald-600"; iconChar = "🏦"; }
+    // Mode A: Smart Along Route
+    if (isNavigating.current && routeGeoJSON.current && geoKey) {
+        let category = "commercial"; 
+        if (query === "gas station") category = "service.vehicle.fuel";
+        if (query === "restaurant") category = "catering.restaurant";
+        if (query === "coffee") category = "catering.cafe";
+        if (query === "bank") category = "service.financial";
+        if (query === "hospital") category = "healthcare";
 
-            el.className = `w-9 h-9 ${bgClass} rounded-full border-[3px] border-zinc-900 shadow-xl cursor-pointer hover:scale-110 transition-transform flex items-center justify-center text-white text-sm font-bold ${kantumruy.className}`;
-            el.innerText = iconChar;
+        const geometryStr = simplifyGeometry(routeGeoJSON.current);
+        const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${geometryStr}&limit=10&apiKey=${geoKey}`;
+
+        try {
+            toast({ title: "កំពុងស្វែងរកតាមដងផ្លូវ...", description: "Looking along your route" });
+            const res = await fetch(url);
+            const data = await res.json();
             
-            const marker = new Marker(el).setLngLat([res.lng, res.lat]).addTo(map.current!);
-            el.addEventListener('click', (e) => { 
-                e.stopPropagation(); 
-                handleMapSelection({ lng: res.lng, lat: res.lat }); 
-            });
-            searchMarkers.current.push(marker);
-            fitBounds.extend([res.lng, res.lat]);
-        });
-        
-        map.current.fitBounds(fitBounds, { padding: 80, maxZoom: 15 });
-        toast({ title: "ជោគជ័យ!", description: `រកឃើញ ${results.length} កន្លែង` });
+            const results = data.features.map((f: any) => ({
+                lng: f.geometry.coordinates[0],
+                lat: f.geometry.coordinates[1],
+                name: f.properties.name || f.properties.address_line1 || "Unknown",
+                address: f.properties.address_line2 || "",
+                type: query
+            }));
+
+            plotSearchResults(results, query);
+        } catch (e) {
+            console.error("Along route search failed, falling back", e);
+            const fallbackResults = await searchPlaces(query, center, true);
+            plotSearchResults(fallbackResults, query);
+        }
+
     } else {
-        toast({ title: "បរាជ័យ", description: "រកមិនឃើញលទ្ធផលទេ" });
+        // Mode B: Standard Search
+        const results = await searchPlaces(query, center, true);
+        plotSearchResults(results, query);
     }
   }
 
   const handleAutocomplete = async (query: string, signal: AbortSignal) => {
     if (!query.trim()) return [];
-    const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
+    const center = map.current ? map.current.getCenter().toArray() as [number, number] : (userLocation.current || DEFAULT_CENTER);
     return await searchPlaces(query, center, false, signal); 
   }
 
   const toggleTraffic = useCallback(() => {
-    if (!map.current || !map.current.getLayer('traffic')) return;
+    if (!map.current || !map.current.getStyle()) return;
+    if (!map.current.getLayer('traffic')) {
+        addTrafficLayer(map.current);
+        return;
+    }
     const visibility = map.current.getLayoutProperty('traffic', 'visibility');
     map.current.setLayoutProperty('traffic', 'visibility', visibility === 'visible' ? 'none' : 'visible');
     setIsTrafficVisible(visibility !== 'visible');
@@ -723,6 +839,50 @@ export default function MapExplorerPage() {
                        </div>
                    </div>
                 </SheetHeader>
+
+                {/* X-Ray Section */}
+                <div className="mt-2 grid grid-cols-2 gap-3">
+                    {richPlaceDetails?.contact?.phone && (
+                        <a href={`tel:${richPlaceDetails.contact.phone}`} className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors">
+                            <div className="h-8 w-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400">
+                                <Phone className="h-4 w-4" />
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-[10px] text-zinc-400 font-bold uppercase">Phone</span>
+                                <span className="text-xs text-zinc-200 truncate font-mono">{richPlaceDetails.contact.phone}</span>
+                            </div>
+                        </a>
+                    )}
+                    
+                    {richPlaceDetails?.contact?.website && (
+                        <a href={richPlaceDetails.contact.website} target="_blank" rel="noreferrer" className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors">
+                            <div className="h-8 w-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
+                                <Globe className="h-4 w-4" />
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-[10px] text-zinc-400 font-bold uppercase">Website</span>
+                                <span className="text-xs text-zinc-200 truncate">Visit Site</span>
+                            </div>
+                        </a>
+                    )}
+
+                    {(richPlaceDetails?.opening_hours || isFetchingRichDetails) && (
+                        <div className="col-span-2 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl">
+                             <div className="h-8 w-8 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-400">
+                                <Clock className="h-4 w-4" />
+                            </div>
+                            <div className="flex flex-col min-w-0">
+                                <span className="text-[10px] text-zinc-400 font-bold uppercase">Hours</span>
+                                {isFetchingRichDetails ? (
+                                     <Skeleton className="h-3 w-24 bg-zinc-700" />
+                                ) : (
+                                    <span className="text-xs text-zinc-200 truncate">{richPlaceDetails.opening_hours || "Opening hours not available"}</span>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+
                 <SheetFooter>
                   <Button 
                     className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" 
@@ -822,8 +982,13 @@ const BottomControls = memo(({
     const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
-        const saved = localStorage.getItem('map_history');
-        if (saved) setHistory(JSON.parse(saved));
+        try {
+            const saved = localStorage.getItem('map_history');
+            if (saved) setHistory(JSON.parse(saved));
+        } catch (e) {
+            console.error("Failed to parse history", e);
+            localStorage.removeItem('map_history');
+        }
     }, []);
 
     const updateHistory = (newHistory: SearchResult[]) => {
@@ -866,7 +1031,8 @@ const BottomControls = memo(({
     const handleSelect = (s: SearchResult) => {
         setQuery("");
         setSuggestions([]);
-        const newHistory = [s, ...history.filter(h => h.name !== s.name)].slice(0, 5);
+        const filtered = history.filter(h => h.name !== s.name && h.address !== s.address);
+        const newHistory = [s, ...filtered].slice(0, 5);
         updateHistory(newHistory);
         onSelectLocation(s);
         inputRef.current?.blur(); 
@@ -986,7 +1152,7 @@ const BottomControls = memo(({
                         ref={inputRef}
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        onFocus={() => { if(history.length > 0) setSuggestions([]); }} 
+                        onFocus={() => { if(history.length > 0 && query.length === 0) setSuggestions([]); }} 
                         placeholder="ស្វែងរកទីតាំង..." 
                         className="w-full h-14 pl-12 pr-12 rounded-full bg-[#18181b]/90 backdrop-blur-md border border-white/10 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]"
                     />
