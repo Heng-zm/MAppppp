@@ -153,7 +153,6 @@ export default function MapExplorerPage() {
     window.speechSynthesis.cancel(); 
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
-    // Try to find a good voice (Khmer isn't standard in many browsers yet, fallback to EN or Local)
     const preferredVoice = voices.find(v => v.lang.includes('km') || v.name.includes('Google') || v.name.includes('Samantha'));
     if (preferredVoice) utterance.voice = preferredVoice;
     utterance.rate = 1.05; 
@@ -309,7 +308,7 @@ export default function MapExplorerPage() {
       const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.1);
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.1);
       
-      // 2. Interpolate Heading (Shortest path rotation logic omitted for brevity, but linear works for small steps)
+      // 2. Interpolate Heading
       const newHeading = lerp(currentHeading.current, targetHeading.current, 0.1);
 
       currentPuckPos.current = [newLng, newLat];
@@ -772,6 +771,12 @@ const BottomControls = memo(({
         if (saved) setHistory(JSON.parse(saved));
     }, []);
 
+    const handleClearHistory = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setHistory([]);
+        localStorage.removeItem('map_history');
+    };
+
     useEffect(() => {
         const timeoutId = setTimeout(async () => {
             if (query.trim().length > 1) {
@@ -792,8 +797,9 @@ const BottomControls = memo(({
         const newHistory = [s, ...history.filter(h => h.name !== s.name)].slice(0, 5);
         setHistory(newHistory);
         localStorage.setItem('map_history', JSON.stringify(newHistory));
+        
         onSelectLocation(s);
-        inputRef.current?.blur(); // Dismiss Keyboard on Mobile
+        inputRef.current?.blur();
     }
 
     const calcDist = (lat: number, lng: number) => {
@@ -839,42 +845,66 @@ const BottomControls = memo(({
             {/* Search Bar & Suggestions */}
             <div className="pointer-events-auto flex flex-col gap-2 relative group">
                 {(suggestions.length > 0 || (query.length === 0 && history.length > 0)) && (
-                    <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[45vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
+                    <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[55vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
                         <CardContent className="p-0">
+                            
+                            {/* --- HISTORY SECTION --- */}
                             {query.length === 0 && history.length > 0 && (
                                 <div className="border-b border-white/5">
-                                    <div className="px-4 py-2.5 text-[10px] uppercase font-bold text-zinc-500 tracking-wider flex items-center gap-1 bg-zinc-900/50 sticky top-0 backdrop-blur-md z-10"><History className="h-3 w-3" /> Recent</div>
+                                    <div className="flex items-center justify-between px-4 py-3 bg-zinc-900/80 sticky top-0 backdrop-blur-md z-10 border-b border-white/5">
+                                        <div className="flex items-center gap-2 text-indigo-400">
+                                            <History className="h-3.5 w-3.5" />
+                                            <span className="text-[11px] uppercase font-bold tracking-widest">Recent</span>
+                                        </div>
+                                        <button 
+                                            onClick={handleClearHistory}
+                                            className="text-[10px] font-bold text-zinc-500 hover:text-red-400 transition-colors uppercase tracking-wider"
+                                        >
+                                            Clear All
+                                        </button>
+                                    </div>
+                                    
                                     {history.map((s, i) => (
-                                        <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-3.5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group">
-                                            <div className="bg-zinc-800/50 p-2 rounded-full shrink-0 group-hover:bg-zinc-700 transition-colors"><Clock className="h-4 w-4 text-zinc-400" /></div>
+                                        <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-3.5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3.5 group">
+                                            <div className="bg-indigo-500/10 p-2.5 rounded-full shrink-0 group-hover:bg-indigo-500/20 transition-colors border border-indigo-500/20">
+                                                <Clock className="h-4 w-4 text-indigo-400" />
+                                            </div>
                                             <div className="min-w-0 flex-1">
-                                                <div className="text-sm font-medium text-zinc-200 truncate">{s.name}</div>
+                                                <div className="text-sm font-semibold text-zinc-200 truncate group-hover:text-indigo-300 transition-colors">{s.name}</div>
                                                 <div className="text-xs text-zinc-500 truncate">{s.address}</div>
                                             </div>
+                                            <ArrowRight className="h-4 w-4 text-zinc-700 opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all duration-300" />
                                         </div>
                                     ))}
                                 </div>
                             )}
 
-                            {suggestions.map((s, i) => {
-                                const dist = calcDist(s.lat, s.lng);
-                                return (
-                                <div key={i} onClick={() => handleSelect(s)} className="p-3.5 border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group last:border-0">
-                                    <div className="bg-zinc-800/80 p-2 rounded-full shrink-0 group-hover:bg-indigo-500/20 transition-colors"><MapPin className="h-4 w-4 text-zinc-400 group-hover:text-indigo-400" /></div>
-                                    <div className="min-w-0 flex-1">
-                                        <div className="flex justify-between items-center mb-0.5">
-                                            <div className="text-sm font-semibold text-zinc-200 truncate pr-2">{s.name}</div>
-                                            {dist && <span className="text-[10px] font-bold bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-md border border-indigo-500/20 shrink-0">{dist}</span>}
+                            {/* --- SEARCH RESULTS SECTION --- */}
+                            {suggestions.length > 0 && (
+                                <div className="py-1">
+                                    {suggestions.map((s, i) => {
+                                        const dist = calcDist(s.lat, s.lng);
+                                        return (
+                                        <div key={i} onClick={() => handleSelect(s)} className="p-3.5 border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3.5 group last:border-0">
+                                            <div className="bg-zinc-800 p-2.5 rounded-full shrink-0 group-hover:bg-white/10 transition-colors">
+                                                <MapPin className="h-4 w-4 text-zinc-400 group-hover:text-white" />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex justify-between items-center mb-0.5">
+                                                    <div className="text-sm font-medium text-zinc-200 truncate pr-2">{s.name}</div>
+                                                    {dist && <span className="text-[10px] font-bold bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded-md border border-white/5 shrink-0 group-hover:bg-white/10 group-hover:text-white transition-colors">{dist}</span>}
+                                                </div>
+                                                <div className="text-xs text-zinc-500 truncate">{s.address}</div>
+                                            </div>
                                         </div>
-                                        <div className="text-xs text-zinc-500 truncate">{s.address}</div>
-                                    </div>
-                                    <ArrowRight className="h-4 w-4 text-zinc-600 ml-auto shrink-0 group-hover:text-zinc-400" />
+                                    )})}
                                 </div>
-                            )})}
+                            )}
                         </CardContent>
                     </Card>
                 )}
 
+                {/* --- SEARCH INPUT --- */}
                 <div className="relative shadow-2xl transition-all duration-300 ease-out active:scale-[0.99]">
                     <Search className={`absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 transition-colors ${isSearching ? 'text-indigo-400' : 'text-zinc-400'}`} />
                     <input 
