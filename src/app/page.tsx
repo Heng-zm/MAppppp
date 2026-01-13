@@ -53,7 +53,6 @@ const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
 const REROUTE_THRESHOLD_METERS = 45; 
-const GPS_NOISE_THRESHOLD = 0.00002; 
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -101,6 +100,21 @@ function getBearing(startLat: number, startLng: number, destLat: number, destLng
   const brng = Math.atan2(y, x);
   const brngDeg = (brng * 180) / Math.PI;
   return (brngDeg + 360) % 360; // Normalize to 0-360
+}
+
+// Calculates the shortest distance between two angles (handles 0/360 wrap)
+function getShortestAngleDistance(target: number, current: number) {
+  let delta = target - current;
+  while (delta < -180) delta += 360;
+  while (delta > 180) delta -= 360;
+  return delta;
+}
+
+// Low Pass Filter for smoothing sensor data (Anti-Jitter)
+// factor: 0.1 = very smooth/slow, 0.9 = very responsive/jittery
+function lerpAngle(current: number, target: number, factor: number) {
+  const dist = getShortestAngleDistance(target, current);
+  return current + dist * factor;
 }
 
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
@@ -195,122 +209,264 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
-// 3. AR COMPONENT (NEW)
+// 3. AR COMPONENT (OPTIMIZED)
 // ==========================================
 const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: [number, number], destination: [number, number], onClose: () => void }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
-    const [heading, setHeading] = useState(0);
-    const [bearing, setBearing] = useState(0);
-    const [error, setError] = useState<string | null>(null);
+    const requestRef = useRef<number>(0);
+    const [hasPermission, setHasPermission] = useState<boolean>(false);
+    const [permissionError, setPermissionError] = useState<string | null>(null);
+    
+    // We use refs for high-frequency sensor data to avoid React render lag
+    const sensorData = useRef({ heading: 0, rawHeading: 0 });
+    
+    // We use state only for the visual transform to trigger the render
+    const [arState, setArState] = useState({
+        xOffset: 0,      // Screen position in px
+        isVisible: false, // Is the pin currently within FOV?
+        bearing: 0,
+        distance: 0,
+        heading: 0
+    });
 
+    // 1. Initialize Camera & Sensors
     useEffect(() => {
-        // 1. Camera Access
+        let stream: MediaStream | null = null;
+
         const startCamera = async () => {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: "environment" }, 
+                // Try to get back camera specifically
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: { exact: "environment" },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 } 
+                    }, 
                     audio: false 
                 });
-                if (videoRef.current) videoRef.current.srcObject = stream;
             } catch (err) {
-                setError("Camera access denied.");
+                // Fallback if "exact" fails (e.g. desktop)
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                } catch (e) {
+                    setPermissionError("Camera access denied or unavailable.");
+                    return;
+                }
+            }
+            if (videoRef.current && stream) {
+                videoRef.current.srcObject = stream;
+                videoRef.current.onloadedmetadata = () => {
+                    if(videoRef.current) videoRef.current.play();
+                };
             }
         };
+
+        // Handle iOS 13+ Permissions explicitly
+        const initSensors = async () => {
+            // Check if we need permission (iOS 13+)
+            if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+                // We cannot request permission automatically in useEffect, 
+                // it requires a user gesture. We just check if we assume we might need it.
+                // The "Allow Access" button in the UI will trigger the actual request.
+            } else {
+                // Non-iOS or older devices (Android usually works automatically)
+                setHasPermission(true);
+                window.addEventListener('deviceorientation', handleOrientation);
+                // Handle "Absolute" orientation for Android if available
+                window.addEventListener('deviceorientationabsolute' as any, handleOrientation);
+            }
+        };
+
+        const handleOrientation = (e: DeviceOrientationEvent | any) => {
+            let heading = 0;
+            
+            if (e.webkitCompassHeading) {
+                // iOS
+                heading = e.webkitCompassHeading;
+            } else if (e.alpha !== null) {
+                // Android
+                if(e.absolute === true || e.absolute === undefined) {
+                     heading = 360 - e.alpha;
+                } else {
+                     heading = 360 - e.alpha; 
+                }
+            }
+            
+            // Normalize to 0-360
+            sensorData.current.rawHeading = (heading + 360) % 360;
+        };
+
         startCamera();
-
-        // 2. Compass Handling
-        const handleOrientation = (e: DeviceOrientationEvent) => {
-            if (e.alpha !== null) {
-                // Adjust for iOS/Android differences if needed (simplified here)
-                let compass = (e as any).webkitCompassHeading || (360 - e.alpha);
-                setHeading(compass);
-            }
-        };
-        window.addEventListener('deviceorientation', handleOrientation);
-
-        // 3. Bearing Calculation
-        const b = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
-        setBearing(b);
-
-        const interval = setInterval(() => {
-             const b = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
-             setBearing(b);
-        }, 2000);
+        initSensors();
 
         return () => {
             window.removeEventListener('deviceorientation', handleOrientation);
-            clearInterval(interval);
-            // Stop Camera
-            if (videoRef.current && videoRef.current.srcObject) {
-                (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
-            }
+            window.removeEventListener('deviceorientationabsolute' as any, handleOrientation);
+            if (stream) stream.getTracks().forEach(track => track.stop());
+            cancelAnimationFrame(requestRef.current);
         };
-    }, [userLocation, destination]);
+    }, []);
 
-    // Calculate Pin Position on Screen (Simple AR)
-    // 0 = Center. -90 = Left Edge. +90 = Right Edge.
-    let diff = bearing - heading;
-    while (diff < -180) diff += 360;
-    while (diff > 180) diff -= 360;
-    
-    // Clamp to FOV (approx 60 degrees)
-    const fov = 60;
-    const xPos = Math.max(-30, Math.min(30, diff)); // limit movement within screen center area
-    const screenPercent = 50 + (xPos / (fov/2)) * 40; // 50% is center
+    // 2. The Animation Loop (Smooths data & Calculates position)
+    useEffect(() => {
+        if (!hasPermission && !permissionError) return;
 
-    const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
+        const updateLoop = () => {
+            // A. Smooth the Heading (Low Pass Filter)
+            // Factor 0.1 = smooth but slow, 0.2 = balanced
+            sensorData.current.heading = lerpAngle(sensorData.current.heading, sensorData.current.rawHeading, 0.15);
+
+            // B. Calculate Bearing to Destination
+            const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
+            const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
+
+            // C. Calculate Angle Difference
+            // 0 = Center. -90 = Left. +90 = Right.
+            const diff = getShortestAngleDistance(bearing, sensorData.current.heading);
+            
+            // D. Map to Screen Coordinates (FOV ~60 degrees for mobile cameras)
+            const fov = 60;
+            // Calculate pixel offset from center. 
+            const screenWidth = window.innerWidth;
+            const pxPerDegree = screenWidth / fov;
+            const xOffset = diff * pxPerDegree;
+
+            // Check visibility (add padding)
+            const isVisible = Math.abs(diff) < (fov / 2 + 10); 
+
+            setArState({
+                xOffset,
+                isVisible,
+                bearing,
+                distance,
+                heading: sensorData.current.heading
+            });
+
+            requestRef.current = requestAnimationFrame(updateLoop);
+        };
+
+        requestRef.current = requestAnimationFrame(updateLoop);
+        return () => cancelAnimationFrame(requestRef.current);
+    }, [userLocation, destination, hasPermission, permissionError]);
+
+    // IOS Permission Trigger (if not granted automatically)
+    const requestAccess = async () => {
+        if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+            try {
+                const perm = await (DeviceOrientationEvent as any).requestPermission();
+                if (perm === 'granted') {
+                    setHasPermission(true);
+                    // Force a reload or re-bind to ensure events start firing
+                    window.location.reload(); 
+                } else {
+                    setPermissionError("Permission denied. Reset permissions in settings.");
+                }
+            } catch (e) {
+                setPermissionError("Error requesting permission.");
+            }
+        }
+    };
 
     return (
         <div className="fixed inset-0 z-[60] bg-black">
-            {error ? (
-                <div className="flex h-full items-center justify-center text-white p-6 text-center">
+            {/* Camera Feed */}
+            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
+            
+            {/* Permission / Error State */}
+            {!hasPermission && !permissionError && (
+                 <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
+                    <div className="text-center p-6 max-w-sm">
+                        <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/>
+                        <h3 className="text-white text-xl font-bold mb-2">Compass Access</h3>
+                        <p className="text-zinc-400 mb-6 text-sm">AR navigation requires access to your device orientation sensors.</p>
+                        <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">Allow Access</Button>
+                        <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400 hover:text-white w-full">Cancel</Button>
+                    </div>
+                 </div>
+            )}
+
+            {permissionError && (
+                <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/90 text-white p-6 text-center">
                     <div>
                         <AlertTriangle className="h-10 w-10 text-red-500 mx-auto mb-2"/>
-                        <p>{error}</p>
-                        <Button onClick={onClose} className="mt-4">Close AR</Button>
+                        <p className="mb-4">{permissionError}</p>
+                        <Button onClick={onClose} variant="secondary">Close AR</Button>
                     </div>
                 </div>
-            ) : (
+            )}
+
+            {/* AR UI Layer */}
+            {hasPermission && (
                 <>
-                    <video ref={videoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
-                    
-                    {/* AR PIN Overlay */}
-                    {Math.abs(diff) < 90 && (
-                        <div 
-                            className="absolute top-1/2 transform -translate-x-1/2 -translate-y-1/2 transition-all duration-100 flex flex-col items-center"
-                            style={{ left: `${screenPercent}%` }}
-                        >
-                            <div className="bg-red-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg whitespace-nowrap mb-1 animate-bounce">
-                                {formatDistance(dist)}
-                            </div>
-                            <div className="w-12 h-12 bg-red-600 rounded-full border-4 border-white shadow-2xl flex items-center justify-center">
+                    {/* The AR PIN */}
+                    <div 
+                        className="absolute top-1/2 left-1/2 flex flex-col items-center justify-center pointer-events-none will-change-transform"
+                        style={{ 
+                            // Use translate3d for GPU acceleration. 
+                            transform: `translate3d(calc(-50% + ${arState.xOffset}px), -50%, 0)`,
+                            opacity: arState.isVisible ? 1 : 0,
+                            transition: 'opacity 0.2s ease-out' 
+                        }}
+                    >
+                        <div className="bg-red-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg whitespace-nowrap mb-1">
+                            {formatDistance(arState.distance)}
+                        </div>
+                        <div className="relative">
+                            <div className="w-12 h-12 bg-red-600 rounded-full border-4 border-white shadow-2xl flex items-center justify-center animate-bounce">
                                 <MapPin className="h-6 w-6 text-white" />
                             </div>
-                            <div className="w-1 h-20 bg-gradient-to-b from-red-600 to-transparent"></div>
+                            <div className="absolute -bottom-20 left-1/2 -translate-x-1/2 w-1 h-20 bg-gradient-to-b from-red-600 to-transparent"></div>
+                        </div>
+                    </div>
+
+                    {/* HUD - Guidance Arrows (When Pin is Off-Screen) */}
+                    {!arState.isVisible && (
+                        <div className="absolute top-1/2 left-0 right-0 -translate-y-1/2 flex items-center justify-between px-4 pointer-events-none">
+                            {/* Left Arrow */}
+                            <div className={`transition-opacity duration-300 ${arState.xOffset < 0 ? 'opacity-100' : 'opacity-0'}`}>
+                                <div className="bg-black/60 backdrop-blur p-4 rounded-full border border-white/20 animate-pulse">
+                                    <ArrowRight className="h-8 w-8 text-white rotate-180" />
+                                </div>
+                            </div>
+                            {/* Right Arrow */}
+                            <div className={`transition-opacity duration-300 ${arState.xOffset > 0 ? 'opacity-100' : 'opacity-0'}`}>
+                                <div className="bg-black/60 backdrop-blur p-4 rounded-full border border-white/20 animate-pulse">
+                                    <ArrowRight className="h-8 w-8 text-white" />
+                                </div>
+                            </div>
                         </div>
                     )}
 
-                    {/* HUD UI */}
-                    <div className="absolute top-4 left-4 right-4 flex justify-between items-start">
-                        <div className="bg-black/60 backdrop-blur text-white px-4 py-2 rounded-xl">
-                            <p className="text-xs text-gray-300">Destination Bearing</p>
-                            <p className="text-xl font-bold font-mono">{Math.round(bearing)}°</p>
+                    {/* Top HUD: Info */}
+                    <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-[65]">
+                        <div className="bg-black/60 backdrop-blur text-white px-4 py-2 rounded-xl border border-white/10">
+                            <p className="text-xs text-gray-300 font-bold uppercase tracking-wider">Target</p>
+                            <p className="text-lg font-bold font-mono">{Math.round(arState.bearing)}° <span className="text-xs font-normal text-gray-400">/ {Math.round(arState.heading)}°</span></p>
                         </div>
-                        <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20">
+                        <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20 hover:bg-red-500/80 transition-colors">
                             <X className="h-5 w-5" />
                         </Button>
                     </div>
 
-                    <div className="absolute bottom-10 left-0 right-0 text-center">
-                         <div className="inline-block bg-black/60 backdrop-blur text-white px-6 py-3 rounded-full border border-white/20">
-                            {Math.abs(diff) < 15 ? (
-                                <span className="text-green-400 font-bold flex items-center gap-2"><ScanEye className="h-5 w-5"/> TARGET AHEAD</span>
+                    {/* Bottom HUD: Status */}
+                    <div className="absolute bottom-10 left-0 right-0 text-center px-6 z-[65]">
+                         <div className={`inline-flex items-center gap-3 px-6 py-4 rounded-2xl border backdrop-blur-xl shadow-2xl transition-colors duration-500 ${arState.isVisible ? 'bg-emerald-500/20 border-emerald-500/50' : 'bg-black/60 border-white/10'}`}>
+                            {arState.isVisible ? (
+                                <>
+                                    <ScanEye className="h-6 w-6 text-emerald-400 animate-pulse"/> 
+                                    <div className="text-left">
+                                        <div className="text-emerald-400 font-bold text-sm">TARGET AHEAD</div>
+                                        <div className="text-white text-xs">{formatDistance(arState.distance)}</div>
+                                    </div>
+                                </>
                             ) : (
-                                <span className="text-white flex items-center gap-2">
-                                    {diff < 0 ? <ArrowRight className="h-5 w-5 rotate-180"/> : null} 
-                                    Turn {diff < 0 ? "Left" : "Right"} 
-                                    {diff > 0 ? <ArrowRight className="h-5 w-5"/> : null}
-                                </span>
+                                <>
+                                    <Compass className="h-6 w-6 text-white"/>
+                                    <div className="text-left">
+                                        <div className="text-white font-bold text-sm">Turn {arState.xOffset < 0 ? "Left" : "Right"}</div>
+                                        <div className="text-zinc-400 text-xs">Target is behind you or sideways</div>
+                                    </div>
+                                </>
                             )}
                          </div>
                     </div>
@@ -321,7 +477,7 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
 };
 
 // ==========================================
-// 3. MAIN COMPONENT
+// 4. MAIN COMPONENT
 // ==========================================
 export default function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
@@ -656,9 +812,8 @@ export default function MapExplorerPage() {
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
       
       let hybridTargetHeading = targetHeading.current;
-      let diff = hybridTargetHeading - currentHeading.current;
-      while (diff < -180) diff += 360;
-      while (diff > 180) diff -= 360;
+      // Use shortest angle for smooth rotation
+      let diff = getShortestAngleDistance(hybridTargetHeading, currentHeading.current);
       
       const rotationSpeed = 0.12; 
       const newHeading = currentHeading.current + diff * rotationSpeed;
@@ -1099,6 +1254,33 @@ export default function MapExplorerPage() {
         plotSearchResults(results, query);
     }
   }
+  
+  const plotSearchResults = (results: SearchResult[], type: string) => {
+     if(!map.current) return;
+     const bounds = new LngLatBounds();
+     results.forEach(r => {
+         const el = document.createElement('div');
+         el.className = 'marker-pin';
+         el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`;
+         const marker = new Marker({ element: el })
+            .setLngLat([r.lng, r.lat])
+            .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(`<b>${r.name}</b><br>${r.address}`))
+            .addTo(map.current!);
+         
+         marker.getElement().addEventListener('click', () => {
+             handleMapSelection({ lng: r.lng, lat: r.lat });
+         });
+
+         searchMarkers.current.push(marker);
+         bounds.extend([r.lng, r.lat]);
+     });
+     
+     if (results.length > 0) {
+         map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 });
+     } else {
+         toast({ title: "No results", description: "Nothing found nearby." });
+     }
+  };
 
   const handleAutocomplete = async (query: string, signal: AbortSignal) => {
     if (!query.trim()) return [];
