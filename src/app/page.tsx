@@ -53,6 +53,7 @@ const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
 const REROUTE_THRESHOLD_METERS = 35; 
+const GPS_NOISE_THRESHOLD = 0.00002; // Approx 2 meters. Ignore jumps smaller than this.
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -183,6 +184,7 @@ export default function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapboxMap | null>(null);
   const geolocateControl = useRef<GeolocateControl | null>(null);
+  const wakeLock = useRef<any>(null);
   
   const destinationMarker = useRef<Marker | null>(null);
   const puckMarker = useRef<Marker | null>(null);
@@ -203,10 +205,14 @@ export default function MapExplorerPage() {
   const lastWeatherFetchTime = useRef<number>(0);
   const addressAbortController = useRef<AbortController | null>(null);
 
+  // --- HYBRID LOCATION SYSTEM REFS ---
   const currentPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const currentHeading = useRef<number>(0);
   const targetHeading = useRef<number>(0);
+  const compassHeading = useRef<number>(0); // From DeviceOrientation
+  const gpsHeading = useRef<number>(0);     // From Geolocation
+  const lastTimestamp = useRef<number>(0);
   const animationFrameId = useRef<number>(0);
 
   const { toast } = useToast();
@@ -257,6 +263,22 @@ export default function MapExplorerPage() {
     utterance.rate = 1.0; 
     window.speechSynthesis.speak(utterance);
   }, [isMuted, availableVoices]);
+
+  const requestWakeLock = async () => {
+    try {
+        if ('wakeLock' in navigator) {
+            wakeLock.current = await navigator.wakeLock.request('screen');
+            wakeLock.current.addEventListener('release', () => console.log('Screen Wake Lock released'));
+        }
+    } catch (err) { console.error(`${err}`); }
+  };
+
+  const releaseWakeLock = async () => {
+    if(wakeLock.current) {
+        await wakeLock.current.release();
+        wakeLock.current = null;
+    }
+  };
 
   const fetchWeather = useCallback(async (lat: number, lon: number) => {
       const now = Date.now();
@@ -445,14 +467,22 @@ export default function MapExplorerPage() {
   const animatePuck = () => {
       if (!puckMarker.current || !isMounted.current || !map.current) return;
 
+      // 1. Position Interpolation
       const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
       
-      // Fix rotation wrapping (0 <-> 360)
-      let diff = targetHeading.current - currentHeading.current;
+      // 2. Heading Logic: Hybrid Approach
+      // If moving (> 3km/h), use GPS heading. If stopped, try Compass.
+      // We calculate "Hybrid Target" first.
+      let hybridTargetHeading = targetHeading.current;
+
+      // 3. Heading Interpolation (Shortest Path)
+      let diff = hybridTargetHeading - currentHeading.current;
       while (diff < -180) diff += 360;
       while (diff > 180) diff -= 360;
-      const newHeading = currentHeading.current + diff * 0.1;
+      
+      const rotationSpeed = 0.1; 
+      const newHeading = currentHeading.current + diff * rotationSpeed;
 
       // Teleport if too far (avoid sliding across map on init)
       if (Math.abs(targetPuckPos.current[0] - currentPuckPos.current[0]) > 0.01) {
@@ -508,7 +538,7 @@ export default function MapExplorerPage() {
       attributionControl: false, 
       antialias: true, 
       logoPosition: 'bottom-left', 
-      cooperativeGestures: false, // CHANGED: Disable "Ctrl+Scroll" requirement
+      cooperativeGestures: false, 
       scrollZoom: true,
       dragPan: true,
       maxPitch: 85,
@@ -528,10 +558,30 @@ export default function MapExplorerPage() {
 
     const el = document.createElement('div');
     el.className = 'navigation-puck'; 
-    el.style.display = 'none'; 
+    el.style.display = 'none';
+    // Visual Accuracy Halo
+    el.innerHTML = `<div class="puck-pulse"></div>`; 
     puckElement.current = el;
     puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
         .setLngLat(DEFAULT_CENTER).addTo(mapInstance);
+
+    // --- COMPASS LISTENER (DeviceOrientation) ---
+    const handleOrientation = (event: DeviceOrientationEvent) => {
+        if (event.alpha !== null) {
+            // Convert Webkit/Android differences if necessary (simplification)
+            let compass = event.alpha;
+            // iOS webkitCompassHeading is usually more accurate
+            if ((event as any).webkitCompassHeading) {
+                compass = (event as any).webkitCompassHeading;
+            } else {
+                compass = 360 - compass; // Android usually runs counter-clockwise alpha
+            }
+            compassHeading.current = compass;
+        }
+    };
+    if (typeof window !== 'undefined') {
+        window.addEventListener('deviceorientation', handleOrientation);
+    }
 
     mapInstance.on('load', () => {
         if (!isMounted.current) return;
@@ -541,38 +591,51 @@ export default function MapExplorerPage() {
         addTrafficLayer(mapInstance, isTrafficVisible); 
         animatePuck(); 
 
-        // === REALTIME WATCHER & SMART REROUTE ===
+        // === PRODUCTION-GRADE GPS ENGINE ===
         if ('geolocation' in navigator) {
             watchId.current = navigator.geolocation.watchPosition(
                 async (pos) => {
                     if (!isMounted.current) return;
-                    const { latitude, longitude, heading, speed } = pos.coords;
+                    const { latitude, longitude, heading, speed, accuracy } = pos.coords;
                     
                     const speedKmh = speed ? Math.round(speed * 3.6) : 0;
                     setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); 
                     
+                    // Noise Filter: Don't move if change is tiny (< 2m approx) and speed is low
+                    const distMoved = Math.abs(longitude - userLocation.current?.[0] || 0) + Math.abs(latitude - userLocation.current?.[1] || 0);
+                    if (userLocation.current && distMoved < GPS_NOISE_THRESHOLD && speedKmh < 3) {
+                         // Skip update to prevent jitter
+                         return;
+                    }
+
                     userLocation.current = [longitude, latitude];
                     if (puckElement.current) puckElement.current.style.display = 'block';
 
                     targetPuckPos.current = [longitude, latitude];
+                    
+                    // --- HYBRID HEADING LOGIC ---
                     if (speedKmh > 3 && heading !== null && heading !== undefined) {
-                        targetHeading.current = heading; 
+                        // Moving fast? Trust GPS Heading
+                        gpsHeading.current = heading;
+                        targetHeading.current = heading;
+                    } else {
+                        // Stopped? Trust Compass (if available) or keep last heading
+                        if (compassHeading.current !== 0) {
+                             targetHeading.current = compassHeading.current;
+                        }
                     }
+
                     fetchWeather(latitude, longitude);
 
                     // --- SMART REROUTE LOGIC ---
                     if (isNavigating.current && routeGeoJSON.current && activeDestination.current && !isRecalculating.current) {
                         const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current);
-                        
                         if (distanceToPath > REROUTE_THRESHOLD_METERS) {
                             console.log(`Off route by ${distanceToPath}m. Recalculating...`);
                             isRecalculating.current = true;
                             toast({ title: "Rerouting...", description: "កំពុងគណនាផ្លូវថ្មី", duration: 2000 });
                             
                             const success = await fetchRoute([longitude, latitude], activeDestination.current, true);
-                            if (success) {
-                                console.log("Route updated.");
-                            }
                             isRecalculating.current = false;
                         }
                     }
@@ -594,7 +657,7 @@ export default function MapExplorerPage() {
     mapInstance.on('dragstart', handleInteractionStart);
     mapInstance.on('pitchstart', handleInteractionStart);
     mapInstance.on('zoomstart', handleInteractionStart);
-    mapInstance.on('wheel', handleInteractionStart); // Detect scroll wheel too
+    mapInstance.on('wheel', handleInteractionStart); 
     
     mapInstance.on('click', (e) => { 
         if(!isNavigating.current) handleMapSelection(e.lngLat); 
@@ -603,7 +666,9 @@ export default function MapExplorerPage() {
     return () => {
       isMounted.current = false;
       cancelAnimationFrame(animationFrameId.current);
+      if (typeof window !== 'undefined') window.removeEventListener('deviceorientation', handleOrientation);
       if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
+      releaseWakeLock();
       if (destinationMarker.current) destinationMarker.current.remove();
       if (puckMarker.current) puckMarker.current.remove();
       searchMarkers.current.forEach(m => m.remove());
@@ -701,6 +766,7 @@ export default function MapExplorerPage() {
     if (!locationDetails) return;
     
     setIsRouting(true);
+    requestWakeLock(); // Keep screen on
     activeDestination.current = [locationDetails.lng, locationDetails.lat]; 
     const success = await fetchRoute(userLocation.current, [locationDetails.lng, locationDetails.lat]);
     setIsRouting(false);
@@ -765,6 +831,7 @@ export default function MapExplorerPage() {
     userIsInteracting.current = false;
     activeDestination.current = null;
     routeGeoJSON.current = null;
+    releaseWakeLock(); // Let screen sleep
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
     
     mapContainer.current?.classList.remove('nav-mode');
@@ -883,13 +950,10 @@ export default function MapExplorerPage() {
     if(map.current) map.current.easeTo({ bearing: 0, pitch: 0, duration: 800 });
   }, []);
 
-  // --- RIDE HAILING HELPERS ---
   const openGrab = () => {
       if(!locationDetails) return;
-      // Grab deep link scheme
       const url = `grab://open?screenType=GRABRIDE&dropOffLatitude=${locationDetails.lat}&dropOffLongitude=${locationDetails.lng}`;
       window.location.href = url;
-      // Fallback if app not installed
       setTimeout(() => { window.open('https://www.grab.com/kh/', '_blank'); }, 1500);
   };
 
@@ -908,8 +972,10 @@ export default function MapExplorerPage() {
   return (
     <div className={`relative h-[100dvh] w-full overflow-hidden bg-zinc-950 text-zinc-50 ${kantumruy.className}`}>
         <style jsx global>{`
-          .navigation-puck { width: 24px; height: 24px; background-color: #3b82f6; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); position: relative; }
+          .navigation-puck { width: 24px; height: 24px; background-color: #3b82f6; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); position: relative; z-index: 10; }
           .navigation-puck::after { content: ''; position: absolute; top: -12px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #3b82f6; }
+          .puck-pulse { position: absolute; width: 60px; height: 60px; top: -21px; left: -21px; border-radius: 50%; background: rgba(59, 130, 246, 0.2); animation: pulse 2s infinite; pointer-events: none; z-index: -1; }
+          @keyframes pulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
           .no-scrollbar::-webkit-scrollbar { display: none; }
           .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
           .mapboxgl-popup { z-index: 10 !important; }
@@ -980,7 +1046,6 @@ export default function MapExplorerPage() {
                 </SheetHeader>
 
                 <div className="mt-2 grid grid-cols-2 gap-3">
-                    {/* --- RIDE HAILING SECTION --- */}
                     <div className="col-span-2">
                         <p className="text-[10px] text-zinc-500 font-bold uppercase mb-2 tracking-wider">Ride Hailing</p>
                         <div className="grid grid-cols-3 gap-2">
@@ -999,7 +1064,6 @@ export default function MapExplorerPage() {
                         </div>
                     </div>
 
-                    {/* --- CONTACT INFO --- */}
                     {richPlaceDetails?.contact?.phone && (
                         <a href={`tel:${richPlaceDetails.contact.phone}`} className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50">
                             <div className="h-8 w-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400">
