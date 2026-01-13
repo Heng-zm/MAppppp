@@ -53,7 +53,7 @@ const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
 const REROUTE_THRESHOLD_METERS = 40; 
-const GPS_NOISE_THRESHOLD = 0.00002; // Approx 2-3 meters. Ignore jumps smaller than this if slow.
+const GPS_NOISE_THRESHOLD = 0.00002; // Approx 2-3 meters. Ignore jumps smaller than this.
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -91,7 +91,7 @@ function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number,
 
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
     let minDistance = Infinity;
-    // Optimization: Check every 3rd point to save CPU cycles on long routes
+    // Optimization: Check every 3rd point to save CPU on long routes
     for (let i = 0; i < routeCoords.length; i += 3) {
         const coord = routeCoords[i];
         const dist = getDistanceFromLatLonInMeters(userLat, userLng, coord[1], coord[0]);
@@ -109,10 +109,10 @@ const formatDuration = (s: number) => {
     return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`; 
 };
 
-// **OPTIMIZATION**: Reduces geometry size for Geoapify API limits (URL length)
+// **OPTIMIZATION**: Reduces geometry size for Geoapify API limits (prevents URL too long errors)
 const simplifyGeometry = (coordinates: number[][]) => {
     if (!coordinates || coordinates.length === 0) return "";
-    // Limit to roughly 100 points to keep URL length safe
+    // Limit to roughly 100 points
     const step = Math.max(1, Math.floor(coordinates.length / 100));
     const simplified = coordinates.filter((_, i) => i % step === 0 || i === coordinates.length - 1);
     const str = simplified.map(c => `${c[0]},${c[1]}`).join(',');
