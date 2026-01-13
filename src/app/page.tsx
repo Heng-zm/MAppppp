@@ -28,7 +28,8 @@ import {
   ArrowRight, Clock, History, Navigation as NavIcon,
   Crosshair, Banknote, GraduationCap,
   ChevronDown, ChevronUp, Trash2,
-  Phone, Globe, Satellite, Map as MapIcon
+  Phone, Globe, Satellite, Map as MapIcon,
+  CarFront, ExternalLink
 } from 'lucide-react';
 
 // ==========================================
@@ -51,6 +52,7 @@ if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
+const REROUTE_THRESHOLD_METERS = 35; // Distance to trigger recalculation
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -60,24 +62,17 @@ const STYLES = {
 
 // --- KHMER SEARCH OPTIMIZATION ---
 const KHMER_SEARCH_ALIASES: Record<string, string> = {
-    // Food & Drink
     'ហាងកាហ្វេ': 'coffee shop', 'កាហ្វេ': 'coffee', 'ហាងបាយ': 'restaurant',
     'អាហារ': 'food', 'ភោជនីយដ្ឋាន': 'restaurant', 'គុយទាវ': 'noodle',
-    // Services
     'ធនាគារ': 'bank', 'អេធីអឹម': 'atm', 'លុយ': 'financial',
     'ពេទ្យ': 'hospital', 'មន្ទីរពេទ្យ': 'hospital', 'គ្លីនិក': 'clinic', 'ឱសថស្ថាន': 'pharmacy',
-    // Transport
     'សាំង': 'gas station', 'ប្រេង': 'gas station', 'ស្ថានីយ៍ប្រេង': 'gas station',
     'ការាស': 'garage', 'ផ្ញើឡាន': 'parking',
-    // Education & Religion
     'សាលា': 'school', 'សកលវិទ្យាល័យ': 'university', 'វត្ត': 'pagoda',
-    // Shopping
     'ផ្សារ': 'market', 'ផ្សារទំនើប': 'mall', 'ម៉ាត': 'convenience store',
-    // Landmarks
     'សណ្ឋាគារ': 'hotel', 'ផ្ទះសំណាក់': 'guesthouse', 'បុរី': 'borey',
 };
 
-// Helper to detect if input is coordinates (e.g. "11.55, 104.92")
 const isCoordinate = (query: string) => {
     const coordRegex = /^(-?\d+(\.\d+)?),\s*(-?\d+(\.\d+)?)$/;
     return coordRegex.test(query.trim());
@@ -92,6 +87,19 @@ function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number,
   const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return (R * c) * 1000;
+}
+
+// Calculate minimum distance from a point to the polyline (route)
+// We simplify by finding the distance to the nearest vertex. 
+// For dense Mapbox routes, this is performant and accurate enough.
+function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
+    let minDistance = Infinity;
+    // Optimization: Depending on route length, we could step 2 or 5, but accuracy matters for rerouting.
+    for (const coord of routeCoords) {
+        const dist = getDistanceFromLatLonInMeters(userLat, userLng, coord[1], coord[0]);
+        if (dist < minDistance) minDistance = dist;
+    }
+    return minDistance;
 }
 
 const lerp = (start: number, end: number, amt: number) => (1 - amt) * start + amt * end;
@@ -126,15 +134,11 @@ type SearchResult = { lng: number, lat: number, name: string, type: string, addr
 
 const mapFeaturesToResults = (features: any[]): SearchResult[] => {
     return features.map((f: any) => {
-        // Name Priority: Khmer -> English -> Default
         const name = f.text_km || f.text_en || f.text;
-        
         let rawAddress = (f.properties?.address || f.place_name_km || f.place_name || "").toString();
-        // Clean redundant name from address
         if (rawAddress.startsWith(name)) {
             rawAddress = rawAddress.substring(name.length).replace(/^,\s*/, "").trim();
         }
-
         const cleanAddress = rawAddress
             .replace(", Cambodia", "")
             .replace(", កម្ពុជា", "")
@@ -191,9 +195,11 @@ export default function MapExplorerPage() {
   const routeGeoJSON = useRef<any>(null); 
   
   const userLocation = useRef<[number, number] | null>(null);
+  const activeDestination = useRef<[number, number] | null>(null); // Store nav destination
   const watchId = useRef<number | null>(null); 
   
   const isNavigating = useRef<boolean>(false);
+  const isRecalculating = useRef<boolean>(false); // Lock for recalculation
   const userIsInteracting = useRef<boolean>(false); 
   const isMounted = useRef<boolean>(false);
   const showRecenterBtnRef = useRef(false);
@@ -274,14 +280,12 @@ export default function MapExplorerPage() {
       } catch (err) { console.error("Weather error", err); }
   }, [weather]);
 
-  // --- OPTIMIZED SEARCH ---
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
     if (!MAPBOX_TOKEN) return [];
     
     let searchQuery = query.trim();
     const lowerQuery = query.toLowerCase();
 
-    // 1. Check for Coordinates Input
     if (isCoordinate(searchQuery)) {
         const [lat, lng] = searchQuery.split(',').map(n => parseFloat(n.trim()));
         const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${MAPBOX_TOKEN}&language=km,en`;
@@ -292,16 +296,14 @@ export default function MapExplorerPage() {
         } catch (e) { return []; }
     }
 
-    // 2. Khmer Alias Mapping
     if (KHMER_SEARCH_ALIASES[searchQuery]) {
         searchQuery = KHMER_SEARCH_ALIASES[searchQuery];
     } else if (lowerQuery.match(/gas|fuel|station|បូមសាំង/i)) searchQuery = "gas station";
     else if (lowerQuery.match(/hospital|clinic|doctor/i)) searchQuery = "hospital";
 
-    // 3. Build URL
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${MAPBOX_TOKEN}`;
     url += `&language=km,en&country=kh&limit=10&fuzzyMatch=true&proximity=${center[0]},${center[1]}`;
-    url += `&types=poi,address,neighborhood,locality,place`; // Filter noise
+    url += `&types=poi,address,neighborhood,locality,place`; 
 
     if (bboxOnly) {
         const radiusKm = 10; 
@@ -321,7 +323,7 @@ export default function MapExplorerPage() {
     }
   };
 
-  const fetchRoute = async (start: [number, number], end: [number, number]): Promise<boolean> => {
+  const fetchRoute = useCallback(async (start: [number, number], end: [number, number], isSilentRecalc = false): Promise<boolean> => {
       if (!MAPBOX_TOKEN) return false;
       
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
@@ -331,7 +333,7 @@ export default function MapExplorerPage() {
           const data = await res.json();
           
           if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
-              toast({ title: "កំហុស", description: "រកផ្លូវមិនឃើញ ឬមានបញ្ហាបច្ចេកទេស", variant: "destructive" });
+              if(!isSilentRecalc) toast({ title: "កំហុស", description: "រកផ្លូវមិនឃើញ ឬមានបញ្ហាបច្ចេកទេស", variant: "destructive" });
               return false;
           }
           const route = data.routes[0];
@@ -353,10 +355,10 @@ export default function MapExplorerPage() {
           return true;
       } catch (error) { 
           console.error("Fetch Error:", error);
-          toast({ title: "កំហុសបណ្តាញ", description: "សូមពិនិត្យអ៊ីនធឺណិតរបស់អ្នក", variant: "destructive" });
+          if(!isSilentRecalc) toast({ title: "កំហុសបណ្តាញ", description: "សូមពិនិត្យអ៊ីនធឺណិតរបស់អ្នក", variant: "destructive" });
           return false;
       }
-  };
+  }, [toast]);
 
   const fetchRichDetails = async (lat: number, lng: number) => {
     if (!GEOAPIFY_API_KEY) return;
@@ -414,7 +416,6 @@ export default function MapExplorerPage() {
       if (!geojson || !geojson.geometry) return;
       
       const layers = instance.getStyle().layers;
-      // Place route BELOW text labels
       const labelLayerId = layers?.find((layer) => layer.type === 'symbol')?.id;
 
       if (instance.getSource('custom-route-source')) {
@@ -459,7 +460,6 @@ export default function MapExplorerPage() {
       puckMarker.current.setLngLat([newLng, newLat]);
       puckMarker.current.setRotation(newHeading);
 
-      // Follow Mode
       if (isNavigating.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           map.current.easeTo({
               center: [newLng, newLat],
@@ -472,7 +472,6 @@ export default function MapExplorerPage() {
       animationFrameId.current = requestAnimationFrame(animatePuck);
   };
 
-  // Switch Map Style
   const handleStyleChange = (style: string) => {
     if (!map.current || style === currentStyle) return;
     map.current.once('style.load', () => {
@@ -508,7 +507,7 @@ export default function MapExplorerPage() {
 
     const geolocate = new GeolocateControl({
       positionOptions: { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 },
-      trackUserLocation: false, // Managed manually
+      trackUserLocation: false, 
       showUserHeading: false, 
       showUserLocation: false, 
       showAccuracyCircle: false,
@@ -531,10 +530,10 @@ export default function MapExplorerPage() {
         addTrafficLayer(mapInstance); 
         animatePuck(); 
 
-        // === REALTIME WATCHER ===
+        // === REALTIME WATCHER & SMART REROUTE ===
         if ('geolocation' in navigator) {
             watchId.current = navigator.geolocation.watchPosition(
-                (pos) => {
+                async (pos) => {
                     if (!isMounted.current) return;
                     const { latitude, longitude, heading, speed } = pos.coords;
                     
@@ -549,6 +548,23 @@ export default function MapExplorerPage() {
                         targetHeading.current = heading; 
                     }
                     fetchWeather(latitude, longitude);
+
+                    // --- SMART REROUTE LOGIC ---
+                    if (isNavigating.current && routeGeoJSON.current && activeDestination.current && !isRecalculating.current) {
+                        const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current);
+                        
+                        if (distanceToPath > REROUTE_THRESHOLD_METERS) {
+                            console.log(`Off route by ${distanceToPath}m. Recalculating...`);
+                            isRecalculating.current = true;
+                            toast({ title: "Rerouting...", description: "កំពុងគណនាផ្លូវថ្មី", duration: 2000 });
+                            
+                            const success = await fetchRoute([longitude, latitude], activeDestination.current, true);
+                            if (success) {
+                                console.log("Route updated.");
+                            }
+                            isRecalculating.current = false;
+                        }
+                    }
                 },
                 (err) => console.warn("GPS Warning:", err),
                 { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
@@ -582,7 +598,7 @@ export default function MapExplorerPage() {
       mapInstance.remove();
       map.current = null;
     }
-  }, [fetchWeather]);
+  }, [fetchWeather, fetchRoute, toast]);
 
   const clearSearchMarkers = useCallback(() => {
       searchMarkers.current.forEach(m => m.remove());
@@ -673,11 +689,13 @@ export default function MapExplorerPage() {
     if (!locationDetails) return;
     
     setIsRouting(true);
+    activeDestination.current = [locationDetails.lng, locationDetails.lat]; // Store for reroute
     const success = await fetchRoute(userLocation.current, [locationDetails.lng, locationDetails.lat]);
     setIsRouting(false);
 
     if (success) {
         isNavigating.current = true;
+        isRecalculating.current = false;
         userIsInteracting.current = false; 
         setShowRecenterBtn(false);
         if (!isMuted) speak("ចាប់ផ្តើមការនាំផ្លូវ");
@@ -731,7 +749,9 @@ export default function MapExplorerPage() {
 
   const clearRoute = useCallback(() => {
     isNavigating.current = false;
+    isRecalculating.current = false;
     userIsInteracting.current = false;
+    activeDestination.current = null;
     routeGeoJSON.current = null;
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
     
@@ -849,6 +869,27 @@ export default function MapExplorerPage() {
     if(map.current) map.current.easeTo({ bearing: 0, pitch: 0, duration: 800 });
   }, []);
 
+  // --- RIDE HAILING HELPERS ---
+  const openGrab = () => {
+      if(!locationDetails) return;
+      // Grab deep link scheme
+      const url = `grab://open?screenType=GRABRIDE&dropOffLatitude=${locationDetails.lat}&dropOffLongitude=${locationDetails.lng}`;
+      window.location.href = url;
+      // Fallback if app not installed
+      setTimeout(() => { window.open('https://www.grab.com/kh/', '_blank'); }, 1500);
+  };
+
+  const openPassApp = () => {
+     // PassApp deep linking is restricted. Best effort is to open the app or web.
+     window.location.href = "passapp://";
+     setTimeout(() => { window.open('https://passapp-taxi.com/', '_blank'); }, 1500);
+  };
+
+  const openGoogleMaps = () => {
+      if(!locationDetails) return;
+      window.open(`https://www.google.com/maps/dir/?api=1&destination=${locationDetails.lat},${locationDetails.lng}`, '_blank');
+  };
+
   if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Missing Token</h2><p className="text-center text-zinc-400">Mapbox Access Token is missing.</p></CardContent></Card></div>;
 
   return (
@@ -926,12 +967,32 @@ export default function MapExplorerPage() {
                 </SheetHeader>
 
                 <div className="mt-2 grid grid-cols-2 gap-3">
+                    {/* --- RIDE HAILING SECTION --- */}
+                    <div className="col-span-2">
+                        <p className="text-[10px] text-zinc-500 font-bold uppercase mb-2 tracking-wider">Ride Hailing</p>
+                        <div className="grid grid-cols-3 gap-2">
+                            <Button onClick={openGrab} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#00B14F]/20 hover:border-[#00B14F] hover:text-[#00B14F] transition-all flex flex-col gap-0.5">
+                                <CarFront className="h-4 w-4" />
+                                <span className="text-[10px] font-bold">Grab</span>
+                            </Button>
+                            <Button onClick={openPassApp} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#1D8F48]/20 hover:border-[#1D8F48] hover:text-[#1D8F48] transition-all flex flex-col gap-0.5">
+                                <CarFront className="h-4 w-4" />
+                                <span className="text-[10px] font-bold">PassApp</span>
+                            </Button>
+                             <Button onClick={openGoogleMaps} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-blue-500/20 hover:border-blue-500 hover:text-blue-500 transition-all flex flex-col gap-0.5">
+                                <ExternalLink className="h-4 w-4" />
+                                <span className="text-[10px] font-bold">Google</span>
+                            </Button>
+                        </div>
+                    </div>
+
+                    {/* --- CONTACT INFO --- */}
                     {richPlaceDetails?.contact?.phone && (
-                        <a href={`tel:${richPlaceDetails.contact.phone}`} className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors">
+                        <a href={`tel:${richPlaceDetails.contact.phone}`} className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50">
                             <div className="h-8 w-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400">
                                 <Phone className="h-4 w-4" />
                             </div>
-                            <div className="flex flex-col">
+                            <div className="flex flex-col overflow-hidden">
                                 <span className="text-[10px] text-zinc-400 font-bold uppercase">Phone</span>
                                 <span className="text-xs text-zinc-200 truncate font-mono">{richPlaceDetails.contact.phone}</span>
                             </div>
@@ -939,11 +1000,11 @@ export default function MapExplorerPage() {
                     )}
                     
                     {richPlaceDetails?.contact?.website && (
-                        <a href={richPlaceDetails.contact.website} target="_blank" rel="noreferrer" className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors">
+                        <a href={richPlaceDetails.contact.website} target="_blank" rel="noreferrer" className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50">
                             <div className="h-8 w-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
                                 <Globe className="h-4 w-4" />
                             </div>
-                            <div className="flex flex-col">
+                            <div className="flex flex-col overflow-hidden">
                                 <span className="text-[10px] text-zinc-400 font-bold uppercase">Website</span>
                                 <span className="text-xs text-zinc-200 truncate">Visit Site</span>
                             </div>
@@ -951,7 +1012,7 @@ export default function MapExplorerPage() {
                     )}
 
                     {(richPlaceDetails?.opening_hours || isFetchingRichDetails) && (
-                        <div className="col-span-2 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl">
+                        <div className="col-span-2 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl border border-zinc-700/50">
                              <div className="h-8 w-8 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-400">
                                 <Clock className="h-4 w-4" />
                             </div>
@@ -1136,7 +1197,6 @@ const BottomControls = memo(({
     return (
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
             <div className="flex justify-end gap-3 pointer-events-auto pb-2">
-                 {/* Map Style Switcher */}
                  <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
