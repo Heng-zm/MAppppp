@@ -4,7 +4,7 @@
 // 1. IMPORTS
 // ==========================================
 import React, { useRef, useEffect, useState, useCallback, memo } from 'react';
-import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap } from 'mapbox-gl';
+import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap, GeoJSONSource } from 'mapbox-gl';
 import { Kantumruy_Pro } from 'next/font/google'; 
 import 'mapbox-gl/dist/mapbox-gl.css';
 
@@ -52,8 +52,8 @@ if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
-const REROUTE_THRESHOLD_METERS = 35; 
-const GPS_NOISE_THRESHOLD = 0.00002; // Approx 2 meters. Ignore jumps smaller than this.
+const REROUTE_THRESHOLD_METERS = 40; 
+const GPS_NOISE_THRESHOLD = 0.00002; // Approx 2-3 meters. Ignore jumps smaller than this if slow.
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -75,8 +75,7 @@ const KHMER_SEARCH_ALIASES: Record<string, string> = {
 };
 
 const isCoordinate = (query: string) => {
-    const coordRegex = /^(-?\d+(\.\d+)?),\s*(-?\d+(\.\d+)?)$/;
-    return coordRegex.test(query.trim());
+    return /^(-?\d+(\.\d+)?),\s*(-?\d+(\.\d+)?)$/.test(query.trim());
 };
 
 // --- GEOMETRY UTILS ---
@@ -92,7 +91,9 @@ function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number,
 
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
     let minDistance = Infinity;
-    for (const coord of routeCoords) {
+    // Optimization: Check every 3rd point to save CPU cycles on long routes
+    for (let i = 0; i < routeCoords.length; i += 3) {
+        const coord = routeCoords[i];
         const dist = getDistanceFromLatLonInMeters(userLat, userLng, coord[1], coord[0]);
         if (dist < minDistance) minDistance = dist;
     }
@@ -108,9 +109,12 @@ const formatDuration = (s: number) => {
     return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`; 
 };
 
+// **OPTIMIZATION**: Reduces geometry size for Geoapify API limits (URL length)
 const simplifyGeometry = (coordinates: number[][]) => {
     if (!coordinates || coordinates.length === 0) return "";
-    const simplified = coordinates.filter((_, i) => i % 5 === 0 || i === coordinates.length - 1);
+    // Limit to roughly 100 points to keep URL length safe
+    const step = Math.max(1, Math.floor(coordinates.length / 100));
+    const simplified = coordinates.filter((_, i) => i % step === 0 || i === coordinates.length - 1);
     const str = simplified.map(c => `${c[0]},${c[1]}`).join(',');
     return `line_string:${str}`;
 };
@@ -137,9 +141,9 @@ const mapFeaturesToResults = (features: any[]): SearchResult[] => {
             rawAddress = rawAddress.substring(name.length).replace(/^,\s*/, "").trim();
         }
         const cleanAddress = rawAddress
-            .replace(", Cambodia", "")
-            .replace(", កម្ពុជា", "")
-            .replace(/, Phnom Penh/g, "") 
+            .replace(/,\s*Cambodia/i, "")
+            .replace(/,\s*កម្ពុជា/i, "")
+            .replace(/,\s*Phnom Penh/i, "") 
             .trim()
             .replace(/^,\s*/, ""); 
 
@@ -210,9 +214,8 @@ export default function MapExplorerPage() {
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const currentHeading = useRef<number>(0);
   const targetHeading = useRef<number>(0);
-  const compassHeading = useRef<number>(0); // From DeviceOrientation
-  const gpsHeading = useRef<number>(0);     // From Geolocation
-  const lastTimestamp = useRef<number>(0);
+  const compassHeading = useRef<number>(0); 
+  const gpsHeading = useRef<number>(0);     
   const animationFrameId = useRef<number>(0);
 
   const { toast } = useToast();
@@ -268,9 +271,8 @@ export default function MapExplorerPage() {
     try {
         if ('wakeLock' in navigator) {
             wakeLock.current = await navigator.wakeLock.request('screen');
-            wakeLock.current.addEventListener('release', () => console.log('Screen Wake Lock released'));
         }
-    } catch (err) { console.error(`${err}`); }
+    } catch (err) { console.error("Wake Lock error", err); }
   };
 
   const releaseWakeLock = async () => {
@@ -295,7 +297,7 @@ export default function MapExplorerPage() {
                   description: data.weather[0].description
               });
           }
-      } catch (err) { console.error("Weather error", err); }
+      } catch (err) { /* silent fail */ }
   }, [weather]);
 
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
@@ -372,12 +374,12 @@ export default function MapExplorerPage() {
           });
           return true;
       } catch (error) { 
-          console.error("Fetch Error:", error);
           if(!isSilentRecalc) toast({ title: "កំហុសបណ្តាញ", description: "សូមពិនិត្យអ៊ីនធឺណិតរបស់អ្នក", variant: "destructive" });
           return false;
       }
   }, [toast]);
 
+  // **IMPROVEMENT**: Robust X-Ray for Place Details via Geoapify
   const fetchRichDetails = async (lat: number, lng: number) => {
     if (!GEOAPIFY_API_KEY) return;
     setIsFetchingRichDetails(true);
@@ -411,7 +413,7 @@ export default function MapExplorerPage() {
 
   const addTrafficLayer = (instance: MapboxMap, visible: boolean) => {
       if (instance.getSource('mapbox-traffic')) {
-          if(!visible) instance.setLayoutProperty('traffic', 'visibility', 'none');
+          instance.setLayoutProperty('traffic', 'visibility', visible ? 'visible' : 'none');
           return;
       }
       instance.addSource('mapbox-traffic', { type: 'vector', url: 'mapbox://mapbox.mapbox-traffic-v1' });
@@ -433,15 +435,17 @@ export default function MapExplorerPage() {
       });
   };
 
+  // **OPTIMIZATION**: Update data source instead of removing/re-adding layers to prevent flashing
   const drawBlueRoute = (instance: MapboxMap, geojson: any) => {
       if (!geojson || !geojson.geometry) return;
       
-      const layers = instance.getStyle().layers;
-      const labelLayerId = layers?.find((layer) => layer.type === 'symbol')?.id;
-
-      if (instance.getSource('custom-route-source')) {
-          (instance.getSource('custom-route-source') as mapboxgl.GeoJSONSource).setData(geojson);
+      const source = instance.getSource('custom-route-source') as GeoJSONSource;
+      if (source) {
+          source.setData(geojson);
       } else {
+          const layers = instance.getStyle().layers;
+          const labelLayerId = layers?.find((layer) => layer.type === 'symbol')?.id;
+
           instance.addSource('custom-route-source', { type: 'geojson', data: geojson });
           
           instance.addLayer({
@@ -459,9 +463,11 @@ export default function MapExplorerPage() {
   };
 
   const removeRouteLayers = (instance: MapboxMap) => {
-      if(instance.getLayer('custom-route-core')) instance.removeLayer('custom-route-core');
-      if(instance.getLayer('custom-route-casing')) instance.removeLayer('custom-route-casing');
-      if(instance.getSource('custom-route-source')) instance.removeSource('custom-route-source');
+      const source = instance.getSource('custom-route-source') as GeoJSONSource;
+      if (source) {
+          // Empty data to clear route but keep layer ready for recycling
+          source.setData({ type: 'FeatureCollection', features: [] });
+      }
   };
 
   const animatePuck = () => {
@@ -471,12 +477,10 @@ export default function MapExplorerPage() {
       const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
       
-      // 2. Heading Logic: Hybrid Approach
-      // If moving (> 3km/h), use GPS heading. If stopped, try Compass.
-      // We calculate "Hybrid Target" first.
+      // 2. Heading Logic: Hybrid Approach (prevent 360 spin)
       let hybridTargetHeading = targetHeading.current;
 
-      // 3. Heading Interpolation (Shortest Path)
+      // Shortest path rotation
       let diff = hybridTargetHeading - currentHeading.current;
       while (diff < -180) diff += 360;
       while (diff > 180) diff -= 360;
@@ -484,13 +488,14 @@ export default function MapExplorerPage() {
       const rotationSpeed = 0.1; 
       const newHeading = currentHeading.current + diff * rotationSpeed;
 
-      // Teleport if too far (avoid sliding across map on init)
+      // Teleport if too far
       if (Math.abs(targetPuckPos.current[0] - currentPuckPos.current[0]) > 0.01) {
           currentPuckPos.current = targetPuckPos.current;
+          currentHeading.current = hybridTargetHeading;
       } else {
           currentPuckPos.current = [newLng, newLat];
+          currentHeading.current = newHeading;
       }
-      currentHeading.current = newHeading;
 
       puckMarker.current.setLngLat(currentPuckPos.current);
       puckMarker.current.setRotation(newHeading);
@@ -514,7 +519,7 @@ export default function MapExplorerPage() {
     map.current.once('style.load', () => {
         if (!map.current) return;
         add3DBuildings(map.current);
-        addTrafficLayer(map.current, isTrafficVisible); // Preserve traffic state
+        addTrafficLayer(map.current, isTrafficVisible); 
         if (previousRoute) {
              drawBlueRoute(map.current, { type: 'Feature', geometry: { type: 'LineString', coordinates: previousRoute } });
         }
@@ -556,10 +561,10 @@ export default function MapExplorerPage() {
     geolocateControl.current = geolocate;
     mapInstance.addControl(geolocate, 'top-right');
 
+    // Create the navigation arrow/puck
     const el = document.createElement('div');
     el.className = 'navigation-puck'; 
     el.style.display = 'none';
-    // Visual Accuracy Halo
     el.innerHTML = `<div class="puck-pulse"></div>`; 
     puckElement.current = el;
     puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
@@ -568,14 +573,7 @@ export default function MapExplorerPage() {
     // --- COMPASS LISTENER (DeviceOrientation) ---
     const handleOrientation = (event: DeviceOrientationEvent) => {
         if (event.alpha !== null) {
-            // Convert Webkit/Android differences if necessary (simplification)
-            let compass = event.alpha;
-            // iOS webkitCompassHeading is usually more accurate
-            if ((event as any).webkitCompassHeading) {
-                compass = (event as any).webkitCompassHeading;
-            } else {
-                compass = 360 - compass; // Android usually runs counter-clockwise alpha
-            }
+            let compass = (event as any).webkitCompassHeading || (360 - event.alpha);
             compassHeading.current = compass;
         }
     };
@@ -596,17 +594,14 @@ export default function MapExplorerPage() {
             watchId.current = navigator.geolocation.watchPosition(
                 async (pos) => {
                     if (!isMounted.current) return;
-                    const { latitude, longitude, heading, speed, accuracy } = pos.coords;
+                    const { latitude, longitude, heading, speed } = pos.coords;
                     
                     const speedKmh = speed ? Math.round(speed * 3.6) : 0;
                     setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); 
                     
-                    // Noise Filter: Don't move if change is tiny (< 2m approx) and speed is low
-                    const distMoved = Math.abs(longitude - userLocation.current?.[0] || 0) + Math.abs(latitude - userLocation.current?.[1] || 0);
-                    if (userLocation.current && distMoved < GPS_NOISE_THRESHOLD && speedKmh < 3) {
-                         // Skip update to prevent jitter
-                         return;
-                    }
+                    // **FIX**: Noise Filter: Don't move if change is tiny (< 2m) and speed is low
+                    const distMoved = Math.abs(longitude - (userLocation.current?.[0] || 0)) + Math.abs(latitude - (userLocation.current?.[1] || 0));
+                    if (userLocation.current && distMoved < GPS_NOISE_THRESHOLD && speedKmh < 3) return;
 
                     userLocation.current = [longitude, latitude];
                     if (puckElement.current) puckElement.current.style.display = 'block';
@@ -614,15 +609,13 @@ export default function MapExplorerPage() {
                     targetPuckPos.current = [longitude, latitude];
                     
                     // --- HYBRID HEADING LOGIC ---
-                    if (speedKmh > 3 && heading !== null && heading !== undefined) {
+                    if (speedKmh > 3 && heading !== null && !isNaN(heading)) {
                         // Moving fast? Trust GPS Heading
                         gpsHeading.current = heading;
                         targetHeading.current = heading;
-                    } else {
-                        // Stopped? Trust Compass (if available) or keep last heading
-                        if (compassHeading.current !== 0) {
-                             targetHeading.current = compassHeading.current;
-                        }
+                    } else if (compassHeading.current !== 0) {
+                        // Stopped? Trust Compass
+                        targetHeading.current = compassHeading.current;
                     }
 
                     fetchWeather(latitude, longitude);
@@ -697,6 +690,7 @@ export default function MapExplorerPage() {
       
       setLocationDetails(lngLat);
       setIsDrawerOpen(true);
+      // **FEATURE**: Call X-Ray details immediately
       fetchRichDetails(lngLat.lat, lngLat.lng);
 
       map.current.flyTo({ 
@@ -889,6 +883,7 @@ export default function MapExplorerPage() {
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
     clearSearchMarkers();
 
+    // **FEATURE**: Intelligent Search Along Route
     if (isNavigating.current && routeGeoJSON.current && geoKey) {
         let category = "commercial"; 
         if (query === "gas station") category = "service.vehicle.fuel";
@@ -898,6 +893,7 @@ export default function MapExplorerPage() {
         if (query === "hospital") category = "healthcare";
         if (query === "school") category = "education";
 
+        // **FIX**: Simplify geometry to prevent 414 URL Too Long errors
         const geometryStr = simplifyGeometry(routeGeoJSON.current);
         const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${geometryStr}&limit=10&apiKey=${geoKey}`;
 
@@ -934,17 +930,11 @@ export default function MapExplorerPage() {
   }
 
   const toggleTraffic = useCallback(() => {
-    if (!map.current || !map.current.getStyle()) return;
-    if (!map.current.getLayer('traffic')) {
-        addTrafficLayer(map.current, true);
-        setIsTrafficVisible(true);
-        return;
-    }
-    const visibility = map.current.getLayoutProperty('traffic', 'visibility');
-    const newState = visibility === 'visible' ? 'none' : 'visible';
-    map.current.setLayoutProperty('traffic', 'visibility', newState);
-    setIsTrafficVisible(newState === 'visible');
-  }, []);
+    if (!map.current) return;
+    const newState = !isTrafficVisible;
+    setIsTrafficVisible(newState);
+    addTrafficLayer(map.current, newState);
+  }, [isTrafficVisible]);
 
   const resetCompass = useCallback(() => {
     if(map.current) map.current.easeTo({ bearing: 0, pitch: 0, duration: 800 });
@@ -1280,7 +1270,6 @@ const BottomControls = memo(({
         return formatDistance(getDistanceFromLatLonInMeters(userLocation.current[1], userLocation.current[0], lat, lng));
     }
 
-    // Condition to show the card: Only when input is active AND (there is history OR there are suggestions)
     const showCard = isInputActive && ((query.length === 0 && history.length > 0) || suggestions.length > 0);
 
     return (
