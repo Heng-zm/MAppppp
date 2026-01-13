@@ -1131,6 +1131,7 @@ const BottomControls = memo(({
     const [isSearching, setIsSearching] = useState(false);
     const [history, setHistory] = useState<SearchResult[]>([]);
     const [isHistoryExpanded, setIsHistoryExpanded] = useState(true);
+    const [isInputActive, setIsInputActive] = useState(false); // <--- NEW STATE: Controls visibility
     const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -1182,6 +1183,7 @@ const BottomControls = memo(({
     const handleSelect = (s: SearchResult) => {
         setQuery("");
         setSuggestions([]);
+        setIsInputActive(false); // Close panel on select
         const filtered = history.filter(h => h.name !== s.name && h.address !== s.address);
         const newHistory = [s, ...filtered].slice(0, 5);
         updateHistory(newHistory);
@@ -1189,14 +1191,25 @@ const BottomControls = memo(({
         inputRef.current?.blur(); 
     }
 
+    const handleCloseSearch = () => {
+        setIsInputActive(false);
+        setSuggestions([]);
+        setQuery("");
+        inputRef.current?.blur();
+    }
+
     const calcDist = (lat: number, lng: number) => {
         if(!userLocation.current) return null;
         return formatDistance(getDistanceFromLatLonInMeters(userLocation.current[1], userLocation.current[0], lat, lng));
     }
 
+    // Condition to show the card: Only when input is active AND (there is history OR there are suggestions)
+    const showCard = isInputActive && ((query.length === 0 && history.length > 0) || suggestions.length > 0);
+
     return (
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
-            <div className="flex justify-end gap-3 pointer-events-auto pb-2">
+            {/* Top Right Controls - Hide when searching to reduce clutter */}
+            <div className={`flex justify-end gap-3 pointer-events-auto pb-2 transition-opacity duration-300 ${isInputActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
                  <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
@@ -1230,7 +1243,8 @@ const BottomControls = memo(({
                 </Button>
             </div>
 
-            <div className={`flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1 transition-all duration-300 ease-out ${query.length > 0 ? 'opacity-0 translate-y-4 pointer-events-none h-0' : 'opacity-100 translate-y-0 h-10'}`}>
+            {/* Categories - Hide when input is active to give more space to results */}
+            <div className={`flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1 transition-all duration-300 ease-out ${isInputActive || query.length > 0 ? 'opacity-0 translate-y-4 pointer-events-none h-0' : 'opacity-100 translate-y-0 h-10'}`}>
                 <Button onClick={() => handleCategorySearch("gas station")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
                     <Fuel className="h-3.5 w-3.5 mr-2 text-orange-400" /> ប្រេង
                 </Button>
@@ -1249,74 +1263,78 @@ const BottomControls = memo(({
             </div>
 
             <div className="pointer-events-auto flex flex-col gap-2 relative group">
-                {(suggestions.length > 0 || (query.length === 0 && history.length > 0)) && (
-                    <>
-                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[-1] animate-in fade-in" onClick={() => {setSuggestions([]); setQuery("")}} />
-                        
-                        <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[45vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
-                            <CardContent className="p-0">
-                                
-                                {query.length === 0 && history.length > 0 && (
-                                    <div className="border-b border-white/5 transition-all duration-300">
-                                        <div 
-                                            onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
-                                            className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-white/5 transition-colors bg-zinc-900/50 sticky top-0 backdrop-blur-md z-10"
-                                        >
-                                            <div className="flex items-center gap-2">
-                                                <History className="h-3.5 w-3.5 text-indigo-400" />
-                                                <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
-                                                    Recent History ({history.length})
-                                                </span>
-                                            </div>
-                                            {isHistoryExpanded ? (
-                                                <ChevronUp className="h-4 w-4 text-zinc-500" />
-                                            ) : (
-                                                <ChevronDown className="h-4 w-4 text-zinc-500" />
-                                            )}
+                {/* BACKDROP */}
+                {isInputActive && (
+                    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[-1] animate-in fade-in" onClick={handleCloseSearch} />
+                )}
+                
+                {/* RESULTS CARD */}
+                {showCard && (
+                    <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[50vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
+                        <CardContent className="p-0">
+                            
+                            {/* HISTORY SECTION */}
+                            {query.length === 0 && history.length > 0 && (
+                                <div className="border-b border-white/5 transition-all duration-300">
+                                    <div 
+                                        onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
+                                        className="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white/5 transition-colors bg-zinc-900/50 sticky top-0 backdrop-blur-md z-10"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <History className="h-3.5 w-3.5 text-indigo-400" />
+                                            <span className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
+                                                Recent History ({history.length})
+                                            </span>
                                         </div>
-
-                                        <div className={`overflow-hidden transition-all duration-300 ${isHistoryExpanded ? 'max-h-60 opacity-100' : 'max-h-0 opacity-0'}`}>
-                                            {history.map((s, i) => (
-                                                <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-3.5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group relative pl-4">
-                                                    <div className="bg-zinc-800/50 p-2 rounded-full shrink-0 group-hover:bg-zinc-700 transition-colors">
-                                                        <Clock className="h-4 w-4 text-zinc-400" />
-                                                    </div>
-                                                    <div className="min-w-0 flex-1 pr-8">
-                                                        <div className="text-sm font-medium text-zinc-200 truncate">{s.name}</div>
-                                                        <div className="text-xs text-zinc-500 truncate">{s.address}</div>
-                                                    </div>
-                                                    <button 
-                                                        onClick={(e) => removeFromHistory(e, s)}
-                                                        className="absolute right-2 p-2 rounded-full hover:bg-red-500/20 text-zinc-600 hover:text-red-400 transition-colors"
-                                                    >
-                                                        <Trash2 className="h-4 w-4" />
-                                                    </button>
-                                                </div>
-                                            ))}
-                                        </div>
+                                        {isHistoryExpanded ? (
+                                            <ChevronUp className="h-4 w-4 text-zinc-500" />
+                                        ) : (
+                                            <ChevronDown className="h-4 w-4 text-zinc-500" />
+                                        )}
                                     </div>
-                                )}
 
-                                {suggestions.map((s, i) => {
-                                    const dist = calcDist(s.lat, s.lng);
-                                    return (
-                                    <div key={i} onClick={() => handleSelect(s)} className="p-3.5 border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group last:border-0">
-                                        <div className="bg-zinc-800/80 p-2 rounded-full shrink-0 group-hover:bg-indigo-500/20 transition-colors"><MapPin className="h-4 w-4 text-zinc-400 group-hover:text-indigo-400" /></div>
-                                        <div className="min-w-0 flex-1">
-                                            <div className="flex justify-between items-center mb-0.5">
-                                                <div className="text-sm font-semibold text-zinc-200 truncate pr-2">
-                                                    <HighlightMatch text={s.name} match={query} />
+                                    <div className={`overflow-hidden transition-all duration-300 ${isHistoryExpanded ? 'max-h-60 opacity-100' : 'max-h-0 opacity-0'}`}>
+                                        {history.map((s, i) => (
+                                            <div key={`hist-${i}`} onClick={() => handleSelect(s)} className="p-2.5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group relative pl-4 border-b border-white/5 last:border-0">
+                                                <div className="bg-zinc-800/50 p-1.5 rounded-full shrink-0 group-hover:bg-zinc-700 transition-colors">
+                                                    <Clock className="h-3.5 w-3.5 text-zinc-400" />
                                                 </div>
-                                                {dist && <span className="text-[10px] font-bold bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-md border border-indigo-500/20 shrink-0">{dist}</span>}
+                                                <div className="min-w-0 flex-1 pr-8">
+                                                    <div className="text-sm font-medium text-zinc-200 truncate leading-tight">{s.name}</div>
+                                                    <div className="text-[10px] text-zinc-500 truncate mt-0.5">{s.address}</div>
+                                                </div>
+                                                <button 
+                                                    onClick={(e) => removeFromHistory(e, s)}
+                                                    className="absolute right-2 p-2 rounded-full hover:bg-red-500/20 text-zinc-600 hover:text-red-400 transition-colors"
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                </button>
                                             </div>
-                                            <div className="text-xs text-zinc-500 truncate">{s.address}</div>
-                                        </div>
-                                        <ArrowRight className="h-4 w-4 text-zinc-600 ml-auto shrink-0 group-hover:text-zinc-400" />
+                                        ))}
                                     </div>
-                                )})}
-                            </CardContent>
-                        </Card>
-                    </>
+                                </div>
+                            )}
+
+                            {/* SUGGESTIONS SECTION */}
+                            {suggestions.map((s, i) => {
+                                const dist = calcDist(s.lat, s.lng);
+                                return (
+                                <div key={i} onClick={() => handleSelect(s)} className="p-3 border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors flex items-center gap-3 group last:border-0">
+                                    <div className="bg-zinc-800/80 p-2 rounded-full shrink-0 group-hover:bg-indigo-500/20 transition-colors"><MapPin className="h-4 w-4 text-zinc-400 group-hover:text-indigo-400" /></div>
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex justify-between items-center mb-0.5">
+                                            <div className="text-sm font-semibold text-zinc-200 truncate pr-2">
+                                                <HighlightMatch text={s.name} match={query} />
+                                            </div>
+                                            {dist && <span className="text-[10px] font-bold bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-md border border-indigo-500/20 shrink-0">{dist}</span>}
+                                        </div>
+                                        <div className="text-xs text-zinc-500 truncate">{s.address}</div>
+                                    </div>
+                                    <ArrowRight className="h-4 w-4 text-zinc-600 ml-auto shrink-0 group-hover:text-zinc-400" />
+                                </div>
+                            )})}
+                        </CardContent>
+                    </Card>
                 )}
 
                 <div className="relative shadow-2xl transition-all duration-300 ease-out active:scale-[0.99]">
@@ -1325,14 +1343,14 @@ const BottomControls = memo(({
                         ref={inputRef}
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        onFocus={() => { if(history.length > 0 && query.length === 0) setSuggestions([]); }} 
+                        onFocus={() => { setIsInputActive(true); if(history.length > 0 && query.length === 0) setSuggestions([]); }} 
                         placeholder="ស្វែងរកទីតាំង, ហាង, ឬ បញ្ចូលកូអរដោនេ..." 
                         className="w-full h-14 pl-12 pr-12 rounded-full bg-[#18181b]/90 backdrop-blur-md border border-white/10 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]"
                     />
                     {isSearching ? (
                         <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-indigo-500 animate-spin" />
-                    ) : query.length > 0 && (
-                        <button onClick={() => { setQuery(""); setSuggestions([]); }} className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors text-zinc-400 hover:text-white">
+                    ) : (query.length > 0 || isInputActive) && (
+                        <button onClick={handleCloseSearch} className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors text-zinc-400 hover:text-white">
                             <X className="h-3.5 w-3.5" />
                         </button>
                     )}
