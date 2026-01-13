@@ -52,7 +52,7 @@ if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
-const REROUTE_THRESHOLD_METERS = 35; // Distance to trigger recalculation
+const REROUTE_THRESHOLD_METERS = 35; 
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -89,12 +89,8 @@ function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number,
   return (R * c) * 1000;
 }
 
-// Calculate minimum distance from a point to the polyline (route)
-// We simplify by finding the distance to the nearest vertex. 
-// For dense Mapbox routes, this is performant and accurate enough.
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
     let minDistance = Infinity;
-    // Optimization: Depending on route length, we could step 2 or 5, but accuracy matters for rerouting.
     for (const coord of routeCoords) {
         const dist = getDistanceFromLatLonInMeters(userLat, userLng, coord[1], coord[0]);
         if (dist < minDistance) minDistance = dist;
@@ -195,11 +191,11 @@ export default function MapExplorerPage() {
   const routeGeoJSON = useRef<any>(null); 
   
   const userLocation = useRef<[number, number] | null>(null);
-  const activeDestination = useRef<[number, number] | null>(null); // Store nav destination
+  const activeDestination = useRef<[number, number] | null>(null); 
   const watchId = useRef<number | null>(null); 
   
   const isNavigating = useRef<boolean>(false);
-  const isRecalculating = useRef<boolean>(false); // Lock for recalculation
+  const isRecalculating = useRef<boolean>(false);
   const userIsInteracting = useRef<boolean>(false); 
   const isMounted = useRef<boolean>(false);
   const showRecenterBtnRef = useRef(false);
@@ -391,12 +387,15 @@ export default function MapExplorerPage() {
     }, labelLayerId);
   };
 
-  const addTrafficLayer = (instance: MapboxMap) => {
-      if (instance.getSource('mapbox-traffic')) return;
+  const addTrafficLayer = (instance: MapboxMap, visible: boolean) => {
+      if (instance.getSource('mapbox-traffic')) {
+          if(!visible) instance.setLayoutProperty('traffic', 'visibility', 'none');
+          return;
+      }
       instance.addSource('mapbox-traffic', { type: 'vector', url: 'mapbox://mapbox.mapbox-traffic-v1' });
       instance.addLayer({
           'id': 'traffic', 'type': 'line', 'source': 'mapbox-traffic', 'source-layer': 'traffic', 'minzoom': 12,
-          'layout': { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' },
+          'layout': { 'line-join': 'round', 'line-cap': 'round', 'visibility': visible ? 'visible' : 'none' },
           'paint': {
               'line-width': 2.5,
               'line-color': [
@@ -449,20 +448,26 @@ export default function MapExplorerPage() {
       const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
       
+      // Fix rotation wrapping (0 <-> 360)
       let diff = targetHeading.current - currentHeading.current;
       while (diff < -180) diff += 360;
       while (diff > 180) diff -= 360;
       const newHeading = currentHeading.current + diff * 0.1;
 
-      currentPuckPos.current = [newLng, newLat];
+      // Teleport if too far (avoid sliding across map on init)
+      if (Math.abs(targetPuckPos.current[0] - currentPuckPos.current[0]) > 0.01) {
+          currentPuckPos.current = targetPuckPos.current;
+      } else {
+          currentPuckPos.current = [newLng, newLat];
+      }
       currentHeading.current = newHeading;
 
-      puckMarker.current.setLngLat([newLng, newLat]);
+      puckMarker.current.setLngLat(currentPuckPos.current);
       puckMarker.current.setRotation(newHeading);
 
       if (isNavigating.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           map.current.easeTo({
-              center: [newLng, newLat],
+              center: currentPuckPos.current,
               bearing: newHeading, 
               duration: 0, 
               padding: { top: 0, bottom: 200, left: 0, right: 0 } 
@@ -474,11 +479,15 @@ export default function MapExplorerPage() {
 
   const handleStyleChange = (style: string) => {
     if (!map.current || style === currentStyle) return;
+    const previousRoute = routeGeoJSON.current;
+    
     map.current.once('style.load', () => {
         if (!map.current) return;
         add3DBuildings(map.current);
-        if (isTrafficVisible) addTrafficLayer(map.current);
-        if (routeGeoJSON.current) drawBlueRoute(map.current, { type: 'Feature', geometry: { type: 'LineString', coordinates: routeGeoJSON.current } });
+        addTrafficLayer(map.current, isTrafficVisible); // Preserve traffic state
+        if (previousRoute) {
+             drawBlueRoute(map.current, { type: 'Feature', geometry: { type: 'LineString', coordinates: previousRoute } });
+        }
     });
     map.current.setStyle(style);
     setCurrentStyle(style);
@@ -499,7 +508,9 @@ export default function MapExplorerPage() {
       attributionControl: false, 
       antialias: true, 
       logoPosition: 'bottom-left', 
-      cooperativeGestures: true,
+      cooperativeGestures: false, // CHANGED: Disable "Ctrl+Scroll" requirement
+      scrollZoom: true,
+      dragPan: true,
       maxPitch: 85,
     });
     map.current = mapInstance;
@@ -527,7 +538,7 @@ export default function MapExplorerPage() {
         setIsMapLoaded(true); 
         geolocate.trigger(); 
         add3DBuildings(mapInstance);
-        addTrafficLayer(mapInstance); 
+        addTrafficLayer(mapInstance, isTrafficVisible); 
         animatePuck(); 
 
         // === REALTIME WATCHER & SMART REROUTE ===
@@ -583,6 +594,7 @@ export default function MapExplorerPage() {
     mapInstance.on('dragstart', handleInteractionStart);
     mapInstance.on('pitchstart', handleInteractionStart);
     mapInstance.on('zoomstart', handleInteractionStart);
+    mapInstance.on('wheel', handleInteractionStart); // Detect scroll wheel too
     
     mapInstance.on('click', (e) => { 
         if(!isNavigating.current) handleMapSelection(e.lngLat); 
@@ -689,7 +701,7 @@ export default function MapExplorerPage() {
     if (!locationDetails) return;
     
     setIsRouting(true);
-    activeDestination.current = [locationDetails.lng, locationDetails.lat]; // Store for reroute
+    activeDestination.current = [locationDetails.lng, locationDetails.lat]; 
     const success = await fetchRoute(userLocation.current, [locationDetails.lng, locationDetails.lat]);
     setIsRouting(false);
 
@@ -857,12 +869,14 @@ export default function MapExplorerPage() {
   const toggleTraffic = useCallback(() => {
     if (!map.current || !map.current.getStyle()) return;
     if (!map.current.getLayer('traffic')) {
-        addTrafficLayer(map.current);
+        addTrafficLayer(map.current, true);
+        setIsTrafficVisible(true);
         return;
     }
     const visibility = map.current.getLayoutProperty('traffic', 'visibility');
-    map.current.setLayoutProperty('traffic', 'visibility', visibility === 'visible' ? 'none' : 'visible');
-    setIsTrafficVisible(visibility !== 'visible');
+    const newState = visibility === 'visible' ? 'none' : 'visible';
+    map.current.setLayoutProperty('traffic', 'visibility', newState);
+    setIsTrafficVisible(newState === 'visible');
   }, []);
 
   const resetCompass = useCallback(() => {
@@ -880,7 +894,6 @@ export default function MapExplorerPage() {
   };
 
   const openPassApp = () => {
-     // PassApp deep linking is restricted. Best effort is to open the app or web.
      window.location.href = "passapp://";
      setTimeout(() => { window.open('https://passapp-taxi.com/', '_blank'); }, 1500);
   };
@@ -1131,7 +1144,7 @@ const BottomControls = memo(({
     const [isSearching, setIsSearching] = useState(false);
     const [history, setHistory] = useState<SearchResult[]>([]);
     const [isHistoryExpanded, setIsHistoryExpanded] = useState(true);
-    const [isInputActive, setIsInputActive] = useState(false); // <--- NEW STATE: Controls visibility
+    const [isInputActive, setIsInputActive] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -1183,7 +1196,7 @@ const BottomControls = memo(({
     const handleSelect = (s: SearchResult) => {
         setQuery("");
         setSuggestions([]);
-        setIsInputActive(false); // Close panel on select
+        setIsInputActive(false);
         const filtered = history.filter(h => h.name !== s.name && h.address !== s.address);
         const newHistory = [s, ...filtered].slice(0, 5);
         updateHistory(newHistory);
@@ -1208,7 +1221,6 @@ const BottomControls = memo(({
 
     return (
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
-            {/* Top Right Controls - Hide when searching to reduce clutter */}
             <div className={`flex justify-end gap-3 pointer-events-auto pb-2 transition-opacity duration-300 ${isInputActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
                  <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -1243,7 +1255,6 @@ const BottomControls = memo(({
                 </Button>
             </div>
 
-            {/* Categories - Hide when input is active to give more space to results */}
             <div className={`flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1 transition-all duration-300 ease-out ${isInputActive || query.length > 0 ? 'opacity-0 translate-y-4 pointer-events-none h-0' : 'opacity-100 translate-y-0 h-10'}`}>
                 <Button onClick={() => handleCategorySearch("gas station")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white">
                     <Fuel className="h-3.5 w-3.5 mr-2 text-orange-400" /> ប្រេង
@@ -1263,17 +1274,14 @@ const BottomControls = memo(({
             </div>
 
             <div className="pointer-events-auto flex flex-col gap-2 relative group">
-                {/* BACKDROP */}
                 {isInputActive && (
                     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[-1] animate-in fade-in" onClick={handleCloseSearch} />
                 )}
                 
-                {/* RESULTS CARD */}
                 {showCard && (
                     <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[50vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
                         <CardContent className="p-0">
                             
-                            {/* HISTORY SECTION */}
                             {query.length === 0 && history.length > 0 && (
                                 <div className="border-b border-white/5 transition-all duration-300">
                                     <div 
@@ -1315,7 +1323,6 @@ const BottomControls = memo(({
                                 </div>
                             )}
 
-                            {/* SUGGESTIONS SECTION */}
                             {suggestions.map((s, i) => {
                                 const dist = calcDist(s.lat, s.lng);
                                 return (
