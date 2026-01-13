@@ -29,7 +29,7 @@ import {
   Crosshair, Banknote, GraduationCap,
   ChevronDown, ChevronUp, Trash2,
   Phone, Globe, Satellite, Map as MapIcon,
-  CarFront, ExternalLink
+  CarFront, ExternalLink, Camera, Video, ScanEye
 } from 'lucide-react';
 
 // ==========================================
@@ -88,6 +88,21 @@ function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number,
   return (R * c) * 1000;
 }
 
+// Calculate Bearing for AR
+function getBearing(startLat: number, startLng: number, destLat: number, destLng: number) {
+  const startLatRad = startLat * (Math.PI / 180);
+  const startLngRad = startLng * (Math.PI / 180);
+  const destLatRad = destLat * (Math.PI / 180);
+  const destLngRad = destLng * (Math.PI / 180);
+
+  const y = Math.sin(destLngRad - startLngRad) * Math.cos(destLatRad);
+  const x = Math.cos(startLatRad) * Math.sin(destLatRad) -
+            Math.sin(startLatRad) * Math.cos(destLatRad) * Math.cos(destLngRad - startLngRad);
+  const brng = Math.atan2(y, x);
+  const brngDeg = (brng * 180) / Math.PI;
+  return (brngDeg + 360) % 360; // Normalize to 0-360
+}
+
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
     let minDistance = Infinity;
     const step = Math.ceil(routeCoords.length / 100); 
@@ -109,7 +124,6 @@ const formatDuration = (s: number) => {
     return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`; 
 };
 
-// Reduces geometry size for Geoapify API limits
 const simplifyGeometry = (coordinates: number[][]) => {
     if (!coordinates || coordinates.length === 0) return "";
     const step = Math.max(1, Math.floor(coordinates.length / 80));
@@ -181,6 +195,132 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
+// 3. AR COMPONENT (NEW)
+// ==========================================
+const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: [number, number], destination: [number, number], onClose: () => void }) => {
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const [heading, setHeading] = useState(0);
+    const [bearing, setBearing] = useState(0);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        // 1. Camera Access
+        const startCamera = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "environment" }, 
+                    audio: false 
+                });
+                if (videoRef.current) videoRef.current.srcObject = stream;
+            } catch (err) {
+                setError("Camera access denied.");
+            }
+        };
+        startCamera();
+
+        // 2. Compass Handling
+        const handleOrientation = (e: DeviceOrientationEvent) => {
+            if (e.alpha !== null) {
+                // Adjust for iOS/Android differences if needed (simplified here)
+                let compass = (e as any).webkitCompassHeading || (360 - e.alpha);
+                setHeading(compass);
+            }
+        };
+        window.addEventListener('deviceorientation', handleOrientation);
+
+        // 3. Bearing Calculation
+        const b = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
+        setBearing(b);
+
+        const interval = setInterval(() => {
+             const b = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
+             setBearing(b);
+        }, 2000);
+
+        return () => {
+            window.removeEventListener('deviceorientation', handleOrientation);
+            clearInterval(interval);
+            // Stop Camera
+            if (videoRef.current && videoRef.current.srcObject) {
+                (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+            }
+        };
+    }, [userLocation, destination]);
+
+    // Calculate Pin Position on Screen (Simple AR)
+    // 0 = Center. -90 = Left Edge. +90 = Right Edge.
+    let diff = bearing - heading;
+    while (diff < -180) diff += 360;
+    while (diff > 180) diff -= 360;
+    
+    // Clamp to FOV (approx 60 degrees)
+    const fov = 60;
+    const xPos = Math.max(-30, Math.min(30, diff)); // limit movement within screen center area
+    const screenPercent = 50 + (xPos / (fov/2)) * 40; // 50% is center
+
+    const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
+
+    return (
+        <div className="fixed inset-0 z-[60] bg-black">
+            {error ? (
+                <div className="flex h-full items-center justify-center text-white p-6 text-center">
+                    <div>
+                        <AlertTriangle className="h-10 w-10 text-red-500 mx-auto mb-2"/>
+                        <p>{error}</p>
+                        <Button onClick={onClose} className="mt-4">Close AR</Button>
+                    </div>
+                </div>
+            ) : (
+                <>
+                    <video ref={videoRef} autoPlay playsInline className="absolute inset-0 w-full h-full object-cover" />
+                    
+                    {/* AR PIN Overlay */}
+                    {Math.abs(diff) < 90 && (
+                        <div 
+                            className="absolute top-1/2 transform -translate-x-1/2 -translate-y-1/2 transition-all duration-100 flex flex-col items-center"
+                            style={{ left: `${screenPercent}%` }}
+                        >
+                            <div className="bg-red-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg whitespace-nowrap mb-1 animate-bounce">
+                                {formatDistance(dist)}
+                            </div>
+                            <div className="w-12 h-12 bg-red-600 rounded-full border-4 border-white shadow-2xl flex items-center justify-center">
+                                <MapPin className="h-6 w-6 text-white" />
+                            </div>
+                            <div className="w-1 h-20 bg-gradient-to-b from-red-600 to-transparent"></div>
+                        </div>
+                    )}
+
+                    {/* HUD UI */}
+                    <div className="absolute top-4 left-4 right-4 flex justify-between items-start">
+                        <div className="bg-black/60 backdrop-blur text-white px-4 py-2 rounded-xl">
+                            <p className="text-xs text-gray-300">Destination Bearing</p>
+                            <p className="text-xl font-bold font-mono">{Math.round(bearing)}°</p>
+                        </div>
+                        <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20">
+                            <X className="h-5 w-5" />
+                        </Button>
+                    </div>
+
+                    <div className="absolute bottom-10 left-0 right-0 text-center">
+                         <div className="inline-block bg-black/60 backdrop-blur text-white px-6 py-3 rounded-full border border-white/20">
+                            {Math.abs(diff) < 15 ? (
+                                <span className="text-green-400 font-bold flex items-center gap-2"><ScanEye className="h-5 w-5"/> TARGET AHEAD</span>
+                            ) : (
+                                <span className="text-white flex items-center gap-2">
+                                    {diff < 0 ? <ArrowRight className="h-5 w-5 rotate-180"/> : null} 
+                                    Turn {diff < 0 ? "Left" : "Right"} 
+                                    {diff > 0 ? <ArrowRight className="h-5 w-5"/> : null}
+                                </span>
+                            )}
+                         </div>
+                    </div>
+                </>
+            )}
+        </div>
+    );
+};
+
+// ==========================================
 // 3. MAIN COMPONENT
 // ==========================================
 export default function MapExplorerPage() {
@@ -231,6 +371,8 @@ export default function MapExplorerPage() {
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [isTrafficVisible, setIsTrafficVisible] = useState(true);
+  const [isRainMode, setIsRainMode] = useState(false); // RAIN MODE STATE
+  const [showAR, setShowAR] = useState(false);         // AR MODE STATE
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -436,6 +578,44 @@ export default function MapExplorerPage() {
       });
   };
 
+  // --- ADD RAIN LAYER FUNCTION ---
+  const addRainLayer = (instance: MapboxMap, visible: boolean) => {
+    if (!WEATHER_API_KEY) return;
+    
+    // If source exists, just toggle visibility
+    if (instance.getSource('rain-source')) {
+        if(instance.getLayer('rain-layer')) {
+            instance.setLayoutProperty('rain-layer', 'visibility', visible ? 'visible' : 'none');
+        }
+        return;
+    }
+
+    // Add source
+    instance.addSource('rain-source', {
+        type: 'raster',
+        tiles: [`https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${WEATHER_API_KEY}`],
+        tileSize: 256
+    });
+
+    // Find a good place to insert the layer (below labels)
+    const layers = instance.getStyle().layers;
+    let firstSymbolId;
+    for (const layer of layers) {
+        if (layer.type === 'symbol') {
+            firstSymbolId = layer.id;
+            break;
+        }
+    }
+
+    instance.addLayer({
+        id: 'rain-layer',
+        type: 'raster',
+        source: 'rain-source',
+        paint: { 'raster-opacity': 0.7 },
+        layout: { visibility: visible ? 'visible' : 'none' }
+    }, firstSymbolId);
+  };
+
   const drawBlueRoute = (instance: MapboxMap, geojson: any) => {
       if (!geojson || !geojson.geometry) return;
       
@@ -514,6 +694,7 @@ export default function MapExplorerPage() {
         if (!map.current) return;
         add3DBuildings(map.current);
         addTrafficLayer(map.current, isTrafficVisible); 
+        addRainLayer(map.current, isRainMode); // Re-apply rain layer on style change
         if (previousRoute) {
              drawBlueRoute(map.current, { type: 'Feature', geometry: { type: 'LineString', coordinates: previousRoute } });
         }
@@ -529,7 +710,7 @@ export default function MapExplorerPage() {
     
     // Check for secure context
     if (typeof window !== 'undefined' && window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-        toast({ title: "Insecure Context", description: "GPS requires HTTPS or Localhost", variant: "destructive" });
+        toast({ title: "Insecure Context", description: "GPS/AR requires HTTPS", variant: "destructive" });
     }
 
     const mapInstance = new mapboxgl.Map({
@@ -585,6 +766,7 @@ export default function MapExplorerPage() {
         geolocate.trigger(); 
         add3DBuildings(mapInstance);
         addTrafficLayer(mapInstance, isTrafficVisible); 
+        addRainLayer(mapInstance, isRainMode); // Initialize rain layer
         animatePuck(); 
 
         if ('geolocation' in navigator) {
@@ -682,7 +864,7 @@ export default function MapExplorerPage() {
       mapInstance.remove();
       map.current = null;
     }
-  }, [fetchWeather, fetchRoute, toast]);
+  }, [fetchWeather, fetchRoute, toast, isRainMode]); // Need isRainMode dep to init correct layer state
 
   const clearSearchMarkers = useCallback(() => {
       searchMarkers.current.forEach(m => m.remove());
@@ -857,40 +1039,24 @@ export default function MapExplorerPage() {
     }
   }, [clearSearchMarkers]);
 
-  const plotSearchResults = (results: SearchResult[], query: string) => {
-    if (!map.current || results.length === 0) {
-        toast({ title: "បរាជ័យ", description: "រកមិនឃើញលទ្ធផលទេ" });
-        return;
-    }
-    const fitBounds = new LngLatBounds();
-    if(userLocation.current) fitBounds.extend(userLocation.current);
-    
-    results.forEach(res => {
-        const el = document.createElement('div');
-        let bgClass = "bg-indigo-500", iconChar = "P";
-        if (query === "gas station" || res.type.includes('fuel')) { bgClass = "bg-orange-500"; iconChar = "⛽"; }
-        else if (query === "restaurant" || res.type.includes('catering')) { bgClass = "bg-rose-500"; iconChar = "🍔"; }
-        else if (query === "coffee" || res.type.includes('cafe')) { bgClass = "bg-amber-500"; iconChar = "☕"; }
-        else if (query === "hospital" || res.type.includes('health')) { bgClass = "bg-red-600"; iconChar = "🏥"; }
-        else if (query === "school" || res.type.includes('education')) { bgClass = "bg-blue-500"; iconChar = "🎓"; }
-        else if (query === "bank" || res.type.includes('financial')) { bgClass = "bg-emerald-600"; iconChar = "🏦"; }
+  // Handle Rain Mode Toggle
+  const toggleRainMode = useCallback(() => {
+      if (!map.current) return;
+      const newState = !isRainMode;
+      setIsRainMode(newState);
+      addRainLayer(map.current, newState);
+      if (newState) toast({ title: "Rain Mode Active", description: "Showing weather layer" });
+  }, [isRainMode, toast]);
 
-        el.className = `w-9 h-9 ${bgClass} rounded-full border-[3px] border-zinc-900 shadow-xl cursor-pointer hover:scale-110 transition-transform flex items-center justify-center text-white text-sm font-bold ${kantumruy.className}`;
-        el.innerText = iconChar;
-        
-        const marker = new Marker(el).setLngLat([res.lng, res.lat]).addTo(map.current!);
-        el.addEventListener('click', (e) => { 
-            e.stopPropagation(); 
-            handleMapSelection({ lng: res.lng, lat: res.lat }); 
-        });
-        searchMarkers.current.push(marker);
-        fitBounds.extend([res.lng, res.lat]);
-    });
-    
-    map.current.fitBounds(fitBounds, { padding: 80, maxZoom: 15 });
-    toast({ title: "ជោគជ័យ!", description: `រកឃើញ ${results.length} កន្លែង` });
-  };
+  const toggleAR = useCallback(() => {
+      if (!userLocation.current || !locationDetails) {
+          toast({ title: "Cannot start AR", description: "Set destination first", variant: "destructive" });
+          return;
+      }
+      setShowAR(!showAR);
+  }, [showAR, locationDetails]);
 
+  // Keep existing logic
   const handleCategorySearch = async (query: string) => {
     const geoKey = GEOAPIFY_API_KEY;
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
@@ -991,6 +1157,15 @@ export default function MapExplorerPage() {
 
         <WeatherWidget weather={weather} isNavigating={isNavigating.current} />
 
+        {/* AR VIEW OVERLAY */}
+        {showAR && userLocation.current && locationDetails && (
+            <ArLastMileView 
+                userLocation={userLocation.current} 
+                destination={[locationDetails.lng, locationDetails.lat]} 
+                onClose={() => setShowAR(false)} 
+            />
+        )}
+
         {routeDetails ? (
            <NavigationHUD 
               routeDetails={routeDetails} 
@@ -1003,6 +1178,8 @@ export default function MapExplorerPage() {
            <BottomControls 
               isTrafficVisible={isTrafficVisible}
               toggleTraffic={toggleTraffic}
+              isRainMode={isRainMode}
+              toggleRainMode={toggleRainMode}
               resetCompass={resetCompass}
               handleCategorySearch={handleCategorySearch}
               handleAutocomplete={handleAutocomplete}
@@ -1011,6 +1188,9 @@ export default function MapExplorerPage() {
               handleUserLocationClick={handleUserLocationClick}
               handleStyleChange={handleStyleChange}
               currentStyle={currentStyle}
+              // AR Trigger
+              canShowAR={!!locationDetails}
+              toggleAR={toggleAR}
            />
         )}
 
@@ -1107,6 +1287,14 @@ export default function MapExplorerPage() {
                 </div>
 
                 <SheetFooter>
+                  {/* AR Button if destination selected */}
+                  <Button 
+                    className="w-full mb-2 gap-2 bg-zinc-800 hover:bg-zinc-700 text-white h-12 text-base font-semibold border border-zinc-700 rounded-xl" 
+                    onClick={toggleAR}
+                  >
+                    <Camera className="h-5 w-5" /> Live View (AR)
+                  </Button>
+
                   <Button 
                     className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" 
                     onClick={handleStartNavigation}
@@ -1200,9 +1388,9 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
 NavigationHUD.displayName = "NavigationHUD";
 
 const BottomControls = memo(({ 
-    isTrafficVisible, toggleTraffic, resetCompass, 
+    isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, resetCompass, 
     handleCategorySearch, handleAutocomplete, onSelectLocation, userLocation, handleUserLocationClick,
-    handleStyleChange, currentStyle
+    handleStyleChange, currentStyle, canShowAR, toggleAR
 }: any) => {
     const [query, setQuery] = useState("");
     const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
@@ -1311,9 +1499,24 @@ const BottomControls = memo(({
                  <Button size="icon" onClick={handleUserLocationClick} className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
                     <Crosshair className="h-5 w-5" />
                 </Button>
+                
+                {/* Traffic Toggle */}
                 <Button size="icon" onClick={toggleTraffic} className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
                     <Zap className="h-5 w-5" />
                 </Button>
+
+                {/* Rain Mode Toggle */}
+                <Button size="icon" onClick={toggleRainMode} className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isRainMode ? 'bg-blue-600 border-blue-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
+                    <CloudRain className="h-5 w-5" />
+                </Button>
+
+                {/* AR Toggle (Quick Access) */}
+                {canShowAR && (
+                    <Button size="icon" onClick={toggleAR} className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
+                        <Camera className="h-5 w-5" />
+                    </Button>
+                )}
+
                 <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass}>
                     <Compass className="h-5 w-5" />
                 </Button>
