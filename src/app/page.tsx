@@ -208,7 +208,7 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
-// 3. AR COMPONENT (OPTIMIZED FOR 60FPS)
+// 3. AR COMPONENT (FIXED & OPTIMIZED)
 // ==========================================
 const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: [number, number], destination: [number, number], onClose: () => void }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -228,6 +228,20 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
     const sensorData = useRef({ heading: 0, rawHeading: 0 });
     const localState = useRef({ isVisible: false, distance: 0 });
 
+    // 1. Stable Orientation Handler
+    const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
+        let heading = 0;
+        if (e.webkitCompassHeading) {
+            // iOS
+            heading = e.webkitCompassHeading;
+        } else if (e.alpha !== null) {
+            // Android (Standard)
+            heading = 360 - e.alpha;
+        }
+        sensorData.current.rawHeading = (heading + 360) % 360;
+    }, []);
+
+    // 2. Camera Start & Initial Permission Check
     useEffect(() => {
         let stream: MediaStream | null = null;
 
@@ -243,7 +257,7 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                 try {
                     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                 } catch (e) {
-                    setPermissionError("Camera access denied or unavailable.");
+                    setPermissionError("Camera access denied. Ensure you are using HTTPS.");
                     return;
                 }
             }
@@ -252,45 +266,57 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
             }
         };
 
-        const initSensors = async () => {
+        const checkPermission = () => {
+             // Android/Standard doesn't usually require explicit requestPermission
             if (typeof (DeviceOrientationEvent as any).requestPermission !== 'function') {
-                // Non-iOS or Permission already granted
                 setHasPermission(true);
-                window.addEventListener('deviceorientation', handleOrientation);
-                // @ts-ignore
-                window.addEventListener('deviceorientationabsolute', handleOrientation);
             }
-        };
-
-        const handleOrientation = (e: DeviceOrientationEvent | any) => {
-            let heading = 0;
-            if (e.webkitCompassHeading) {
-                // iOS
-                heading = e.webkitCompassHeading;
-            } else if (e.alpha !== null) {
-                // Android (Standard)
-                // If absolute is true, alpha is compas. If not, it's relative.
-                // We use fallback to alpha and invert because alpha increases CCW usually.
-                heading = 360 - e.alpha;
-            }
-            sensorData.current.rawHeading = (heading + 360) % 360;
+            // iOS requires explicit permission triggered by user interaction, so we leave hasPermission false to show the UI
         };
 
         startCamera();
-        initSensors();
+        checkPermission();
 
         return () => {
-            window.removeEventListener('deviceorientation', handleOrientation);
-            // @ts-ignore
-            window.removeEventListener('deviceorientationabsolute', handleOrientation);
             if (stream) stream.getTracks().forEach(track => track.stop());
             cancelAnimationFrame(requestRef.current);
         };
     }, []);
 
-    // Optimized Animation Loop: Updates DOM directly
+    // 3. Attach Listeners ONLY when permission is granted
     useEffect(() => {
-        if (!hasPermission && !permissionError) return;
+        if (hasPermission) {
+            window.addEventListener('deviceorientation', handleOrientation);
+            // @ts-ignore
+            window.addEventListener('deviceorientationabsolute', handleOrientation);
+        }
+        return () => {
+            window.removeEventListener('deviceorientation', handleOrientation);
+            // @ts-ignore
+            window.removeEventListener('deviceorientationabsolute', handleOrientation);
+        }
+    }, [hasPermission, handleOrientation]);
+
+    // 4. Request Access (FIXED: No Reload)
+    const requestAccess = async () => {
+        if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+            try {
+                const perm = await (DeviceOrientationEvent as any).requestPermission();
+                if (perm === 'granted') {
+                    setHasPermission(true); // Updates state, triggering Effect #3 to add listeners
+                } else {
+                    setPermissionError("Permission denied.");
+                }
+            } catch (e) {
+                setPermissionError("Error requesting permission.");
+            }
+        }
+    };
+
+    // 5. Animation Loop
+    useEffect(() => {
+        // Only run loop if we have permission OR on Android (where permission logic is simpler)
+        if (!hasPermission && !permissionError && typeof (DeviceOrientationEvent as any).requestPermission === 'function') return;
 
         const updateLoop = () => {
             // Smooth heading
@@ -349,22 +375,6 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
         return () => cancelAnimationFrame(requestRef.current);
     }, [userLocation, destination, hasPermission, permissionError]);
 
-    const requestAccess = async () => {
-        if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
-            try {
-                const perm = await (DeviceOrientationEvent as any).requestPermission();
-                if (perm === 'granted') {
-                    setHasPermission(true);
-                    window.location.reload(); 
-                } else {
-                    setPermissionError("Permission denied.");
-                }
-            } catch (e) {
-                setPermissionError("Error requesting permission.");
-            }
-        }
-    };
-
     return (
         <div className="fixed inset-0 z-[60] bg-black">
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
@@ -391,7 +401,7 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                 </div>
             )}
 
-            {hasPermission && (
+            {(hasPermission || typeof (DeviceOrientationEvent as any).requestPermission !== 'function') && (
                 <>
                     {/* The Pin - Managed by ref directly */}
                     <div 
@@ -614,7 +624,6 @@ export default function MapExplorerPage() {
   };
 
   // --- MAP LAYER MANAGEMENT HELPER ---
-  // This function ensures layers are correctly added/restored after style changes
   const restoreMapLayers = useCallback((instance: MapboxMap, currentTraffic: boolean, currentRain: boolean) => {
       if(!instance) return;
 
@@ -691,7 +700,7 @@ export default function MapExplorerPage() {
                 type: 'geojson', 
                 data: { 
                     type: 'Feature', 
-                    properties: {}, // Fixed missing properties
+                    properties: {}, 
                     geometry: { type: 'LineString', coordinates: routeGeoJSON.current } 
                 } 
              });
@@ -722,8 +731,6 @@ export default function MapExplorerPage() {
       if (source) {
           source.setData(geojson);
       } else {
-          // If source doesn't exist (e.g. after style change), use restore logic
-          // But we call a mini version here just for drawing
           const layers = instance.getStyle().layers;
           const labelLayerId = layers?.find((layer) => layer.type === 'symbol')?.id;
           
@@ -973,7 +980,7 @@ export default function MapExplorerPage() {
       antialias: true, 
       logoPosition: 'bottom-left', 
       cooperativeGestures: false, 
-      scrollZoom: true,
+      scrollZoom: true, 
       dragPan: true,
       maxPitch: 85,
     });
