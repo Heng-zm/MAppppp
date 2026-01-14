@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-/* --- SHADCN UI THEME VARIABLES & SAFE AREAS --- */
+/* ==========================================
+   1. SHADCN UI THEME & VARIABLES
+   ========================================== */
 @layer base {
   :root {
     /* Safe Area Variables for Mobile Notches */
@@ -11,7 +13,7 @@
     --sal: env(safe-area-inset-left);
     --sar: env(safe-area-inset-right);
 
-    /* Shadcn Light Theme */
+    /* Light Mode */
     --background: 0 0% 100%;
     --foreground: 240 10% 3.9%;
     --card: 0 0% 100%;
@@ -35,7 +37,7 @@
   }
 
   .dark {
-    /* Shadcn Dark Theme */
+    /* Dark Mode */
     --background: 240 10% 3.9%;
     --foreground: 0 0% 98%;
     --card: 240 10% 3.9%;
@@ -67,42 +69,61 @@
   }
 }
 
-/* --- GLOBAL MOBILE & VIEWPORT OPTIMIZATION --- */
+/* ==========================================
+   2. MOBILE & VIEWPORT OPTIMIZATION
+   ========================================== */
 html {
   height: 100%;
   width: 100%;
-  overflow: hidden;
-  touch-action: none; 
+  overflow: hidden; /* Prevent scrolling on the html element */
+  touch-action: none; /* Disable default browser touch actions (zoom, pan) */
   -webkit-tap-highlight-color: transparent;
-  /* Prevent bounce effect on iOS */
+  /* Critical for iOS: prevents the 'rubber band' bounce effect */
   position: fixed; 
 }
 
 body, #__next {
-  height: 100dvh; /* Dynamic Viewport Height for mobile browsers */
+  height: 100dvh; /* Use dynamic viewport height */
   width: 100%;
   padding: 0;
   margin: 0;
   overflow: hidden;
-  overscroll-behavior: none;
+  overscroll-behavior: none; /* Prevent pull-to-refresh */
   -webkit-overflow-scrolling: touch;
   font-family: var(--font-kantumruy), ui-sans-serif, system-ui, sans-serif;
   background-color: #09090b; 
 }
 
-/* Ensure Mapbox Popups also use the Khmer font */
+/* Ensure Mapbox Popups inherit the app font (Khmer support) */
 .mapboxgl-popup {
   font-family: var(--font-kantumruy), ui-sans-serif, system-ui, sans-serif !important;
   z-index: 50 !important;
+  max-width: 240px !important;
 }
 
-/* --- MAPBOX UI CLEANUP --- */
-/* Hide Mapbox Logo & Attribution for cleaner "App" look (Optional - check license) */
+.mapboxgl-popup-content {
+  border-radius: 12px !important;
+  padding: 12px !important;
+  background: rgba(24, 24, 27, 0.95) !important; /* Zinc-950 backdrop */
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: white;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5) !important;
+}
+
+.mapboxgl-popup-tip {
+  border-top-color: rgba(24, 24, 27, 0.95) !important;
+}
+
+/* ==========================================
+   3. MAPBOX UI CLEANUP
+   ========================================== */
+/* Hide Mapbox Logo & Attribution for "App-like" feel */
 .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib {
   display: none !important;
 }
 
-/* --- DIRECTIONS PLUGIN OVERRIDES (If installed) --- */
+/* Hide default directions plugin UI elements if they exist */
 .mapbox-directions-destination,
 .mapbox-directions-origin,
 .mapbox-directions-step {
@@ -124,11 +145,13 @@ body, #__next {
   display: none !important;
 }
 
-/* --- NAVIGATION MODE STYLES --- */
+/* ==========================================
+   4. NAVIGATION MODE STYLES
+   ========================================== */
 
 /* 
-   When the app is in navigation mode (class 'nav-mode' added to container),
-   we hide the default blue dot because we use the custom 3D Arrow.
+   When '.nav-mode' is added to the map container (during turn-by-turn),
+   hide the default blue dot so we can show the 3D Puck Arrow.
 */
 .nav-mode .mapboxgl-user-location-dot,
 .nav-mode .mapboxgl-user-location-accuracy-circle {
@@ -136,24 +159,26 @@ body, #__next {
   opacity: 0 !important;
 }
 
-/* --- CUSTOM 3D NAVIGATION PUCK (ARROW) --- */
+/* 
+   Custom 3D Navigation Puck (Arrow) 
+   Overwrites the basic CSS in the React file for a high-quality SVG
+*/
 .navigation-puck {
   width: 50px;
   height: 50px;
-  /* SVG Arrow: Blue body, white outline */
+  /* Blue Arrow with White Outline */
   background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M50 0L90 85L50 65L10 85L50 0Z' fill='%233b82f6' stroke='white' stroke-width='6' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-size: contain;
   background-repeat: no-repeat;
   background-position: center;
   z-index: 10;
   pointer-events: none;
-  /* Drop shadow to make it float above the map */
   filter: drop-shadow(0px 8px 6px rgba(0,0,0,0.6));
   will-change: transform;
   transform-origin: center center;
 }
 
-/* Optional: Faint pulse under the arrow */
+/* Faint pulse under the arrow */
 .navigation-puck::after {
     content: '';
     position: absolute;
@@ -167,14 +192,16 @@ body, #__next {
     border-radius: 50%;
 }
 
-/* --- STANDARD MARKER STYLES --- */
+/* ==========================================
+   5. STANDARD MARKER STYLES
+   ========================================== */
 .mapboxgl-marker {
   display: block;
   will-change: transform;
   cursor: pointer;
 }
 
-/* Default User Location Dot (Used when NOT navigating) */
+/* Default User Location Dot (Visible when NOT navigating) */
 .mapboxgl-user-location-dot {
   display: block !important;
   width: 18px;
@@ -186,6 +213,7 @@ body, #__next {
   pointer-events: none;
 }
 
+/* Pulse animation for the standard blue dot */
 .mapboxgl-user-location-dot::before {
   content: "";
   position: absolute;
@@ -205,7 +233,9 @@ body, #__next {
   100% { transform: translate(-50%, -50%) scale(2.5); opacity: 0; }
 }
 
-/* --- SCROLLBAR UTILITIES --- */
+/* ==========================================
+   6. UTILITIES
+   ========================================== */
 .scrollbar-thin {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
