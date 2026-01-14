@@ -42,7 +42,6 @@ const kantumruy = Kantumruy_Pro({
   display: 'swap',
 });
 
-// Environment Variables
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const WEATHER_API_KEY = process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY;
 const GEOAPIFY_API_KEY = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY;
@@ -53,6 +52,7 @@ const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
 const REROUTE_THRESHOLD_METERS = 45; 
+const AR_PERMISSION_KEY = "map_ar_permission_v1"; // Key for LocalStorage
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -117,23 +117,13 @@ function lerpAngle(current: number, target: number, factor: number) {
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
     if (!routeCoords.length) return Infinity;
 
-    // 1. Quick Bounding Box Check (Optimization)
-    // If user is wildly far from the entire route, don't loop through points
-    // Calculate naive bounds (not perfect for anti-meridian, but fine for local nav)
-    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
-    // Sample start, middle, end for quick bounds estimation or iterate all if route is short
-    // For simplicity/speed in JS, we just skip this if route is small
-    
-    // 2. Detailed Distance Check
     let minDistance = Infinity;
-    // Dynamic step based on route length to keep checks constant time-ish
     const step = Math.max(1, Math.ceil(routeCoords.length / 50)); 
     
     for (let i = 0; i < routeCoords.length; i += step) {
         const coord = routeCoords[i];
         const dist = getDistanceFromLatLonInMeters(userLat, userLng, coord[1], coord[0]);
         if (dist < minDistance) minDistance = dist;
-        // Optimization: If we are very close to a point, we are on route. Stop checking.
         if (minDistance < 10) return minDistance; 
     }
     return minDistance;
@@ -157,7 +147,8 @@ const simplifyGeometry = (coordinates: number[][]) => {
 
 const HighlightMatch = ({ text, match }: { text: string, match: string }) => {
     if (!match || !text) return <span>{text}</span>;
-    const parts = text.split(new RegExp(`(${match})`, 'gi'));
+    const escapedMatch = match.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const parts = text.split(new RegExp(`(${escapedMatch})`, 'gi'));
     return (
         <span>
             {parts.map((part, i) => 
@@ -218,16 +209,24 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
-// 3. AR COMPONENT (FIXED & OPTIMIZED)
+// 3. AR COMPONENT (UPDATED FOR PERMISSIONS)
 // ==========================================
-const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: [number, number], destination: [number, number], onClose: () => void }) => {
+interface ArLastMileViewProps {
+    userLocation: [number, number];
+    destination: [number, number];
+    onClose: () => void;
+    // New Props for Permission Handling
+    hasParentPermission: boolean;
+    setParentPermission: (val: boolean) => void;
+}
+
+const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const requestRef = useRef<number>(0);
-    const [hasPermission, setHasPermission] = useState<boolean>(false);
     const [permissionError, setPermissionError] = useState<string | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
     
-    // Direct DOM refs for high-frequency updates (avoids React re-renders)
+    // Direct DOM refs for high-frequency updates
     const pinRef = useRef<HTMLDivElement>(null);
     const arrowLeftRef = useRef<HTMLDivElement>(null);
     const arrowRightRef = useRef<HTMLDivElement>(null);
@@ -235,34 +234,28 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
     const bearingTextRef = useRef<HTMLSpanElement>(null);
     const targetStatusRef = useRef<HTMLDivElement>(null);
     
-    // Refs for calculation data
     const sensorData = useRef({ heading: 0, rawHeading: 0 });
     const localState = useRef({ isVisible: false, distance: 0 });
 
-    // 1. Stable Orientation Handler
     const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
         let heading = 0;
         if (e.webkitCompassHeading) {
-            // iOS
             heading = e.webkitCompassHeading;
         } else if (e.alpha !== null) {
-            // Android (Standard)
             heading = 360 - e.alpha;
         }
         sensorData.current.rawHeading = (heading + 360) % 360;
     }, []);
 
-    // 2. Camera Start & Initial Permission Check
+    // Initial Camera & Permission Check
     useEffect(() => {
         const startCamera = async () => {
             try {
-                // Prefer environment (rear) camera
                 streamRef.current = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: { exact: "environment" } }, 
                     audio: false 
                 });
             } catch (err) {
-                // Fallback to any camera if "exact" fails
                 try {
                     streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                 } catch (e) {
@@ -275,27 +268,32 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
             }
         };
 
-        const checkPermission = () => {
-             // Android/Standard doesn't usually require explicit requestPermission for orientation
-             // iOS 13+ requires it
-             // @ts-ignore
+        const checkSavedPermission = () => {
+            // 1. If Parent already has permission (session), use it
+            if (hasParentPermission) return;
+
+            // 2. If Android/Standard (no request needed), auto-grant + check LocalStorage
+            // @ts-ignore
             if (typeof DeviceOrientationEvent.requestPermission !== 'function') {
-                setHasPermission(true);
+                const isSaved = localStorage.getItem(AR_PERMISSION_KEY) === 'true';
+                // On Android, we don't strictly *need* saved state to work, but we set it for consistency
+                setParentPermission(true); 
+                if(!isSaved) localStorage.setItem(AR_PERMISSION_KEY, 'true');
             }
         };
 
         startCamera();
-        checkPermission();
+        checkSavedPermission();
 
         return () => {
             if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
             cancelAnimationFrame(requestRef.current);
         };
-    }, []);
+    }, [hasParentPermission, setParentPermission]);
 
-    // 3. Attach Listeners ONLY when permission is granted
+    // Attach Listeners
     useEffect(() => {
-        if (hasPermission) {
+        if (hasParentPermission) {
             window.addEventListener('deviceorientation', handleOrientation);
             // @ts-ignore
             if ('ondeviceorientationabsolute' in window) {
@@ -309,9 +307,8 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                  window.removeEventListener('deviceorientationabsolute', handleOrientation as any);
             }
         }
-    }, [hasPermission, handleOrientation]);
+    }, [hasParentPermission, handleOrientation]);
 
-    // 4. Request Access (FIXED: No Reload)
     const requestAccess = async () => {
         // @ts-ignore
         if (typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -319,7 +316,8 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                 // @ts-ignore
                 const perm = await DeviceOrientationEvent.requestPermission();
                 if (perm === 'granted') {
-                    setHasPermission(true); 
+                    setParentPermission(true);
+                    localStorage.setItem(AR_PERMISSION_KEY, 'true'); // Save to storage
                 } else {
                     setPermissionError("Compass Permission denied.");
                 }
@@ -327,32 +325,29 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                 setPermissionError("Error requesting compass permission.");
             }
         } else {
-            setHasPermission(true);
+            setParentPermission(true);
+            localStorage.setItem(AR_PERMISSION_KEY, 'true');
         }
     };
 
-    // 5. Animation Loop
+    // Animation Loop
     useEffect(() => {
-        // Only run loop if we have permission OR on Android where requestPermission isn't needed
-        // @ts-ignore
-        const needsPerm = typeof DeviceOrientationEvent.requestPermission === 'function';
-        if (needsPerm && !hasPermission && !permissionError) return;
+        // Only run loop if permission is granted
+        if (!hasParentPermission) return;
 
         const updateLoop = () => {
-            // Smooth heading with heavier filtering to reduce jitter
             sensorData.current.heading = lerpAngle(sensorData.current.heading, sensorData.current.rawHeading, 0.08);
             
             const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
             const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
             const diff = getShortestAngleDistance(bearing, sensorData.current.heading);
             
-            const fov = 60; // Estimated FOV
+            const fov = 60;
             const screenWidth = window.innerWidth;
             const pxPerDegree = screenWidth / fov;
             const xOffset = diff * pxPerDegree;
             const isVisible = Math.abs(diff) < (fov / 2 + 10);
 
-            // DIRECT DOM UPDATES
             if (pinRef.current) {
                 pinRef.current.style.transform = `translate3d(calc(-50% + ${xOffset}px), -50%, 0)`;
                 pinRef.current.style.opacity = isVisible ? '1' : '0';
@@ -373,7 +368,6 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                 arrowRightRef.current.style.opacity = !isVisible && xOffset > 0 ? '1' : '0';
             }
 
-            // Low frequency visual update for status text
             if (localState.current.isVisible !== isVisible || Math.abs(localState.current.distance - distance) > 10) {
                  localState.current = { isVisible, distance };
                  if(targetStatusRef.current) {
@@ -393,15 +387,14 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
 
         requestRef.current = requestAnimationFrame(updateLoop);
         return () => cancelAnimationFrame(requestRef.current);
-    }, [userLocation, destination, hasPermission, permissionError]);
+    }, [userLocation, destination, hasParentPermission]);
 
     return (
         <div className="fixed inset-0 z-[60] bg-black">
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
             
-            {/* Permission Prompt for iOS */}
-            {/* @ts-ignore */}
-            {(!hasPermission && !permissionError && typeof DeviceOrientationEvent.requestPermission === 'function') && (
+            {/* Permission Prompt (Only shows if hasParentPermission is false) */}
+            {!hasParentPermission && !permissionError && (
                  <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
                     <div className="text-center p-6 max-w-sm">
                         <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/>
@@ -423,11 +416,9 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                 </div>
             )}
 
-            {/* Main AR UI */}
-            {/* @ts-ignore */}
-            {(hasPermission || typeof DeviceOrientationEvent.requestPermission !== 'function') && (
+            {/* Main AR UI (Only shows if permitted) */}
+            {hasParentPermission && (
                 <>
-                    {/* The Pin - Managed by ref directly */}
                     <div 
                         ref={pinRef}
                         className="absolute top-1/2 left-1/2 flex flex-col items-center justify-center pointer-events-none will-change-transform transition-opacity duration-200"
@@ -444,7 +435,6 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                         </div>
                     </div>
 
-                    {/* Off-screen Arrows */}
                     <div className="absolute top-1/2 left-0 right-0 -translate-y-1/2 flex items-center justify-between px-4 pointer-events-none">
                         <div ref={arrowLeftRef} className="transition-opacity duration-300 opacity-0">
                             <div className="bg-black/60 backdrop-blur p-4 rounded-full border border-white/20 animate-pulse">
@@ -540,7 +530,10 @@ export default function MapExplorerPage() {
   const [isRainMode, setIsRainMode] = useState(false); 
   const [isWindMode, setIsWindMode] = useState(false);
 
+  // AR & Permission States
   const [showAR, setShowAR] = useState(false);
+  const [hasArPermission, setHasArPermission] = useState(false); // Held in parent for session persistence
+
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -796,19 +789,25 @@ export default function MapExplorerPage() {
           const layers = instance.getStyle().layers;
           const labelLayerId = layers?.find((layer) => layer.type === 'symbol')?.id;
           
-          instance.addSource('custom-route-source', { type: 'geojson', data: geojson });
+          if(!instance.getSource('custom-route-source')) {
+              instance.addSource('custom-route-source', { type: 'geojson', data: geojson });
+          }
           
-          instance.addLayer({
-            id: 'custom-route-casing', type: 'line', source: 'custom-route-source',
-            layout: { 'line-join': 'round', 'line-cap': 'round' },
-            paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 }
-          }, labelLayerId); 
+          if(!instance.getLayer('custom-route-casing')) {
+            instance.addLayer({
+                id: 'custom-route-casing', type: 'line', source: 'custom-route-source',
+                layout: { 'line-join': 'round', 'line-cap': 'round' },
+                paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 }
+            }, labelLayerId); 
+          }
           
-          instance.addLayer({
-            id: 'custom-route-core', type: 'line', source: 'custom-route-source',
-            layout: { 'line-join': 'round', 'line-cap': 'round' },
-            paint: { 'line-color': '#4285F4', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 4, 18, 14 ], 'line-opacity': 1 }
-          }, labelLayerId);
+          if(!instance.getLayer('custom-route-core')) {
+            instance.addLayer({
+                id: 'custom-route-core', type: 'line', source: 'custom-route-source',
+                layout: { 'line-join': 'round', 'line-cap': 'round' },
+                paint: { 'line-color': '#4285F4', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 4, 18, 14 ], 'line-opacity': 1 }
+            }, labelLayerId);
+          }
       }
   }, []);
 
@@ -1496,6 +1495,8 @@ export default function MapExplorerPage() {
                 userLocation={userLocation.current} 
                 destination={[locationDetails.lng, locationDetails.lat]} 
                 onClose={() => setShowAR(false)} 
+                hasParentPermission={hasArPermission}
+                setParentPermission={setHasArPermission}
             />
         )}
 
