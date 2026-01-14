@@ -5,7 +5,7 @@
 // ==========================================
 import React, { useRef, useEffect, useState, useCallback, memo } from 'react';
 import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap, GeoJSONSource } from 'mapbox-gl';
-import { Kantumruy_Pro } from 'next/font/google'; 
+import { Kantumruy_Pro } from 'next/font/google';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 // UI Components
@@ -14,14 +14,14 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFo
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
-import { 
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger 
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 
 // Icons
-import { 
-  X, MapPin, Navigation, LocateFixed, 
-  Volume2, VolumeX, Compass, Loader2, AlertTriangle, 
+import {
+  X, MapPin, Navigation, LocateFixed,
+  Volume2, VolumeX, Compass, Loader2, AlertTriangle,
   Fuel, Utensils, Coffee, Search,
   Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind,
@@ -37,7 +37,7 @@ import {
 // ==========================================
 
 const kantumruy = Kantumruy_Pro({
-  subsets: ['khmer', 'latin'], 
+  subsets: ['khmer', 'latin'],
   weight: ['400', '500', '600', '700'],
   display: 'swap',
 });
@@ -50,9 +50,9 @@ if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
-const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
-const REROUTE_THRESHOLD_METERS = 45; 
-const AR_PERMISSION_KEY = "map_ar_permission_v1"; 
+const WEATHER_REFRESH_RATE = 15 * 60 * 1000;
+const REROUTE_THRESHOLD_METERS = 45;
+const AR_PERMISSION_KEY = "map_ar_permission_v1";
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -79,7 +79,7 @@ const isCoordinate = (query: string) => {
 // --- MATH UTILS ---
 
 function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const R = 6371; 
+  const R = 6371;
   const dLat = (lat2 - lat1) * (Math.PI / 180);
   const dLon = (lon2 - lon1) * (Math.PI / 180);
   const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
@@ -98,7 +98,7 @@ function getBearing(startLat: number, startLng: number, destLat: number, destLng
             Math.sin(startLatRad) * Math.cos(destLatRad) * Math.cos(destLngRad - startLngRad);
   const brng = Math.atan2(y, x);
   const brngDeg = (brng * 180) / Math.PI;
-  return (brngDeg + 360) % 360; 
+  return (brngDeg + 360) % 360;
 }
 
 function getShortestAngleDistance(target: number, current: number) {
@@ -118,23 +118,23 @@ function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: nu
     if (!routeCoords.length) return Infinity;
 
     let minDistance = Infinity;
-    const step = Math.max(1, Math.ceil(routeCoords.length / 50)); 
-    
+    const step = Math.max(1, Math.ceil(routeCoords.length / 50));
+
     for (let i = 0; i < routeCoords.length; i += step) {
         const coord = routeCoords[i];
         const dist = getDistanceFromLatLonInMeters(userLat, userLng, coord[1], coord[0]);
         if (dist < minDistance) minDistance = dist;
-        if (minDistance < 10) return minDistance; 
+        if (minDistance < 10) return minDistance;
     }
     return minDistance;
 }
 
 const lerp = (start: number, end: number, amt: number) => (1 - amt) * start + amt * end;
 const formatDistance = (d: number) => d > 1000 ? `${(d / 1000).toFixed(1)} គ.ម` : `${d.toFixed(0)} ម៉ែត្រ`;
-const formatDuration = (s: number) => { 
+const formatDuration = (s: number) => {
     if (s < 0) s = 0;
-    const m = Math.round(s / 60); 
-    return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`; 
+    const m = Math.round(s / 60);
+    return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`;
 };
 
 const simplifyGeometry = (coordinates: number[][]) => {
@@ -151,7 +151,7 @@ const HighlightMatch = ({ text, match }: { text: string, match: string }) => {
     const parts = text.split(new RegExp(`(${escapedMatch})`, 'gi'));
     return (
         <span>
-            {parts.map((part, i) => 
+            {parts.map((part, i) =>
                 part.toLowerCase() === match.toLowerCase() ? <span key={i} className="text-indigo-400 font-bold">{part}</span> : part
             )}
         </span>
@@ -170,14 +170,14 @@ const mapFeaturesToResults = (features: any[]): SearchResult[] => {
         const cleanAddress = rawAddress
             .replace(/,\s*Cambodia/i, "")
             .replace(/,\s*កម្ពុជា/i, "")
-            .replace(/,\s*Phnom Penh/i, "") 
+            .replace(/,\s*Phnom Penh/i, "")
             .trim()
-            .replace(/^,\s*/, ""); 
+            .replace(/^,\s*/, "");
 
         return {
             lng: f.center[0],
             lat: f.center[1],
-            name: name, 
+            name: name,
             address: cleanAddress || "ទីតាំងផែនទី",
             type: f.properties?.category || f.place_type[0] || "general"
         }
@@ -226,7 +226,8 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const [isSecure, setIsSecure] = useState(true);
     const [sensorsActive, setSensorsActive] = useState(false);
     const streamRef = useRef<MediaStream | null>(null);
-    
+    const hasFiredOnce = useRef(false);
+
     // Direct DOM refs for high-frequency updates
     const pinRef = useRef<HTMLDivElement>(null);
     const arrowLeftRef = useRef<HTMLDivElement>(null);
@@ -234,12 +235,15 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const distanceTextRef = useRef<HTMLDivElement>(null);
     const bearingTextRef = useRef<HTMLSpanElement>(null);
     const targetStatusRef = useRef<HTMLDivElement>(null);
-    
+
     const sensorData = useRef({ heading: 0, rawHeading: 0 });
     const localState = useRef({ isVisible: false, distance: 0 });
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
-        setSensorsActive(true); // Sensor data is flowing
+        if (!hasFiredOnce.current) {
+            setSensorsActive(true);
+            hasFiredOnce.current = true;
+        }
         let heading = 0;
         if (e.webkitCompassHeading) {
             heading = e.webkitCompassHeading;
@@ -251,7 +255,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
 
     // Initial Camera & Permission Check
     useEffect(() => {
-        // 1. Check for HTTPS (Secure Context)
         if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
             setIsSecure(false);
             setPermissionError("AR requires HTTPS. Please use a secure connection.");
@@ -260,9 +263,9 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
 
         const startCamera = async () => {
             try {
-                streamRef.current = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: { exact: "environment" } }, 
-                    audio: false 
+                streamRef.current = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { exact: "environment" } },
+                    audio: false
                 });
             } catch (err) {
                 try {
@@ -278,15 +281,9 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         };
 
         const checkSavedPermission = () => {
-            // Android doesn't need requestPermission
-            // @ts-ignore
+             // @ts-ignore
             if (typeof DeviceOrientationEvent.requestPermission !== 'function') {
-                setParentPermission(true); 
-            } else {
-                // iOS: If saved, try to use it, but listen if it fails (sensor check)
-                if (hasParentPermission) {
-                     // We assume true, but the 'sensorsActive' timeout will catch if it's dead
-                }
+                setParentPermission(true);
             }
         };
 
@@ -297,7 +294,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
             if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
             cancelAnimationFrame(requestRef.current);
         };
-    }, [hasParentPermission, setParentPermission]);
+    }, [setParentPermission]);
 
     // Attach Listeners
     useEffect(() => {
@@ -317,7 +314,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         }
     }, [hasParentPermission, handleOrientation]);
 
-    // iOS Request Permission - STRICT USER GESTURE
+    // iOS Request Permission
     const requestAccess = async () => {
         // @ts-ignore
         if (typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -326,7 +323,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 const perm = await DeviceOrientationEvent.requestPermission();
                 if (perm === 'granted') {
                     setParentPermission(true);
-                    setSensorsActive(true);
                     localStorage.setItem(AR_PERMISSION_KEY, 'true');
                 } else {
                     setPermissionError("Compass Permission denied.");
@@ -336,36 +332,20 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 setPermissionError("Error requesting permission.");
             }
         } else {
-            // Android/Desktop
             setParentPermission(true);
-            setSensorsActive(true);
             localStorage.setItem(AR_PERMISSION_KEY, 'true');
         }
     };
 
-    // Sensor Liveness Check: If permission "Granted" but no data for 2s, force button
-    useEffect(() => {
-        if (hasParentPermission && !sensorsActive) {
-            const timer = setTimeout(() => {
-                // If after 3 seconds of "permission=true" we still have no sensor activity
-                // It means iOS killed the session or we need a refresh
-                // We DON'T setPermissionError, we just let the UI fallback to showing the button
-            }, 3000);
-            return () => clearTimeout(timer);
-        }
-    }, [hasParentPermission, sensorsActive]);
-
     // Animation Loop
     useEffect(() => {
-        if (!hasParentPermission) return;
+        if (!hasParentPermission || !sensorsActive) return;
 
         const updateLoop = () => {
             sensorData.current.heading = lerpAngle(sensorData.current.heading, sensorData.current.rawHeading, 0.08);
-            
             const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
             const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
             const diff = getShortestAngleDistance(bearing, sensorData.current.heading);
-            
             const fov = 60;
             const screenWidth = window.innerWidth;
             const pxPerDegree = screenWidth / fov;
@@ -376,21 +356,10 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 pinRef.current.style.transform = `translate3d(calc(-50% + ${xOffset}px), -50%, 0)`;
                 pinRef.current.style.opacity = isVisible ? '1' : '0';
             }
-
-            if (distanceTextRef.current) {
-                distanceTextRef.current.innerText = formatDistance(distance);
-            }
-
-            if (bearingTextRef.current) {
-                bearingTextRef.current.innerText = `${Math.round(bearing)}°`;
-            }
-
-            if (arrowLeftRef.current) {
-                arrowLeftRef.current.style.opacity = !isVisible && xOffset < 0 ? '1' : '0';
-            }
-            if (arrowRightRef.current) {
-                arrowRightRef.current.style.opacity = !isVisible && xOffset > 0 ? '1' : '0';
-            }
+            if (distanceTextRef.current) distanceTextRef.current.innerText = formatDistance(distance);
+            if (bearingTextRef.current) bearingTextRef.current.innerText = `${Math.round(bearing)}°`;
+            if (arrowLeftRef.current) arrowLeftRef.current.style.opacity = !isVisible && xOffset < 0 ? '1' : '0';
+            if (arrowRightRef.current) arrowRightRef.current.style.opacity = !isVisible && xOffset > 0 ? '1' : '0';
 
             if (localState.current.isVisible !== isVisible || Math.abs(localState.current.distance - distance) > 10) {
                  localState.current = { isVisible, distance };
@@ -411,33 +380,37 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
 
         requestRef.current = requestAnimationFrame(updateLoop);
         return () => cancelAnimationFrame(requestRef.current);
-    }, [userLocation, destination, hasParentPermission]);
+    }, [userLocation, destination, hasParentPermission, sensorsActive]);
 
-    // Show button if: 1. No permission yet, OR 2. Permission granted but sensors dead (iOS quirk)
-    const showPermissionButton = (!hasParentPermission || (hasParentPermission && !sensorsActive)) && !permissionError && isSecure;
+    const showPermissionButton = !hasParentPermission && !permissionError && isSecure;
+    const showCalibratingMessage = hasParentPermission && !sensorsActive && !permissionError && isSecure;
 
     return (
         <div className="fixed inset-0 z-[60] bg-black">
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
-            
+
             {showPermissionButton && (
                  <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
                     <div className="text-center p-6 max-w-sm">
                         <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/>
-                        <h3 className="text-white text-xl font-bold mb-2">
-                             {hasParentPermission ? "Start Sensors" : "Enable Compass"}
-                        </h3>
-                        <p className="text-zinc-400 mb-6 text-sm">
-                            {hasParentPermission 
-                             ? "Tap to calibrate and activate compass sensors." 
-                             : "AR navigation requires access to your device orientation sensors."}
-                        </p>
+                        <h3 className="text-white text-xl font-bold mb-2">Enable Compass</h3>
+                        <p className="text-zinc-400 mb-6 text-sm">AR navigation requires access to your device orientation sensors.</p>
                         <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">
-                            {hasParentPermission ? "Start" : "Allow Access"}
+                            Allow Access
                         </Button>
                         <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400 hover:text-white w-full">Cancel</Button>
                     </div>
                  </div>
+            )}
+
+            {showCalibratingMessage && (
+                <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
+                    <div className="text-center p-6 max-w-sm">
+                        <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-spin"/>
+                        <h3 className="text-white text-xl font-bold mb-2">Calibrating Sensors</h3>
+                        <p className="text-zinc-400 text-sm">Waiting for sensor data... Please move your device around.</p>
+                    </div>
+                </div>
             )}
 
             {!isSecure && (
@@ -464,7 +437,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
             {/* Main AR UI - Only show if sensors are actually ACTIVE */}
             {hasParentPermission && sensorsActive && (
                 <>
-                    <div 
+                    <div
                         ref={pinRef}
                         className="absolute top-1/2 left-1/2 flex flex-col items-center justify-center pointer-events-none will-change-transform transition-opacity duration-200"
                         style={{ opacity: 0 }}
@@ -505,7 +478,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
 
                     <div className="absolute bottom-10 left-0 right-0 text-center px-6 z-[65]">
                          <div className="inline-flex items-center gap-3 px-6 py-4 rounded-2xl border backdrop-blur-xl shadow-2xl transition-colors duration-500 bg-black/60 border-white/10">
-                            <ScanEye className="h-6 w-6 text-white"/> 
+                            <ScanEye className="h-6 w-6 text-white"/>
                             <div className="text-left" ref={targetStatusRef}>
                                 <div className="text-white font-bold text-sm">Searching...</div>
                                 <div className="text-zinc-400 text-xs">Calibrating sensors</div>
@@ -526,21 +499,20 @@ export default function MapExplorerPage() {
   const map = useRef<MapboxMap | null>(null);
   const geolocateControl = useRef<GeolocateControl | null>(null);
   const wakeLock = useRef<WakeLockSentinel | null>(null);
-  
+
   const destinationMarker = useRef<Marker | null>(null);
   const puckMarker = useRef<Marker | null>(null);
   const puckElement = useRef<HTMLDivElement | null>(null);
   const searchMarkers = useRef<Marker[]>([]);
-  const routeGeoJSON = useRef<any>(null); 
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null); 
-  
+  const routeGeoJSON = useRef<any>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
   const userLocation = useRef<[number, number] | null>(null);
-  const activeDestination = useRef<[number, number] | null>(null); 
-  const watchId = useRef<number | null>(null); 
-  
-  const isNavigating = useRef<boolean>(false);
+  const activeDestination = useRef<[number, number] | null>(null);
+  const watchId = useRef<number | null>(null);
+
   const isRecalculating = useRef<boolean>(false);
-  const userIsInteracting = useRef<boolean>(false); 
+  const userIsInteracting = useRef<boolean>(false);
   const isMounted = useRef<boolean>(false);
   const showRecenterBtnRef = useRef(false);
   const lastSpokenInstruction = useRef<string>("");
@@ -553,31 +525,35 @@ export default function MapExplorerPage() {
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const currentHeading = useRef<number>(0);
   const targetHeading = useRef<number>(0);
-  const compassHeading = useRef<number>(0); 
-  const gpsHeading = useRef<number>(0);     
+  const compassHeading = useRef<number>(0);
+  const gpsHeading = useRef<number>(0);
   const animationFrameId = useRef<number>(0);
 
   const { toast } = useToast();
+  // --- REFINED STATE MANAGEMENT ---
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [isSecureContext, setIsSecureContext] = useState(true);
+
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
-  const [richPlaceDetails, setRichPlaceDetails] = useState<any>(null); 
+  const [richPlaceDetails, setRichPlaceDetails] = useState<any>(null);
   const [isFetchingAddress, setIsFetchingAddress] = useState(false);
   const [isFetchingRichDetails, setIsFetchingRichDetails] = useState(false);
-  const [isRouting, setIsRouting] = useState(false); 
+  const [isRouting, setIsRouting] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [showRecenterBtn, setShowRecenterBtn] = useState(false);
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
-  
+
   // Layer States
   const [isTrafficVisible, setIsTrafficVisible] = useState(true);
-  const [isRainMode, setIsRainMode] = useState(false); 
+  const [isRainMode, setIsRainMode] = useState(false);
   const [isWindMode, setIsWindMode] = useState(false);
 
   // AR & Permission States
   const [showAR, setShowAR] = useState(false);
-  const [hasArPermission, setHasArPermission] = useState(false); 
+  const [hasArPermission, setHasArPermission] = useState(false);
 
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
@@ -585,6 +561,13 @@ export default function MapExplorerPage() {
   const [currentStyle, setCurrentStyle] = useState(STYLES.DARK);
 
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
+
+  // --- REFINED: EARLY HTTPS CONTEXT CHECK ---
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
+      setIsSecureContext(false);
+    }
+  }, []);
 
   // --- RESTORE PERMISSION ON LOAD ---
   useEffect(() => {
@@ -611,15 +594,15 @@ export default function MapExplorerPage() {
   const speak = useCallback((text: string) => {
     if (typeof window === 'undefined' || isMuted || !window.speechSynthesis) return;
     if (window.speechSynthesis.speaking && lastSpokenInstruction.current === text) return;
-    window.speechSynthesis.cancel(); 
-    
+    window.speechSynthesis.cancel();
+
     utteranceRef.current = new SpeechSynthesisUtterance(text);
-    const preferredVoice = availableVoices.find(v => v.lang.includes('km')) || 
-                           availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')) || 
+    const preferredVoice = availableVoices.find(v => v.lang.includes('km')) ||
+                           availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')) ||
                            availableVoices.find(v => v.name.includes('Samantha'));
     if (preferredVoice) utteranceRef.current.voice = preferredVoice;
-    utteranceRef.current.rate = 1.0; 
-    
+    utteranceRef.current.rate = 1.0;
+
     window.speechSynthesis.speak(utteranceRef.current);
   }, [isMuted, availableVoices]);
 
@@ -658,7 +641,7 @@ export default function MapExplorerPage() {
 
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
     if (!MAPBOX_TOKEN) return [];
-    
+
     let searchQuery = query.trim();
     const lowerQuery = query.toLowerCase();
 
@@ -680,10 +663,10 @@ export default function MapExplorerPage() {
 
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${MAPBOX_TOKEN}`;
     url += `&language=km,en&country=kh&limit=10&fuzzyMatch=true&proximity=${center[0]},${center[1]}`;
-    url += `&types=poi,address,neighborhood,locality,place`; 
+    url += `&types=poi,address,neighborhood,locality,place`;
 
     if (bboxOnly) {
-        const radiusKm = 10; 
+        const radiusKm = 10;
         const latDelta = radiusKm / 111;
         const lonDelta = radiusKm / (111 * Math.cos(center[1] * (Math.PI / 180)));
         const bbox = `${center[0] - lonDelta},${center[1] - latDelta},${center[0] + lonDelta},${center[1] + latDelta}`;
@@ -697,7 +680,7 @@ export default function MapExplorerPage() {
         return mapFeaturesToResults(data.features || []);
     } catch (err: any) {
         if (err.name !== 'AbortError') console.error(err);
-        return []; 
+        return [];
     }
   };
 
@@ -803,24 +786,24 @@ export default function MapExplorerPage() {
       // 5. Navigation Route (if exists)
       if (routeGeoJSON.current) {
           if (!instance.getSource('custom-route-source')) {
-             instance.addSource('custom-route-source', { 
-                type: 'geojson', 
-                data: { 
-                    type: 'Feature', 
-                    properties: {}, 
-                    geometry: { type: 'LineString', coordinates: routeGeoJSON.current } 
-                } 
+             instance.addSource('custom-route-source', {
+                type: 'geojson',
+                data: {
+                    type: 'Feature',
+                    properties: {},
+                    geometry: { type: 'LineString', coordinates: routeGeoJSON.current }
+                }
              });
           }
           const layers = instance.getStyle().layers;
           const labelLayerId = layers?.find((layer) => layer.type === 'symbol')?.id;
-          
+
           if (!instance.getLayer('custom-route-casing')) {
              instance.addLayer({
                 id: 'custom-route-casing', type: 'line', source: 'custom-route-source',
                 layout: { 'line-join': 'round', 'line-cap': 'round' },
                 paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 }
-             }, labelLayerId); 
+             }, labelLayerId);
           }
           if (!instance.getLayer('custom-route-core')) {
              instance.addLayer({
@@ -840,19 +823,19 @@ export default function MapExplorerPage() {
       } else {
           const layers = instance.getStyle().layers;
           const labelLayerId = layers?.find((layer) => layer.type === 'symbol')?.id;
-          
+
           if(!instance.getSource('custom-route-source')) {
               instance.addSource('custom-route-source', { type: 'geojson', data: geojson });
           }
-          
+
           if(!instance.getLayer('custom-route-casing')) {
             instance.addLayer({
                 id: 'custom-route-casing', type: 'line', source: 'custom-route-source',
                 layout: { 'line-join': 'round', 'line-cap': 'round' },
                 paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 }
-            }, labelLayerId); 
+            }, labelLayerId);
           }
-          
+
           if(!instance.getLayer('custom-route-core')) {
             instance.addLayer({
                 id: 'custom-route-core', type: 'line', source: 'custom-route-source',
@@ -874,13 +857,13 @@ export default function MapExplorerPage() {
   const fetchRoute = useCallback(async (start: [number, number], end: [number, number], isSilentRecalc = false): Promise<boolean> => {
       if (!MAPBOX_TOKEN) return false;
       if (isNaN(start[0]) || isNaN(start[1]) || isNaN(end[0]) || isNaN(end[1])) return false;
-      
+
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
-      
+
       try {
           const res = await fetch(url);
           const data = await res.json();
-          
+
           if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
               if(!isSilentRecalc) toast({ title: "កំហុស", description: "រកផ្លូវមិនឃើញ ឬមានបញ្ហាបច្ចេកទេស", variant: "destructive" });
               return false;
@@ -889,27 +872,27 @@ export default function MapExplorerPage() {
           routeGeoJSON.current = route.geometry.coordinates;
 
           if (map.current) {
-            drawBlueRoute(map.current, { 
-                type: 'Feature', 
-                properties: {}, 
-                geometry: route.geometry 
+            drawBlueRoute(map.current, {
+                type: 'Feature',
+                properties: {},
+                geometry: route.geometry
             });
           }
 
           const leg = route.legs[0];
-          const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) 
-            ? leg.steps[1].maneuver.instruction 
+          const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1])
+            ? leg.steps[1].maneuver.instruction
             : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
-          
+
           setRouteDetails({
-              distance: route.distance, 
+              distance: route.distance,
               duration: route.duration,
               instruction: instructionText,
               arrivalTime: new Date(Date.now() + route.duration * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               totalDistance: route.distance
           });
           return true;
-      } catch (error) { 
+      } catch (error) {
           if(!isSilentRecalc) toast({ title: "កំហុសបណ្តាញ", description: "សូមពិនិត្យអ៊ីនធឺណិតរបស់អ្នក", variant: "destructive" });
           return false;
       }
@@ -926,24 +909,23 @@ export default function MapExplorerPage() {
         if (data.features && data.features.length > 0) {
             setRichPlaceDetails(data.features[0].properties);
         }
-    } catch (e) { console.error("X-Ray Failed", e); } 
+    } catch (e) { console.error("X-Ray Failed", e); }
     finally { setIsFetchingRichDetails(false); }
   };
 
-  const animatePuck = () => {
+  const animatePuck = useCallback(() => {
       if (!puckMarker.current || !isMounted.current || !map.current) return;
       const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
-      
-      // UX Improvement: Prefer Compass Heading when speed is low (< 5km/h) to prevent spinning
+
       const isMoving = currentSpeed > 5;
       const headingToUse = isMoving ? gpsHeading.current : compassHeading.current;
       targetHeading.current = headingToUse;
 
       let diff = getShortestAngleDistance(targetHeading.current, currentHeading.current);
-      const rotationSpeed = 0.12; 
+      const rotationSpeed = 0.12;
       const newHeading = currentHeading.current + diff * rotationSpeed;
-      
+
       if (Math.abs(targetPuckPos.current[0] - currentPuckPos.current[0]) > 0.01) {
           currentPuckPos.current = targetPuckPos.current;
           currentHeading.current = targetHeading.current;
@@ -954,21 +936,22 @@ export default function MapExplorerPage() {
 
       puckMarker.current.setLngLat(currentPuckPos.current);
       puckMarker.current.setRotation(newHeading);
-      
-      if (isNavigating.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
+
+      if (isNavigating && !userIsInteracting.current && !showRecenterBtnRef.current) {
           map.current.easeTo({
               center: currentPuckPos.current,
-              bearing: newHeading, 
-              duration: 0, 
-              padding: { top: 0, bottom: 200, left: 0, right: 0 } 
+              bearing: newHeading,
+              duration: 0,
+              padding: { top: 0, bottom: 200, left: 0, right: 0 }
           });
       }
       animationFrameId.current = requestAnimationFrame(animatePuck);
-  };
+  }, [isNavigating, currentSpeed]);
+
 
   const handleStyleChange = (style: string) => {
     if (!map.current || style === currentStyle) return;
-    
+
     // Capture state to restore after style switch
     const trafficState = isTrafficVisible;
     const rainState = isRainMode;
@@ -978,7 +961,7 @@ export default function MapExplorerPage() {
         if (!map.current) return;
         restoreMapLayers(map.current, trafficState, rainState, windState);
     };
-    
+
     // Safe style switching that ensures layers return
     map.current.once('style.load', onStyleLoad);
     map.current.setStyle(style);
@@ -992,27 +975,27 @@ export default function MapExplorerPage() {
 
   const handleMapSelection = useCallback((lngLat: { lng: number, lat: number }) => {
       if(!map.current) return;
-      
+
       setRouteDetails(null);
       setShowRecenterBtn(false);
-      lastSpokenInstruction.current = ""; 
+      lastSpokenInstruction.current = "";
       userIsInteracting.current = false;
-      
+
       removeRouteLayers(map.current);
-      
+
       if (destinationMarker.current) destinationMarker.current.remove();
       destinationMarker.current = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current);
-      
+
       setLocationDetails(lngLat);
       setIsDrawerOpen(true);
       fetchRichDetails(lngLat.lat, lngLat.lng);
 
-      map.current.flyTo({ 
-          center: lngLat, 
-          zoom: 16, 
-          padding: { top: 0, bottom: 250, left: 0, right: 0 }, 
-          essential: true, 
-          duration: 1500 
+      map.current.flyTo({
+          center: lngLat,
+          zoom: 16,
+          padding: { top: 0, bottom: 250, left: 0, right: 0 },
+          essential: true,
+          duration: 1500
       });
   }, [removeRouteLayers]);
 
@@ -1027,7 +1010,7 @@ export default function MapExplorerPage() {
             .setLngLat([r.lng, r.lat])
             .setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`))
             .addTo(map.current!);
-         
+
          marker.getElement().addEventListener('click', () => {
              handleMapSelection({ lng: r.lng, lat: r.lat });
          });
@@ -1035,7 +1018,7 @@ export default function MapExplorerPage() {
          searchMarkers.current.push(marker);
          bounds.extend([r.lng, r.lat]);
      });
-     
+
      if (results.length > 0) {
          map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 });
      } else {
@@ -1048,8 +1031,8 @@ export default function MapExplorerPage() {
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
     clearSearchMarkers();
 
-    if (isNavigating.current && routeGeoJSON.current && geoKey) {
-        let category = "commercial"; 
+    if (isNavigating && routeGeoJSON.current && geoKey) {
+        let category = "commercial";
         if (query === "gas station") category = "service.vehicle.fuel";
         if (query === "restaurant") category = "catering.restaurant";
         if (query === "coffee") category = "catering.cafe";
@@ -1064,7 +1047,7 @@ export default function MapExplorerPage() {
             toast({ title: "កំពុងស្វែងរកតាមដងផ្លូវ...", description: "Looking along your route" });
             const res = await fetch(url);
             const data = await res.json();
-            
+
             const results = data.features.map((f: any) => ({
                 lng: f.geometry.coordinates[0],
                 lat: f.geometry.coordinates[1],
@@ -1084,30 +1067,25 @@ export default function MapExplorerPage() {
         const results = await searchPlaces(query, center, true);
         plotSearchResults(results, query);
     }
-  }, [clearSearchMarkers, plotSearchResults, toast]);
+  }, [clearSearchMarkers, plotSearchResults, toast, isNavigating]);
 
   // --- MAP INITIALIZATION ---
   useEffect(() => {
     isMounted.current = true;
     if (!MAPBOX_TOKEN || !mapContainer.current || map.current) return;
-    
-    // Check for secure context
-    if (typeof window !== 'undefined' && window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-        toast({ title: "Insecure Context", description: "GPS/AR requires HTTPS", variant: "destructive" });
-    }
 
     const mapInstance = new mapboxgl.Map({
-      container: mapContainer.current, 
-      style: currentStyle, 
-      center: DEFAULT_CENTER, 
-      zoom: DEFAULT_ZOOM, 
-      pitch: 45, 
-      bearing: 0, 
-      attributionControl: false, 
-      antialias: true, 
-      logoPosition: 'bottom-left', 
-      cooperativeGestures: false, 
-      scrollZoom: true, 
+      container: mapContainer.current,
+      style: currentStyle,
+      center: DEFAULT_CENTER,
+      zoom: DEFAULT_ZOOM,
+      pitch: 45,
+      bearing: 0,
+      attributionControl: false,
+      antialias: true,
+      logoPosition: 'bottom-left',
+      cooperativeGestures: false,
+      scrollZoom: true,
       dragPan: true,
       maxPitch: 85,
     });
@@ -1116,18 +1094,18 @@ export default function MapExplorerPage() {
 
     const geolocate = new GeolocateControl({
       positionOptions: { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
-      trackUserLocation: false, 
-      showUserHeading: false, 
-      showUserLocation: false, 
+      trackUserLocation: false,
+      showUserHeading: false,
+      showUserLocation: false,
       showAccuracyCircle: false,
     });
     geolocateControl.current = geolocate;
     mapInstance.addControl(geolocate, 'top-right');
 
     const el = document.createElement('div');
-    el.className = 'navigation-puck'; 
+    el.className = 'navigation-puck';
     el.style.display = 'none';
-    el.innerHTML = `<div class="puck-pulse"></div>`; 
+    el.innerHTML = `<div class="puck-pulse"></div>`;
     puckElement.current = el;
     puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
         .setLngLat(DEFAULT_CENTER).addTo(mapInstance);
@@ -1140,7 +1118,7 @@ export default function MapExplorerPage() {
     };
 
     const handleVisibilityChange = () => {
-        if (document.visibilityState === 'visible' && isNavigating.current) {
+        if (document.visibilityState === 'visible' && isNavigating) {
             requestWakeLock();
         }
     };
@@ -1152,12 +1130,11 @@ export default function MapExplorerPage() {
 
     mapInstance.on('load', () => {
         if (!isMounted.current) return;
-        setIsMapLoaded(true); 
-        geolocate.trigger(); 
-        
-        // Initial Layer Setup
+        setIsMapLoaded(true);
+        geolocate.trigger();
+
         restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode);
-        animatePuck(); 
+        animatePuck();
 
         if ('geolocation' in navigator) {
             watchId.current = navigator.geolocation.watchPosition(
@@ -1165,32 +1142,31 @@ export default function MapExplorerPage() {
                     if (!isMounted.current) return;
                     const { latitude, longitude, heading, speed } = pos.coords;
                     if (puckElement.current) puckElement.current.style.display = 'block';
-                    
+
                     const speedKmh = speed ? Math.round(speed * 3.6) : 0;
-                    setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); 
-                    
+                    setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev));
+
                     userLocation.current = [longitude, latitude];
                     targetPuckPos.current = [longitude, latitude];
-                    
+
                     if (heading !== null && !isNaN(heading)) {
                         gpsHeading.current = heading;
                     }
 
                     fetchWeather(latitude, longitude);
 
-                    if (isNavigating.current && routeGeoJSON.current && activeDestination.current) {
+                    if (isNavigating && routeGeoJSON.current && activeDestination.current) {
                         const remainingDist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]);
-                        
+
                         setRouteDetails(prev => {
                             if(!prev) return null;
-                            const estDuration = (remainingDist / 1000) / (Math.max(20, speedKmh) / 60); 
+                            const estDuration = (remainingDist / 1000) / (Math.max(20, speedKmh) / 60);
                             return { ...prev, distance: remainingDist, duration: estDuration * 60 }
                         });
 
                         if (!isRecalculating.current && (Date.now() - lastRerouteTime.current > 5000)) {
-                            // OPTIMIZED CHECK: Bail early if near route
                             const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current);
-                            
+
                             if (distanceToPath > REROUTE_THRESHOLD_METERS) {
                                 isRecalculating.current = true;
                                 lastRerouteTime.current = Date.now();
@@ -1212,24 +1188,24 @@ export default function MapExplorerPage() {
              toast({ title: "Error", description: "Geolocation not supported", variant: "destructive" });
         }
     });
-    
-    const handleInteractionStart = () => { 
-        if (isNavigating.current) { 
-            userIsInteracting.current = true; 
-            setShowRecenterBtn(true); 
-        } 
+
+    const handleInteractionStart = () => {
+        if (isNavigating) {
+            userIsInteracting.current = true;
+            setShowRecenterBtn(true);
+        }
     };
-    
+
     const touchOpts = { passive: true };
 
     mapInstance.on('touchstart', handleInteractionStart);
     mapInstance.on('dragstart', handleInteractionStart);
     mapInstance.on('pitchstart', handleInteractionStart);
     mapInstance.on('zoomstart', handleInteractionStart);
-    mapInstance.on('wheel', handleInteractionStart); 
-    
-    mapInstance.on('click', (e) => { 
-        if(!isNavigating.current) handleMapSelection(e.lngLat); 
+    mapInstance.on('wheel', handleInteractionStart);
+
+    mapInstance.on('click', (e) => {
+        if(!isNavigating) handleMapSelection(e.lngLat);
     });
 
     return () => {
@@ -1248,7 +1224,7 @@ export default function MapExplorerPage() {
       mapInstance.remove();
       map.current = null;
     }
-  }, [fetchWeather, fetchRoute, toast, isRainMode, isWindMode, handleMapSelection, currentStyle, isTrafficVisible, drawBlueRoute, restoreMapLayers]);
+  }, [isNavigating, fetchWeather, fetchRoute, toast, isRainMode, isWindMode, handleMapSelection, currentStyle, isTrafficVisible, drawBlueRoute, restoreMapLayers, animatePuck]);
 
   // --- MAP LAYER ANIMATION LOOP ---
   useEffect(() => {
@@ -1265,7 +1241,7 @@ export default function MapExplorerPage() {
     if (isWindMode) {
         animateWindLayer();
     }
-    
+
     return () => cancelAnimationFrame(frameId);
   }, [isWindMode]);
 
@@ -1274,13 +1250,13 @@ export default function MapExplorerPage() {
     window.addEventListener('nav-to', handleNavEvent);
     return () => window.removeEventListener('nav-to', handleNavEvent);
   }, [handleMapSelection]);
-  
+
   useEffect(() => {
-    if (routeDetails?.instruction && isNavigating.current && lastSpokenInstruction.current !== routeDetails.instruction) {
+    if (routeDetails?.instruction && isNavigating && lastSpokenInstruction.current !== routeDetails.instruction) {
         speak(routeDetails.instruction);
         lastSpokenInstruction.current = routeDetails.instruction;
     }
-  }, [routeDetails, speak]);
+  }, [routeDetails, speak, isNavigating]);
 
   useEffect(() => {
     if (locationDetails) {
@@ -1288,11 +1264,10 @@ export default function MapExplorerPage() {
       const controller = new AbortController();
       addressAbortController.current = controller;
 
-      // Debounce address fetching to prevent API spam when dragging
       const timeoutId = setTimeout(async () => {
           setIsFetchingAddress(true);
-          const apiKey = GEOAPIFY_API_KEY; 
-          
+          const apiKey = GEOAPIFY_API_KEY;
+
           if (!apiKey) {
               setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` });
               setIsFetchingAddress(false);
@@ -1314,7 +1289,7 @@ export default function MapExplorerPage() {
           } finally {
             if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false);
           }
-      }, 600); // 600ms debounce
+      }, 600);
 
       return () => clearTimeout(timeoutId);
     }
@@ -1327,32 +1302,32 @@ export default function MapExplorerPage() {
       return;
     }
     if (!locationDetails) return;
-    
+
     setIsRouting(true);
-    requestWakeLock(); 
-    activeDestination.current = [locationDetails.lng, locationDetails.lat]; 
+    requestWakeLock();
+    activeDestination.current = [locationDetails.lng, locationDetails.lat];
     const success = await fetchRoute(userLocation.current, [locationDetails.lng, locationDetails.lat]);
     setIsRouting(false);
 
     if (success) {
-        isNavigating.current = true;
+        setIsNavigating(true);
         isRecalculating.current = false;
-        userIsInteracting.current = false; 
+        userIsInteracting.current = false;
         setShowRecenterBtn(false);
         if (!isMuted) speak("ចាប់ផ្តើមការនាំផ្លូវ");
-        
+
         mapContainer.current?.classList.add('nav-mode');
         setIsDrawerOpen(false);
-        
+
         if(map.current) {
-            map.current.flyTo({ 
-                center: userLocation.current, 
-                zoom: 19, 
-                pitch: 70, 
-                bearing: map.current.getBearing(), 
+            map.current.flyTo({
+                center: userLocation.current,
+                zoom: 19,
+                pitch: 70,
+                bearing: map.current.getBearing(),
                 padding: { top: 0, bottom: 200, left: 0, right: 0 },
-                essential: true, 
-                duration: 2000 
+                essential: true,
+                duration: 2000
             });
         }
     }
@@ -1360,17 +1335,17 @@ export default function MapExplorerPage() {
 
   const handleRecenter = () => {
       if(!userLocation.current || !map.current) return;
-      userIsInteracting.current = false; 
+      userIsInteracting.current = false;
       setShowRecenterBtn(false);
       showRecenterBtnRef.current = false;
-      
-      map.current.flyTo({ 
-          center: userLocation.current, 
-          zoom: 19, 
-          pitch: 70, 
-          bearing: targetHeading.current, 
+
+      map.current.flyTo({
+          center: userLocation.current,
+          zoom: 19,
+          pitch: 70,
+          bearing: targetHeading.current,
           padding: { top: 0, bottom: 200, left: 0, right: 0 },
-          duration: 1200 
+          duration: 1200
       });
   }
 
@@ -1389,16 +1364,16 @@ export default function MapExplorerPage() {
   };
 
   const clearRoute = useCallback(() => {
-    isNavigating.current = false;
+    setIsNavigating(false);
     isRecalculating.current = false;
     userIsInteracting.current = false;
     activeDestination.current = null;
     routeGeoJSON.current = null;
-    releaseWakeLock(); 
+    releaseWakeLock();
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
-    
+
     mapContainer.current?.classList.remove('nav-mode');
-    
+
     if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; }
     if(map.current) removeRouteLayers(map.current);
 
@@ -1407,7 +1382,7 @@ export default function MapExplorerPage() {
     setLocationDetails(null);
     setIsDrawerOpen(false);
     setShowRecenterBtn(false);
-    
+
     if(map.current && userLocation.current) {
         map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 1500 });
     }
@@ -1415,8 +1390,7 @@ export default function MapExplorerPage() {
 
   const toggleRainMode = useCallback(() => {
       if (!map.current) return;
-      
-      // Safety Check for API Key
+
       if (!WEATHER_API_KEY) {
          toast({ title: "Configuration Error", description: "Weather API Key is missing.", variant: "destructive" });
          return;
@@ -1424,7 +1398,7 @@ export default function MapExplorerPage() {
 
       const newState = !isRainMode;
       setIsRainMode(newState);
-      
+
       if (map.current.getLayer('rain-layer')) {
           map.current.setLayoutProperty('rain-layer', 'visibility', newState ? 'visible' : 'none');
           map.current.setPaintProperty('rain-layer', 'raster-opacity', newState ? 0.7 : 0);
@@ -1432,8 +1406,8 @@ export default function MapExplorerPage() {
           restoreMapLayers(map.current, isTrafficVisible, true, isWindMode);
       }
 
-      toast({ 
-          title: newState ? "Rain Mode Active" : "Rain Mode Disabled", 
+      toast({
+          title: newState ? "Rain Mode Active" : "Rain Mode Disabled",
           description: newState ? "Real-time precipitation radar enabled" : "Weather layer hidden",
           className: newState ? "border-blue-500 bg-blue-950/50 text-white" : ""
       });
@@ -1441,7 +1415,7 @@ export default function MapExplorerPage() {
 
   const toggleWindMode = useCallback(() => {
       if (!map.current) return;
-      
+
       if (!WEATHER_API_KEY) {
          toast({ title: "Configuration Error", description: "Weather API Key is missing.", variant: "destructive" });
          return;
@@ -1449,7 +1423,7 @@ export default function MapExplorerPage() {
 
       const newState = !isWindMode;
       setIsWindMode(newState);
-      
+
       if (map.current.getLayer('wind-layer')) {
           map.current.setLayoutProperty('wind-layer', 'visibility', newState ? 'visible' : 'none');
           map.current.setPaintProperty('wind-layer', 'raster-opacity', newState ? 0.6 : 0);
@@ -1457,8 +1431,8 @@ export default function MapExplorerPage() {
           restoreMapLayers(map.current, isTrafficVisible, isRainMode, true);
       }
 
-      toast({ 
-          title: newState ? "Wind Mode Active" : "Wind Mode Disabled", 
+      toast({
+          title: newState ? "Wind Mode Active" : "Wind Mode Disabled",
           description: newState ? "Showing wind speed heatmap" : "Wind layer hidden",
           className: newState ? "border-cyan-500 bg-cyan-950/50 text-white" : ""
       });
@@ -1475,7 +1449,7 @@ export default function MapExplorerPage() {
   const handleAutocomplete = async (query: string, signal: AbortSignal) => {
     if (!query.trim()) return [];
     const center = map.current ? map.current.getCenter().toArray() as [number, number] : (userLocation.current || DEFAULT_CENTER);
-    return await searchPlaces(query, center, false, signal); 
+    return await searchPlaces(query, center, false, signal);
   }
 
   const toggleTraffic = useCallback(() => {
@@ -1511,6 +1485,7 @@ export default function MapExplorerPage() {
   };
 
   if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Missing Token</h2><p className="text-center text-zinc-400">Mapbox Access Token is missing.</p></CardContent></Card></div>;
+  if (!isSecureContext) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><Lock className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Insecure Connection</h2><p className="text-center text-zinc-400">Core features like GPS and AR require a secure (HTTPS) connection to function.</p></CardContent></Card></div>;
 
   return (
     <div className={`relative h-[100dvh] w-full overflow-hidden bg-zinc-950 text-zinc-50 ${kantumruy.className}`}>
@@ -1519,19 +1494,13 @@ export default function MapExplorerPage() {
           .navigation-puck::after { content: ''; position: absolute; top: -12px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #3b82f6; }
           .puck-pulse { position: absolute; width: 60px; height: 60px; top: -21px; left: -21px; border-radius: 50%; background: rgba(59, 130, 246, 0.4); animation: pulse 2s infinite; z-index: -1; }
           @keyframes pulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
-          
-          @keyframes wind-icon {
-            0% { transform: translateX(-1px) rotate(-10deg); }
-            50% { transform: translateX(1px) rotate(5deg); }
-            100% { transform: translateX(-1px) rotate(-10deg); }
-          }
+          @keyframes wind-icon { 0% { transform: translateX(-1px) rotate(-10deg); } 50% { transform: translateX(1px) rotate(5deg); } 100% { transform: translateX(-1px) rotate(-10deg); } }
           .wind-active { animation: wind-icon 1s ease-in-out infinite; }
-
           .no-scrollbar::-webkit-scrollbar { display: none; }
           .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
           .mapboxgl-popup { z-index: 60 !important; }
         `}</style>
-        
+
         <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950 text-white transition-opacity duration-700 pointer-events-none ${isMapLoaded ? 'opacity-0' : 'opacity-100'}`}>
             <Loader2 className="h-10 w-10 animate-spin text-indigo-500 mb-4" />
             <p className="text-zinc-500 text-xs tracking-widest uppercase">កំពុងដំណើរការ...</p>
@@ -1539,29 +1508,29 @@ export default function MapExplorerPage() {
 
         <div ref={mapContainer} className="absolute inset-0 w-full h-full touch-none" />
 
-        <WeatherWidget weather={weather} isNavigating={isNavigating.current} />
+        <WeatherWidget weather={weather} isNavigating={isNavigating} />
 
         {/* AR VIEW OVERLAY */}
         {showAR && userLocation.current && locationDetails && (
-            <ArLastMileView 
-                userLocation={userLocation.current} 
-                destination={[locationDetails.lng, locationDetails.lat]} 
-                onClose={() => setShowAR(false)} 
+            <ArLastMileView
+                userLocation={userLocation.current}
+                destination={[locationDetails.lng, locationDetails.lat]}
+                onClose={() => setShowAR(false)}
                 hasParentPermission={hasArPermission}
                 setParentPermission={setHasArPermission}
             />
         )}
 
-        {routeDetails ? (
-           <NavigationHUD 
-              routeDetails={routeDetails} 
-              isMuted={isMuted} 
-              setIsMuted={setIsMuted} 
+        {isNavigating && routeDetails ? (
+           <NavigationHUD
+              routeDetails={routeDetails}
+              isMuted={isMuted}
+              setIsMuted={setIsMuted}
               currentSpeed={currentSpeed}
               onClearRoute={clearRoute}
            />
         ) : (
-           <BottomControls 
+           <BottomControls
               isTrafficVisible={isTrafficVisible}
               toggleTraffic={toggleTraffic}
               isRainMode={isRainMode}
@@ -1581,7 +1550,7 @@ export default function MapExplorerPage() {
            />
         )}
 
-        {isNavigating.current && showRecenterBtn && (
+        {isNavigating && showRecenterBtn && (
              <div className="absolute bottom-32 right-4 z-20 pointer-events-auto pb-[safe-area-inset-bottom] animate-in zoom-in-50 duration-300">
                 <Button onClick={handleRecenter} className="h-14 w-14 rounded-full bg-zinc-900 border border-zinc-700 shadow-2xl text-blue-500 flex flex-col items-center justify-center gap-0 hover:bg-zinc-800 transition-transform active:scale-90">
                     <LocateFixed className="h-6 w-6" /><span className="text-[9px] font-bold uppercase">ទីតាំងខ្ញុំ</span>
@@ -1589,7 +1558,7 @@ export default function MapExplorerPage() {
              </div>
         )}
 
-        <Sheet open={isDrawerOpen} onOpenChange={(open) => !open && !isNavigating.current && setIsDrawerOpen(false)}>
+        <Sheet open={isDrawerOpen} onOpenChange={(open) => !open && !isNavigating && setIsDrawerOpen(false)}>
           <SheetContent side="bottom" className={`rounded-t-3xl p-6 border-t border-zinc-800 bg-[#18181b]/95 backdrop-blur-xl text-white ring-1 ring-white/10 z-50 pb-[safe-area-inset-bottom] ${kantumruy.className}`}>
             {locationDetails && (
               <div className="space-y-6 pb-2">
@@ -1643,7 +1612,7 @@ export default function MapExplorerPage() {
                             </div>
                         </a>
                     )}
-                    
+
                     {richPlaceDetails?.contact?.website && (
                         <a href={richPlaceDetails.contact.website} target="_blank" rel="noreferrer" className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50">
                             <div className="h-8 w-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
@@ -1674,15 +1643,15 @@ export default function MapExplorerPage() {
                 </div>
 
                 <SheetFooter>
-                  <Button 
-                    className="w-full mb-2 gap-2 bg-zinc-800 hover:bg-zinc-700 text-white h-12 text-base font-semibold border border-zinc-700 rounded-xl" 
+                  <Button
+                    className="w-full mb-2 gap-2 bg-zinc-800 hover:bg-zinc-700 text-white h-12 text-base font-semibold border border-zinc-700 rounded-xl"
                     onClick={toggleAR}
                   >
                     <Camera className="h-5 w-5" /> Live View (AR)
                   </Button>
 
-                  <Button 
-                    className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" 
+                  <Button
+                    className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]"
                     onClick={handleStartNavigation}
                     disabled={isFetchingAddress || !userLocation.current || isRouting}
                   >
@@ -1755,7 +1724,7 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
                         <span>{routeDetails.arrivalTime}</span>
                     </div>
                 </div>
-                
+
                 <div className="flex items-center gap-4">
                     <div className="flex flex-col items-center justify-center bg-zinc-900 h-14 w-14 rounded-full border-2 border-zinc-700 ring-2 ring-black/50 shadow-inner relative">
                         <span className="text-xl font-bold text-white leading-none z-10">{currentSpeed}</span>
@@ -1773,8 +1742,8 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
 });
 NavigationHUD.displayName = "NavigationHUD";
 
-const BottomControls = memo(({ 
-    isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, isWindMode, toggleWindMode, resetCompass, 
+const BottomControls = memo(({
+    isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, isWindMode, toggleWindMode, resetCompass,
     handleCategorySearch, handleAutocomplete, onSelectLocation, userLocation, handleUserLocationClick,
     handleStyleChange, currentStyle, canShowAR, toggleAR
 }: any) => {
@@ -1801,7 +1770,7 @@ const BottomControls = memo(({
     };
 
     const removeFromHistory = (e: React.MouseEvent, itemToRemove: SearchResult) => {
-        e.stopPropagation(); 
+        e.stopPropagation();
         const newHistory = history.filter(item => item.name !== itemToRemove.name);
         updateHistory(newHistory);
     };
@@ -1824,7 +1793,7 @@ const BottomControls = memo(({
                     setSuggestions(results);
                     setIsSearching(false);
                 }
-            } catch (e) { 
+            } catch (e) {
                 if (!signal.aborted) setIsSearching(false);
             }
         }, 400);
@@ -1843,7 +1812,7 @@ const BottomControls = memo(({
         const newHistory = [s, ...filtered].slice(0, 5);
         updateHistory(newHistory);
         onSelectLocation(s);
-        inputRef.current?.blur(); 
+        inputRef.current?.blur();
     }
 
     const handleCloseSearch = () => {
@@ -1894,7 +1863,7 @@ const BottomControls = memo(({
                  <Button size="icon" onClick={handleUserLocationClick} aria-label="My Location" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
                     <Crosshair className="h-5 w-5" />
                 </Button>
-                
+
                 <Button size="icon" onClick={toggleTraffic} aria-label="Toggle Traffic" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
                     <Zap className="h-5 w-5" />
                 </Button>
@@ -1940,14 +1909,14 @@ const BottomControls = memo(({
                 {isInputActive && (
                     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[-1] animate-in fade-in" onClick={handleCloseSearch} />
                 )}
-                
+
                 {showCard && (
                     <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[50vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
                         <CardContent className="p-0">
-                            
+
                             {query.length === 0 && history.length > 0 && (
                                 <div className="border-b border-white/5 transition-all duration-300">
-                                    <div 
+                                    <div
                                         onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
                                         className="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white/5 transition-colors bg-zinc-900/50 sticky top-0 backdrop-blur-md z-10"
                                     >
@@ -1974,7 +1943,7 @@ const BottomControls = memo(({
                                                     <div className="text-sm font-medium text-zinc-200 truncate leading-tight">{s.name}</div>
                                                     <div className="text-[10px] text-zinc-500 truncate mt-0.5">{s.address}</div>
                                                 </div>
-                                                <button 
+                                                <button
                                                     onClick={(e) => removeFromHistory(e, s)}
                                                     className="absolute right-2 p-2 rounded-full hover:bg-red-500/20 text-zinc-600 hover:text-red-400 transition-colors"
                                                 >
@@ -2009,12 +1978,12 @@ const BottomControls = memo(({
 
                 <div className="relative shadow-2xl transition-all duration-300 ease-out active:scale-[0.99]">
                     <Search className={`absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 transition-colors ${isSearching ? 'text-indigo-400' : 'text-zinc-400'}`} />
-                    <input 
+                    <input
                         ref={inputRef}
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        onFocus={() => { setIsInputActive(true); if(history.length > 0 && query.length === 0) setSuggestions([]); }} 
-                        placeholder="ស្វែងរកទីតាំង, ហាង, ឬ បញ្ចូលកូអរដោនេ..." 
+                        onFocus={() => { setIsInputActive(true); if(history.length > 0 && query.length === 0) setSuggestions([]); }}
+                        placeholder="ស្វែងរកទីតាំង, ហាង, ឬ បញ្ចូលកូអរដោនេ..."
                         inputMode="search"
                         enterKeyHint="search"
                         className="w-full h-14 pl-12 pr-12 rounded-full bg-[#18181b]/90 backdrop-blur-md border border-white/10 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]"
