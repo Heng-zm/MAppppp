@@ -237,7 +237,8 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const targetStatusRef = useRef<HTMLDivElement>(null);
 
     const sensorData = useRef({ heading: 0, rawHeading: 0 });
-    const localState = useRef({ isVisible: false, distance: 0 });
+    // IMPROVEMENT: Refined state cache to prevent unnecessary DOM updates
+    const lastRenderedState = useRef({ statusHTML: "", distanceText: "" });
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
         if (!hasFiredOnce.current) {
@@ -351,6 +352,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
             const pxPerDegree = screenWidth / fov;
             const xOffset = diff * pxPerDegree;
             const isVisible = Math.abs(diff) < (fov / 2 + 10);
+            const formattedDist = formatDistance(distance);
 
             // Dynamic scaling for the pin
             const clampedDistance = Math.max(5, Math.min(200, distance));
@@ -360,25 +362,34 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 pinRef.current.style.transform = `translate3d(calc(-50% + ${xOffset}px), -50%, 0) scale(${scale})`;
                 pinRef.current.style.opacity = isVisible ? '1' : '0';
             }
-            if (distanceTextRef.current) distanceTextRef.current.innerText = formatDistance(distance);
+            if (distanceTextRef.current && lastRenderedState.current.distanceText !== formattedDist) {
+                distanceTextRef.current.innerText = formattedDist;
+                lastRenderedState.current.distanceText = formattedDist;
+            }
             if (bearingTextRef.current) bearingTextRef.current.innerText = `${Math.round(bearing)}°`;
             if (arrowLeftRef.current) arrowLeftRef.current.style.opacity = !isVisible && xOffset < 0 ? '1' : '0';
             if (arrowRightRef.current) arrowRightRef.current.style.opacity = !isVisible && xOffset > 0 ? '1' : '0';
-
-            if (localState.current.isVisible !== isVisible || Math.abs(localState.current.distance - distance) > 10) {
-                 localState.current = { isVisible, distance };
-                 if(targetStatusRef.current) {
-                    if (isVisible) {
-                        targetStatusRef.current.innerHTML = `<div class="text-emerald-400 font-bold text-sm">DESTINATION AHEAD</div><div class="text-white text-xs">${formatDistance(distance)}</div>`;
-                        targetStatusRef.current.parentElement!.className = "inline-flex items-center gap-3 px-4 py-2 rounded-full border backdrop-blur-xl shadow-2xl transition-colors duration-500 bg-emerald-500/20 border-emerald-500/50";
-                    } else {
-                        const dir = xOffset < 0 ? "Left" : "Right";
-                        targetStatusRef.current.innerHTML = `<div class="text-white font-bold text-sm">Turn ${dir}</div><div class="text-zinc-400 text-xs">Target is off-screen</div>`;
-                        targetStatusRef.current.parentElement!.className = "inline-flex items-center gap-3 px-4 py-2 rounded-full border backdrop-blur-xl shadow-2xl transition-colors duration-500 bg-black/60 border-white/10";
-                    }
-                 }
+            
+            // IMPROVEMENT: Only update DOM if the content has changed
+            let newStatusHTML = "";
+            if (isVisible) {
+                newStatusHTML = `<div class="text-emerald-400 font-bold text-sm">DESTINATION AHEAD</div><div class="text-white text-xs">${formattedDist}</div>`;
+            } else {
+                const dir = xOffset < 0 ? "Left" : "Right";
+                newStatusHTML = `<div class="text-white font-bold text-sm">Turn ${dir}</div><div class="text-zinc-400 text-xs">Target is off-screen</div>`;
             }
 
+            if (targetStatusRef.current && lastRenderedState.current.statusHTML !== newStatusHTML) {
+                targetStatusRef.current.innerHTML = newStatusHTML;
+                const parentEl = targetStatusRef.current.parentElement!;
+                if (isVisible) {
+                    parentEl.className = "inline-flex items-center gap-3 px-4 py-2 rounded-full border backdrop-blur-xl shadow-2xl transition-colors duration-500 bg-emerald-500/20 border-emerald-500/50";
+                } else {
+                    parentEl.className = "inline-flex items-center gap-3 px-4 py-2 rounded-full border backdrop-blur-xl shadow-2xl transition-colors duration-500 bg-black/60 border-white/10";
+                }
+                lastRenderedState.current.statusHTML = newStatusHTML;
+            }
+            
             requestRef.current = requestAnimationFrame(updateLoop);
         };
 
@@ -533,6 +544,9 @@ export default function MapExplorerPage() {
   const lastWeatherFetchTime = useRef<number>(0);
   const addressAbortController = useRef<AbortController | null>(null);
   const lastRerouteTime = useRef<number>(0);
+  // PERFORMANCE: Use refs for state read inside animation loop to avoid dependency changes
+  const isNavigatingRef = useRef(false);
+  const currentSpeedRef = useRef(0);
 
   // --- HYBRID LOCATION SYSTEM REFS ---
   const currentPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
@@ -568,6 +582,8 @@ export default function MapExplorerPage() {
   // AR & Permission States
   const [showAR, setShowAR] = useState(false);
   const [hasArPermission, setHasArPermission] = useState(false);
+  // FIX: State to pass real-time location to AR view
+  const [currentUserLocationForAR, setCurrentUserLocationForAR] = useState<[number, number] | null>(null);
 
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
@@ -575,6 +591,8 @@ export default function MapExplorerPage() {
   const [currentStyle, setCurrentStyle] = useState(STYLES.DARK);
 
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
+  useEffect(() => { isNavigatingRef.current = isNavigating; }, [isNavigating]);
+  useEffect(() => { currentSpeedRef.current = currentSpeed; }, [currentSpeed]);
 
   // --- REFINED: EARLY HTTPS CONTEXT CHECK ---
   useEffect(() => {
@@ -927,12 +945,14 @@ export default function MapExplorerPage() {
     finally { setIsFetchingRichDetails(false); }
   };
 
+  // PERFORMANCE: Removed state dependencies from this callback.
+  // It now reads from refs, so it's created only once.
   const animatePuck = useCallback(() => {
       if (!puckMarker.current || !isMounted.current || !map.current) return;
       const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
 
-      const isMoving = currentSpeed > 5;
+      const isMoving = currentSpeedRef.current > 5;
       const headingToUse = isMoving ? gpsHeading.current : compassHeading.current;
       targetHeading.current = headingToUse;
 
@@ -951,7 +971,7 @@ export default function MapExplorerPage() {
       puckMarker.current.setLngLat(currentPuckPos.current);
       puckMarker.current.setRotation(newHeading);
 
-      if (isNavigating && !userIsInteracting.current && !showRecenterBtnRef.current) {
+      if (isNavigatingRef.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           map.current.easeTo({
               center: currentPuckPos.current,
               bearing: newHeading,
@@ -960,7 +980,7 @@ export default function MapExplorerPage() {
           });
       }
       animationFrameId.current = requestAnimationFrame(animatePuck);
-  }, [isNavigating, currentSpeed]);
+  }, []);
 
 
   const handleStyleChange = (style: string) => {
@@ -1132,7 +1152,7 @@ export default function MapExplorerPage() {
     };
 
     const handleVisibilityChange = () => {
-        if (document.visibilityState === 'visible' && isNavigating) {
+        if (document.visibilityState === 'visible' && isNavigatingRef.current) {
             requestWakeLock();
         }
     };
@@ -1161,6 +1181,7 @@ export default function MapExplorerPage() {
                     setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev));
 
                     userLocation.current = [longitude, latitude];
+                    setCurrentUserLocationForAR([longitude, latitude]); // FIX: Update state for AR view
                     targetPuckPos.current = [longitude, latitude];
 
                     if (heading !== null && !isNaN(heading)) {
@@ -1169,9 +1190,10 @@ export default function MapExplorerPage() {
 
                     fetchWeather(latitude, longitude);
 
-                    if (isNavigating && routeGeoJSON.current && activeDestination.current) {
+                    if (isNavigatingRef.current && routeGeoJSON.current && activeDestination.current) {
                         const remainingDist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]);
 
+                        // Use functional update to prevent re-creating routeDetails object unnecessarily
                         setRouteDetails(prev => {
                             if(!prev) return null;
                             const estDuration = (remainingDist / 1000) / (Math.max(20, speedKmh) / 60);
@@ -1204,22 +1226,20 @@ export default function MapExplorerPage() {
     });
 
     const handleInteractionStart = () => {
-        if (isNavigating) {
+        if (isNavigatingRef.current) {
             userIsInteracting.current = true;
             setShowRecenterBtn(true);
         }
     };
 
-    const touchOpts = { passive: true };
-
-    mapInstance.on('touchstart', handleInteractionStart);
+    mapInstance.on('touchstart', handleInteractionStart, { passive: true });
     mapInstance.on('dragstart', handleInteractionStart);
     mapInstance.on('pitchstart', handleInteractionStart);
     mapInstance.on('zoomstart', handleInteractionStart);
-    mapInstance.on('wheel', handleInteractionStart);
+    mapInstance.on('wheel', handleInteractionStart, { passive: true });
 
     mapInstance.on('click', (e) => {
-        if(!isNavigating) handleMapSelection(e.lngLat);
+        if(!isNavigatingRef.current) handleMapSelection(e.lngLat);
     });
 
     return () => {
@@ -1235,10 +1255,11 @@ export default function MapExplorerPage() {
       if (destinationMarker.current) destinationMarker.current.remove();
       if (puckMarker.current) puckMarker.current.remove();
       searchMarkers.current.forEach(m => m.remove());
-      mapInstance.remove();
+      if (map.current) map.current.remove();
       map.current = null;
     }
-  }, [isNavigating, fetchWeather, fetchRoute, toast, isRainMode, isWindMode, handleMapSelection, currentStyle, isTrafficVisible, drawBlueRoute, restoreMapLayers, animatePuck]);
+    // Omitted some dependencies that are stable (like animatePuck)
+  }, [currentStyle, isTrafficVisible, isRainMode, isWindMode, fetchWeather, fetchRoute, toast, handleMapSelection, restoreMapLayers, animatePuck]);
 
   // --- MAP LAYER ANIMATION LOOP ---
   useEffect(() => {
@@ -1278,16 +1299,16 @@ export default function MapExplorerPage() {
       const controller = new AbortController();
       addressAbortController.current = controller;
 
-      const timeoutId = setTimeout(async () => {
-          setIsFetchingAddress(true);
-          const apiKey = GEOAPIFY_API_KEY;
+      // FIX: Set loading state immediately to prevent race conditions
+      setIsFetchingAddress(true);
 
+      const timeoutId = setTimeout(async () => {
+          const apiKey = GEOAPIFY_API_KEY;
           if (!apiKey) {
               setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` });
               setIsFetchingAddress(false);
               return;
           }
-
           try {
             const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=km`, {
                 signal: controller.signal
@@ -1363,7 +1384,7 @@ export default function MapExplorerPage() {
       });
   }
 
-  const handleUserLocationClick = () => {
+  const handleUserLocationClick = useCallback(() => {
     if(!userLocation.current || !map.current) {
         geolocateControl.current?.trigger();
         toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 });
@@ -1375,7 +1396,7 @@ export default function MapExplorerPage() {
         padding: { top: 0, bottom: 0, left: 0, right: 0 },
         duration: 1200
     });
-  };
+  }, [toast]);
 
   const clearRoute = useCallback(() => {
     setIsNavigating(false);
@@ -1404,22 +1425,17 @@ export default function MapExplorerPage() {
 
   const toggleRainMode = useCallback(() => {
       if (!map.current) return;
-
       if (!WEATHER_API_KEY) {
          toast({ title: "Configuration Error", description: "Weather API Key is missing.", variant: "destructive" });
          return;
       }
-
       const newState = !isRainMode;
       setIsRainMode(newState);
-
       if (map.current.getLayer('rain-layer')) {
           map.current.setLayoutProperty('rain-layer', 'visibility', newState ? 'visible' : 'none');
-          map.current.setPaintProperty('rain-layer', 'raster-opacity', newState ? 0.7 : 0);
       } else if (newState) {
           restoreMapLayers(map.current, isTrafficVisible, true, isWindMode);
       }
-
       toast({
           title: newState ? "Rain Mode Active" : "Rain Mode Disabled",
           description: newState ? "Real-time precipitation radar enabled" : "Weather layer hidden",
@@ -1429,22 +1445,17 @@ export default function MapExplorerPage() {
 
   const toggleWindMode = useCallback(() => {
       if (!map.current) return;
-
       if (!WEATHER_API_KEY) {
          toast({ title: "Configuration Error", description: "Weather API Key is missing.", variant: "destructive" });
          return;
       }
-
       const newState = !isWindMode;
       setIsWindMode(newState);
-
       if (map.current.getLayer('wind-layer')) {
           map.current.setLayoutProperty('wind-layer', 'visibility', newState ? 'visible' : 'none');
-          map.current.setPaintProperty('wind-layer', 'raster-opacity', newState ? 0.6 : 0);
       } else if (newState) {
           restoreMapLayers(map.current, isTrafficVisible, isRainMode, true);
       }
-
       toast({
           title: newState ? "Wind Mode Active" : "Wind Mode Disabled",
           description: newState ? "Showing wind speed heatmap" : "Wind layer hidden",
@@ -1457,14 +1468,14 @@ export default function MapExplorerPage() {
           toast({ title: "Cannot start AR", description: "Set destination first", variant: "destructive" });
           return;
       }
-      setShowAR(!showAR);
-  }, [showAR, locationDetails, toast]);
+      setShowAR(prev => !prev);
+  }, [locationDetails, toast]);
 
-  const handleAutocomplete = async (query: string, signal: AbortSignal) => {
+  const handleAutocomplete = useCallback(async (query: string, signal: AbortSignal) => {
     if (!query.trim()) return [];
     const center = map.current ? map.current.getCenter().toArray() as [number, number] : (userLocation.current || DEFAULT_CENTER);
     return await searchPlaces(query, center, false, signal);
-  }
+  }, []);
 
   const toggleTraffic = useCallback(() => {
     if (!map.current) return;
@@ -1538,9 +1549,9 @@ export default function MapExplorerPage() {
         <WeatherWidget weather={weather} isNavigating={isNavigating} />
 
         {/* AR VIEW OVERLAY */}
-        {showAR && userLocation.current && locationDetails && (
+        {showAR && currentUserLocationForAR && locationDetails && (
             <ArLastMileView
-                userLocation={userLocation.current}
+                userLocation={currentUserLocationForAR}
                 destination={[locationDetails.lng, locationDetails.lat]}
                 onClose={() => setShowAR(false)}
                 hasParentPermission={hasArPermission}
@@ -1568,7 +1579,7 @@ export default function MapExplorerPage() {
               handleCategorySearch={handleCategorySearch}
               handleAutocomplete={handleAutocomplete}
               onSelectLocation={(loc: SearchResult) => handleMapSelection(loc)}
-              userLocation={userLocation}
+              userLocation={userLocation.current}
               handleUserLocationClick={handleUserLocationClick}
               handleStyleChange={handleStyleChange}
               currentStyle={currentStyle}
@@ -1856,8 +1867,8 @@ const BottomControls = memo(({
     }
 
     const calcDist = (lat: number, lng: number) => {
-        if(!userLocation.current) return null;
-        return formatDistance(getDistanceFromLatLonInMeters(userLocation.current[1], userLocation.current[0], lat, lng));
+        if(!userLocation) return null;
+        return formatDistance(getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], lat, lng));
     }
 
     const showCard = isInputActive && ((query.length === 0 && history.length > 0) || suggestions.length > 0);
