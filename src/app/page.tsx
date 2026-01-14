@@ -29,7 +29,7 @@ import {
   Crosshair, Banknote, GraduationCap,
   ChevronDown, ChevronUp, Trash2,
   Phone, Globe, Satellite, Map as MapIcon,
-  CarFront, ExternalLink, Camera, ScanEye
+  CarFront, ExternalLink, Camera, ScanEye, Lock
 } from 'lucide-react';
 
 // ==========================================
@@ -209,7 +209,7 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
-// 3. AR COMPONENT
+// 3. AR COMPONENT (FIXED FOR SAFARI & HTTPS)
 // ==========================================
 interface ArLastMileViewProps {
     userLocation: [number, number];
@@ -223,6 +223,8 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const videoRef = useRef<HTMLVideoElement>(null);
     const requestRef = useRef<number>(0);
     const [permissionError, setPermissionError] = useState<string | null>(null);
+    const [isSecure, setIsSecure] = useState(true);
+    const [sensorsActive, setSensorsActive] = useState(false);
     const streamRef = useRef<MediaStream | null>(null);
     
     // Direct DOM refs for high-frequency updates
@@ -237,6 +239,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const localState = useRef({ isVisible: false, distance: 0 });
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
+        setSensorsActive(true); // Sensor data is flowing
         let heading = 0;
         if (e.webkitCompassHeading) {
             heading = e.webkitCompassHeading;
@@ -248,6 +251,13 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
 
     // Initial Camera & Permission Check
     useEffect(() => {
+        // 1. Check for HTTPS (Secure Context)
+        if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
+            setIsSecure(false);
+            setPermissionError("AR requires HTTPS. Please use a secure connection.");
+            return;
+        }
+
         const startCamera = async () => {
             try {
                 streamRef.current = await navigator.mediaDevices.getUserMedia({ 
@@ -268,12 +278,15 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         };
 
         const checkSavedPermission = () => {
-            if (hasParentPermission) return;
+            // Android doesn't need requestPermission
             // @ts-ignore
             if (typeof DeviceOrientationEvent.requestPermission !== 'function') {
-                const isSaved = localStorage.getItem(AR_PERMISSION_KEY) === 'true';
                 setParentPermission(true); 
-                if(!isSaved) localStorage.setItem(AR_PERMISSION_KEY, 'true');
+            } else {
+                // iOS: If saved, try to use it, but listen if it fails (sensor check)
+                if (hasParentPermission) {
+                     // We assume true, but the 'sensorsActive' timeout will catch if it's dead
+                }
             }
         };
 
@@ -286,6 +299,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         };
     }, [hasParentPermission, setParentPermission]);
 
+    // Attach Listeners
     useEffect(() => {
         if (hasParentPermission) {
             window.addEventListener('deviceorientation', handleOrientation);
@@ -303,6 +317,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         }
     }, [hasParentPermission, handleOrientation]);
 
+    // iOS Request Permission - STRICT USER GESTURE
     const requestAccess = async () => {
         // @ts-ignore
         if (typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -311,19 +326,36 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 const perm = await DeviceOrientationEvent.requestPermission();
                 if (perm === 'granted') {
                     setParentPermission(true);
+                    setSensorsActive(true);
                     localStorage.setItem(AR_PERMISSION_KEY, 'true');
                 } else {
                     setPermissionError("Compass Permission denied.");
                 }
             } catch (e) {
-                setPermissionError("Error requesting compass permission.");
+                console.error(e);
+                setPermissionError("Error requesting permission.");
             }
         } else {
+            // Android/Desktop
             setParentPermission(true);
+            setSensorsActive(true);
             localStorage.setItem(AR_PERMISSION_KEY, 'true');
         }
     };
 
+    // Sensor Liveness Check: If permission "Granted" but no data for 2s, force button
+    useEffect(() => {
+        if (hasParentPermission && !sensorsActive) {
+            const timer = setTimeout(() => {
+                // If after 3 seconds of "permission=true" we still have no sensor activity
+                // It means iOS killed the session or we need a refresh
+                // We DON'T setPermissionError, we just let the UI fallback to showing the button
+            }, 3000);
+            return () => clearTimeout(timer);
+        }
+    }, [hasParentPermission, sensorsActive]);
+
+    // Animation Loop
     useEffect(() => {
         if (!hasParentPermission) return;
 
@@ -381,20 +413,42 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         return () => cancelAnimationFrame(requestRef.current);
     }, [userLocation, destination, hasParentPermission]);
 
+    // Show button if: 1. No permission yet, OR 2. Permission granted but sensors dead (iOS quirk)
+    const showPermissionButton = (!hasParentPermission || (hasParentPermission && !sensorsActive)) && !permissionError && isSecure;
+
     return (
         <div className="fixed inset-0 z-[60] bg-black">
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
             
-            {!hasParentPermission && !permissionError && (
+            {showPermissionButton && (
                  <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
                     <div className="text-center p-6 max-w-sm">
                         <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/>
-                        <h3 className="text-white text-xl font-bold mb-2">Compass Access</h3>
-                        <p className="text-zinc-400 mb-6 text-sm">AR navigation requires access to your device orientation sensors.</p>
-                        <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">Allow Access</Button>
+                        <h3 className="text-white text-xl font-bold mb-2">
+                             {hasParentPermission ? "Start Sensors" : "Enable Compass"}
+                        </h3>
+                        <p className="text-zinc-400 mb-6 text-sm">
+                            {hasParentPermission 
+                             ? "Tap to calibrate and activate compass sensors." 
+                             : "AR navigation requires access to your device orientation sensors."}
+                        </p>
+                        <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">
+                            {hasParentPermission ? "Start" : "Allow Access"}
+                        </Button>
                         <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400 hover:text-white w-full">Cancel</Button>
                     </div>
                  </div>
+            )}
+
+            {!isSecure && (
+                <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/90 text-white p-6 text-center">
+                    <div>
+                        <Lock className="h-12 w-12 text-red-500 mx-auto mb-4"/>
+                        <h3 className="text-xl font-bold mb-2">HTTPS Required</h3>
+                        <p className="mb-4 text-zinc-400">iOS requires a secure connection (HTTPS) to access motion sensors.</p>
+                        <Button onClick={onClose} variant="secondary">Close</Button>
+                    </div>
+                </div>
             )}
 
             {permissionError && (
@@ -407,7 +461,8 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 </div>
             )}
 
-            {hasParentPermission && (
+            {/* Main AR UI - Only show if sensors are actually ACTIVE */}
+            {hasParentPermission && sensorsActive && (
                 <>
                     <div 
                         ref={pinRef}
