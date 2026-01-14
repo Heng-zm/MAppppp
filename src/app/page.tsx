@@ -271,7 +271,7 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
             if (typeof (DeviceOrientationEvent as any).requestPermission !== 'function') {
                 setHasPermission(true);
             }
-            // iOS requires explicit permission triggered by user interaction, so we leave hasPermission false to show the UI
+            // iOS requires explicit permission triggered by user interaction
         };
 
         startCamera();
@@ -315,12 +315,12 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
 
     // 5. Animation Loop
     useEffect(() => {
-        // Only run loop if we have permission OR on Android (where permission logic is simpler)
+        // Only run loop if we have permission OR on Android
         if (!hasPermission && !permissionError && typeof (DeviceOrientationEvent as any).requestPermission === 'function') return;
 
         const updateLoop = () => {
-            // Smooth heading
-            sensorData.current.heading = lerpAngle(sensorData.current.heading, sensorData.current.rawHeading, 0.15);
+            // Smooth heading with heavier filtering to reduce jitter
+            sensorData.current.heading = lerpAngle(sensorData.current.heading, sensorData.current.rawHeading, 0.08);
             
             const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
             const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
@@ -473,6 +473,7 @@ export default function MapExplorerPage() {
   const puckElement = useRef<HTMLDivElement | null>(null);
   const searchMarkers = useRef<Marker[]>([]);
   const routeGeoJSON = useRef<any>(null); 
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null); // Kept in ref to prevent Garbage Collection issues
   
   const userLocation = useRef<[number, number] | null>(null);
   const activeDestination = useRef<[number, number] | null>(null); 
@@ -538,13 +539,15 @@ export default function MapExplorerPage() {
     if (window.speechSynthesis.speaking && lastSpokenInstruction.current === text) return;
     window.speechSynthesis.cancel(); 
     
-    const utterance = new SpeechSynthesisUtterance(text);
+    // Store utterance in ref to prevent Chrome Garbage Collection from cutting off speech
+    utteranceRef.current = new SpeechSynthesisUtterance(text);
     const preferredVoice = availableVoices.find(v => v.lang.includes('km')) || 
                            availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')) || 
                            availableVoices.find(v => v.name.includes('Samantha'));
-    if (preferredVoice) utterance.voice = preferredVoice;
-    utterance.rate = 1.0; 
-    window.speechSynthesis.speak(utterance);
+    if (preferredVoice) utteranceRef.current.voice = preferredVoice;
+    utteranceRef.current.rate = 1.0; 
+    
+    window.speechSynthesis.speak(utteranceRef.current);
   }, [isMuted, availableVoices]);
 
   const requestWakeLock = async () => {
@@ -625,7 +628,7 @@ export default function MapExplorerPage() {
 
   // --- MAP LAYER MANAGEMENT HELPER ---
   const restoreMapLayers = useCallback((instance: MapboxMap, currentTraffic: boolean, currentRain: boolean) => {
-      if(!instance) return;
+      if(!instance || !instance.getStyle()) return;
 
       // 1. 3D Buildings
       if (!instance.getLayer('3d-buildings')) {
@@ -1011,8 +1014,17 @@ export default function MapExplorerPage() {
             compassHeading.current = compass;
         }
     };
+
+    // Re-acquire Wake Lock when tab becomes visible again
+    const handleVisibilityChange = () => {
+        if (document.visibilityState === 'visible' && isNavigating.current) {
+            requestWakeLock();
+        }
+    };
+
     if (typeof window !== 'undefined') {
         window.addEventListener('deviceorientation', handleOrientation);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
     }
 
     mapInstance.on('load', () => {
@@ -1100,7 +1112,10 @@ export default function MapExplorerPage() {
     return () => {
       isMounted.current = false;
       cancelAnimationFrame(animationFrameId.current);
-      if (typeof window !== 'undefined') window.removeEventListener('deviceorientation', handleOrientation);
+      if (typeof window !== 'undefined') {
+          window.removeEventListener('deviceorientation', handleOrientation);
+          document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
       if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
       releaseWakeLock();
       if (destinationMarker.current) destinationMarker.current.remove();
