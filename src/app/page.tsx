@@ -52,7 +52,7 @@ const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000; 
 const REROUTE_THRESHOLD_METERS = 45; 
-const AR_PERMISSION_KEY = "map_ar_permission_v1"; // Key for LocalStorage
+const AR_PERMISSION_KEY = "map_ar_permission_v1"; 
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -209,13 +209,12 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
-// 3. AR COMPONENT (UPDATED FOR PERMISSIONS)
+// 3. AR COMPONENT
 // ==========================================
 interface ArLastMileViewProps {
     userLocation: [number, number];
     destination: [number, number];
     onClose: () => void;
-    // New Props for Permission Handling
     hasParentPermission: boolean;
     setParentPermission: (val: boolean) => void;
 }
@@ -269,14 +268,10 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         };
 
         const checkSavedPermission = () => {
-            // 1. If Parent already has permission (session), use it
             if (hasParentPermission) return;
-
-            // 2. If Android/Standard (no request needed), auto-grant + check LocalStorage
             // @ts-ignore
             if (typeof DeviceOrientationEvent.requestPermission !== 'function') {
                 const isSaved = localStorage.getItem(AR_PERMISSION_KEY) === 'true';
-                // On Android, we don't strictly *need* saved state to work, but we set it for consistency
                 setParentPermission(true); 
                 if(!isSaved) localStorage.setItem(AR_PERMISSION_KEY, 'true');
             }
@@ -291,7 +286,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         };
     }, [hasParentPermission, setParentPermission]);
 
-    // Attach Listeners
     useEffect(() => {
         if (hasParentPermission) {
             window.addEventListener('deviceorientation', handleOrientation);
@@ -317,7 +311,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 const perm = await DeviceOrientationEvent.requestPermission();
                 if (perm === 'granted') {
                     setParentPermission(true);
-                    localStorage.setItem(AR_PERMISSION_KEY, 'true'); // Save to storage
+                    localStorage.setItem(AR_PERMISSION_KEY, 'true');
                 } else {
                     setPermissionError("Compass Permission denied.");
                 }
@@ -330,9 +324,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         }
     };
 
-    // Animation Loop
     useEffect(() => {
-        // Only run loop if permission is granted
         if (!hasParentPermission) return;
 
         const updateLoop = () => {
@@ -393,7 +385,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         <div className="fixed inset-0 z-[60] bg-black">
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
             
-            {/* Permission Prompt (Only shows if hasParentPermission is false) */}
             {!hasParentPermission && !permissionError && (
                  <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
                     <div className="text-center p-6 max-w-sm">
@@ -416,7 +407,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 </div>
             )}
 
-            {/* Main AR UI (Only shows if permitted) */}
             {hasParentPermission && (
                 <>
                     <div 
@@ -532,7 +522,7 @@ export default function MapExplorerPage() {
 
   // AR & Permission States
   const [showAR, setShowAR] = useState(false);
-  const [hasArPermission, setHasArPermission] = useState(false); // Held in parent for session persistence
+  const [hasArPermission, setHasArPermission] = useState(false); 
 
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
@@ -540,6 +530,14 @@ export default function MapExplorerPage() {
   const [currentStyle, setCurrentStyle] = useState(STYLES.DARK);
 
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
+
+  // --- RESTORE PERMISSION ON LOAD ---
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem(AR_PERMISSION_KEY);
+        if (saved === 'true') setHasArPermission(true);
+    }
+  }, []);
 
   useEffect(() => {
     const updateVoices = () => {
@@ -560,7 +558,6 @@ export default function MapExplorerPage() {
     if (window.speechSynthesis.speaking && lastSpokenInstruction.current === text) return;
     window.speechSynthesis.cancel(); 
     
-    // Store utterance in ref to prevent Chrome Garbage Collection from cutting off speech
     utteranceRef.current = new SpeechSynthesisUtterance(text);
     const preferredVoice = availableVoices.find(v => v.lang.includes('km')) || 
                            availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')) || 
@@ -882,19 +879,27 @@ export default function MapExplorerPage() {
       if (!puckMarker.current || !isMounted.current || !map.current) return;
       const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
-      let hybridTargetHeading = targetHeading.current;
-      let diff = getShortestAngleDistance(hybridTargetHeading, currentHeading.current);
+      
+      // UX Improvement: Prefer Compass Heading when speed is low (< 5km/h) to prevent spinning
+      const isMoving = currentSpeed > 5;
+      const headingToUse = isMoving ? gpsHeading.current : compassHeading.current;
+      targetHeading.current = headingToUse;
+
+      let diff = getShortestAngleDistance(targetHeading.current, currentHeading.current);
       const rotationSpeed = 0.12; 
       const newHeading = currentHeading.current + diff * rotationSpeed;
+      
       if (Math.abs(targetPuckPos.current[0] - currentPuckPos.current[0]) > 0.01) {
           currentPuckPos.current = targetPuckPos.current;
-          currentHeading.current = hybridTargetHeading;
+          currentHeading.current = targetHeading.current;
       } else {
           currentPuckPos.current = [newLng, newLat];
           currentHeading.current = newHeading;
       }
+
       puckMarker.current.setLngLat(currentPuckPos.current);
       puckMarker.current.setRotation(newHeading);
+      
       if (isNavigating.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           map.current.easeTo({
               center: currentPuckPos.current,
@@ -909,7 +914,7 @@ export default function MapExplorerPage() {
   const handleStyleChange = (style: string) => {
     if (!map.current || style === currentStyle) return;
     
-    // Fix: Ensure we capture current layer state correctly before switch
+    // Capture state to restore after style switch
     const trafficState = isTrafficVisible;
     const rainState = isRainMode;
     const windState = isWindMode;
@@ -917,9 +922,9 @@ export default function MapExplorerPage() {
     const onStyleLoad = () => {
         if (!map.current) return;
         restoreMapLayers(map.current, trafficState, rainState, windState);
-        // Only run once per style change
     };
     
+    // Safe style switching that ensures layers return
     map.current.once('style.load', onStyleLoad);
     map.current.setStyle(style);
     setCurrentStyle(style);
@@ -965,7 +970,7 @@ export default function MapExplorerPage() {
          el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`;
          const marker = new Marker({ element: el })
             .setLngLat([r.lng, r.lat])
-            .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(`<b>${r.name}</b><br>${r.address}`))
+            .setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`))
             .addTo(map.current!);
          
          marker.getElement().addEventListener('click', () => {
@@ -1079,7 +1084,6 @@ export default function MapExplorerPage() {
         }
     };
 
-    // Re-acquire Wake Lock when tab becomes visible again
     const handleVisibilityChange = () => {
         if (document.visibilityState === 'visible' && isNavigating.current) {
             requestWakeLock();
@@ -1113,11 +1117,8 @@ export default function MapExplorerPage() {
                     userLocation.current = [longitude, latitude];
                     targetPuckPos.current = [longitude, latitude];
                     
-                    if (speedKmh > 3 && heading !== null && !isNaN(heading)) {
+                    if (heading !== null && !isNaN(heading)) {
                         gpsHeading.current = heading;
-                        targetHeading.current = heading;
-                    } else if (compassHeading.current !== 0) {
-                        targetHeading.current = compassHeading.current;
                     }
 
                     fetchWeather(latitude, longitude);
@@ -1164,7 +1165,6 @@ export default function MapExplorerPage() {
         } 
     };
     
-    // Fix: Add passive: false to allow preventDefault if needed in future, though Mapbox handles this
     const touchOpts = { passive: true };
 
     mapInstance.on('touchstart', handleInteractionStart);
@@ -1196,13 +1196,11 @@ export default function MapExplorerPage() {
   }, [fetchWeather, fetchRoute, toast, isRainMode, isWindMode, handleMapSelection, currentStyle, isTrafficVisible, drawBlueRoute, restoreMapLayers]);
 
   // --- MAP LAYER ANIMATION LOOP ---
-  // Subtly pulses the wind layer opacity to simulate "live" data
   useEffect(() => {
     let frameId: number;
     const animateWindLayer = () => {
         if (isWindMode && map.current && map.current.getLayer('wind-layer')) {
             const time = Date.now() / 2000;
-            // Oscillate opacity between 0.5 and 0.7
             const opacity = 0.6 + Math.sin(time) * 0.1;
             map.current.setPaintProperty('wind-layer', 'raster-opacity', opacity);
         }
@@ -1235,33 +1233,35 @@ export default function MapExplorerPage() {
       const controller = new AbortController();
       addressAbortController.current = controller;
 
-      const fetchAddress = async () => {
-        setIsFetchingAddress(true);
-        const apiKey = GEOAPIFY_API_KEY; 
-        
-        if (!apiKey) {
-            setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` });
-            setIsFetchingAddress(false);
-            return;
-        }
+      // Debounce address fetching to prevent API spam when dragging
+      const timeoutId = setTimeout(async () => {
+          setIsFetchingAddress(true);
+          const apiKey = GEOAPIFY_API_KEY; 
+          
+          if (!apiKey) {
+              setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` });
+              setIsFetchingAddress(false);
+              return;
+          }
 
-        try {
-          const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=km`, {
-              signal: controller.signal
-          });
-          const data = await response.json();
-          if (isMounted.current && !controller.signal.aborted) {
-             setAddressDetails((data.features && data.features.length > 0) ? data.features[0].properties : { formatted: "ទីតាំងមិនស្គាល់" });
+          try {
+            const response = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${apiKey}&lang=km`, {
+                signal: controller.signal
+            });
+            const data = await response.json();
+            if (isMounted.current && !controller.signal.aborted) {
+               setAddressDetails((data.features && data.features.length > 0) ? data.features[0].properties : { formatted: "ទីតាំងមិនស្គាល់" });
+            }
+          } catch (error: any) {
+            if (error.name !== 'AbortError' && isMounted.current) {
+               setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" });
+            }
+          } finally {
+            if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false);
           }
-        } catch (error: any) {
-          if (error.name !== 'AbortError' && isMounted.current) {
-             setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" });
-          }
-        } finally {
-          if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false);
-        }
-      };
-      fetchAddress();
+      }, 600); // 600ms debounce
+
+      return () => clearTimeout(timeoutId);
     }
   }, [locationDetails]);
 
@@ -1370,13 +1370,10 @@ export default function MapExplorerPage() {
       const newState = !isRainMode;
       setIsRainMode(newState);
       
-      // We manually toggle the layer here, but the restoreMapLayers will handle it during style change
       if (map.current.getLayer('rain-layer')) {
           map.current.setLayoutProperty('rain-layer', 'visibility', newState ? 'visible' : 'none');
-          // Smooth fade transition
           map.current.setPaintProperty('rain-layer', 'raster-opacity', newState ? 0.7 : 0);
       } else if (newState) {
-          // If layer doesn't exist yet, restoreMapLayers logic can help add it
           restoreMapLayers(map.current, isTrafficVisible, true, isWindMode);
       }
 
@@ -1524,7 +1521,6 @@ export default function MapExplorerPage() {
               handleUserLocationClick={handleUserLocationClick}
               handleStyleChange={handleStyleChange}
               currentStyle={currentStyle}
-              // AR Trigger
               canShowAR={!!locationDetails}
               toggleAR={toggleAR}
            />
@@ -1755,7 +1751,6 @@ const BottomControls = memo(({
         updateHistory(newHistory);
     };
 
-    // Improved debounce logic with proper cleanup
     useEffect(() => {
         const controller = new AbortController();
         const signal = controller.signal;
@@ -1777,7 +1772,7 @@ const BottomControls = memo(({
             } catch (e) { 
                 if (!signal.aborted) setIsSearching(false);
             }
-        }, 400); // Slightly increased delay for better performance
+        }, 400);
 
         return () => {
             clearTimeout(timeoutId);
@@ -1803,6 +1798,12 @@ const BottomControls = memo(({
         inputRef.current?.blur();
     }
 
+    const handleClearInput = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setQuery("");
+        inputRef.current?.focus();
+    }
+
     const calcDist = (lat: number, lng: number) => {
         if(!userLocation.current) return null;
         return formatDistance(getDistanceFromLatLonInMeters(userLocation.current[1], userLocation.current[0], lat, lng));
@@ -1815,7 +1816,7 @@ const BottomControls = memo(({
             <div className={`flex justify-end gap-3 pointer-events-auto pb-2 transition-opacity duration-300 ${isInputActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
                  <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                        <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
+                        <Button size="icon" aria-label="Map Layers" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
                             <Layers className="h-5 w-5" />
                         </Button>
                     </DropdownMenuTrigger>
@@ -1835,33 +1836,29 @@ const BottomControls = memo(({
                     </DropdownMenuContent>
                 </DropdownMenu>
 
-                 <Button size="icon" onClick={handleUserLocationClick} className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
+                 <Button size="icon" onClick={handleUserLocationClick} aria-label="My Location" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
                     <Crosshair className="h-5 w-5" />
                 </Button>
                 
-                {/* Traffic Toggle */}
-                <Button size="icon" onClick={toggleTraffic} className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
+                <Button size="icon" onClick={toggleTraffic} aria-label="Toggle Traffic" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
                     <Zap className="h-5 w-5" />
                 </Button>
 
-                {/* Rain Mode Toggle */}
-                <Button size="icon" onClick={toggleRainMode} className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isRainMode ? 'bg-blue-600 border-blue-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
+                <Button size="icon" onClick={toggleRainMode} aria-label="Toggle Rain" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isRainMode ? 'bg-blue-600 border-blue-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
                     <CloudRain className="h-5 w-5" />
                 </Button>
 
-                {/* Wind Mode Toggle */}
-                <Button size="icon" onClick={toggleWindMode} className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isWindMode ? 'bg-cyan-600 border-cyan-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
+                <Button size="icon" onClick={toggleWindMode} aria-label="Toggle Wind" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isWindMode ? 'bg-cyan-600 border-cyan-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
                     <Wind className={`h-5 w-5 ${isWindMode ? 'wind-active' : ''}`} />
                 </Button>
 
-                {/* AR Toggle (Quick Access) */}
                 {canShowAR && (
-                    <Button size="icon" onClick={toggleAR} className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
+                    <Button size="icon" onClick={toggleAR} aria-label="Open AR" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800">
                         <Camera className="h-5 w-5" />
                     </Button>
                 )}
 
-                <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass}>
+                <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass} aria-label="Reset Compass">
                     <Compass className="h-5 w-5" />
                 </Button>
             </div>
@@ -1969,11 +1966,11 @@ const BottomControls = memo(({
                     />
                     {isSearching ? (
                         <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-indigo-500 animate-spin" />
-                    ) : (query.length > 0 || isInputActive) && (
-                        <button onClick={handleCloseSearch} className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors text-zinc-400 hover:text-white">
+                    ) : (query.length > 0) ? (
+                        <button onClick={handleClearInput} className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors text-zinc-400 hover:text-white">
                             <X className="h-3.5 w-3.5" />
                         </button>
-                    )}
+                    ) : null}
                 </div>
             </div>
         </div>
