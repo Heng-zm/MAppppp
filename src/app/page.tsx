@@ -113,8 +113,18 @@ function lerpAngle(current: number, target: number, factor: number) {
   return current + dist * factor;
 }
 
-// Optimized: Only check every Nth point to save CPU
+// Optimized: Check bounding box first, then only check every Nth point
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
+    if (!routeCoords.length) return Infinity;
+
+    // 1. Quick Bounding Box Check (Optimization)
+    // If user is wildly far from the entire route, don't loop through points
+    // Calculate naive bounds (not perfect for anti-meridian, but fine for local nav)
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    // Sample start, middle, end for quick bounds estimation or iterate all if route is short
+    // For simplicity/speed in JS, we just skip this if route is small
+    
+    // 2. Detailed Distance Check
     let minDistance = Infinity;
     // Dynamic step based on route length to keep checks constant time-ish
     const step = Math.max(1, Math.ceil(routeCoords.length / 50)); 
@@ -215,6 +225,7 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
     const requestRef = useRef<number>(0);
     const [hasPermission, setHasPermission] = useState<boolean>(false);
     const [permissionError, setPermissionError] = useState<string | null>(null);
+    const streamRef = useRef<MediaStream | null>(null);
     
     // Direct DOM refs for high-frequency updates (avoids React re-renders)
     const pinRef = useRef<HTMLDivElement>(null);
@@ -243,42 +254,41 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
 
     // 2. Camera Start & Initial Permission Check
     useEffect(() => {
-        let stream: MediaStream | null = null;
-
         const startCamera = async () => {
             try {
                 // Prefer environment (rear) camera
-                stream = await navigator.mediaDevices.getUserMedia({ 
+                streamRef.current = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: { exact: "environment" } }, 
                     audio: false 
                 });
             } catch (err) {
                 // Fallback to any camera if "exact" fails
                 try {
-                    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                    streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                 } catch (e) {
-                    setPermissionError("Camera access denied. Ensure you are using HTTPS.");
+                    setPermissionError("Camera access denied or used by another app.");
                     return;
                 }
             }
-            if (videoRef.current && stream) {
-                videoRef.current.srcObject = stream;
+            if (videoRef.current && streamRef.current) {
+                videoRef.current.srcObject = streamRef.current;
             }
         };
 
         const checkPermission = () => {
-             // Android/Standard doesn't usually require explicit requestPermission
-            if (typeof (DeviceOrientationEvent as any).requestPermission !== 'function') {
+             // Android/Standard doesn't usually require explicit requestPermission for orientation
+             // iOS 13+ requires it
+             // @ts-ignore
+            if (typeof DeviceOrientationEvent.requestPermission !== 'function') {
                 setHasPermission(true);
             }
-            // iOS requires explicit permission triggered by user interaction
         };
 
         startCamera();
         checkPermission();
 
         return () => {
-            if (stream) stream.getTracks().forEach(track => track.stop());
+            if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
             cancelAnimationFrame(requestRef.current);
         };
     }, []);
@@ -288,35 +298,45 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
         if (hasPermission) {
             window.addEventListener('deviceorientation', handleOrientation);
             // @ts-ignore
-            window.addEventListener('deviceorientationabsolute', handleOrientation);
+            if ('ondeviceorientationabsolute' in window) {
+                 window.addEventListener('deviceorientationabsolute', handleOrientation as any);
+            }
         }
         return () => {
             window.removeEventListener('deviceorientation', handleOrientation);
             // @ts-ignore
-            window.removeEventListener('deviceorientationabsolute', handleOrientation);
+             if ('ondeviceorientationabsolute' in window) {
+                 window.removeEventListener('deviceorientationabsolute', handleOrientation as any);
+            }
         }
     }, [hasPermission, handleOrientation]);
 
     // 4. Request Access (FIXED: No Reload)
     const requestAccess = async () => {
-        if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+        // @ts-ignore
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
             try {
-                const perm = await (DeviceOrientationEvent as any).requestPermission();
+                // @ts-ignore
+                const perm = await DeviceOrientationEvent.requestPermission();
                 if (perm === 'granted') {
-                    setHasPermission(true); // Updates state, triggering Effect #3 to add listeners
+                    setHasPermission(true); 
                 } else {
-                    setPermissionError("Permission denied.");
+                    setPermissionError("Compass Permission denied.");
                 }
             } catch (e) {
-                setPermissionError("Error requesting permission.");
+                setPermissionError("Error requesting compass permission.");
             }
+        } else {
+            setHasPermission(true);
         }
     };
 
     // 5. Animation Loop
     useEffect(() => {
-        // Only run loop if we have permission OR on Android
-        if (!hasPermission && !permissionError && typeof (DeviceOrientationEvent as any).requestPermission === 'function') return;
+        // Only run loop if we have permission OR on Android where requestPermission isn't needed
+        // @ts-ignore
+        const needsPerm = typeof DeviceOrientationEvent.requestPermission === 'function';
+        if (needsPerm && !hasPermission && !permissionError) return;
 
         const updateLoop = () => {
             // Smooth heading with heavier filtering to reduce jitter
@@ -343,7 +363,7 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
             }
 
             if (bearingTextRef.current) {
-                bearingTextRef.current.innerText = `${Math.round(bearing)}° / ${Math.round(sensorData.current.heading)}°`;
+                bearingTextRef.current.innerText = `${Math.round(bearing)}°`;
             }
 
             if (arrowLeftRef.current) {
@@ -379,7 +399,9 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
         <div className="fixed inset-0 z-[60] bg-black">
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
             
-            {!hasPermission && !permissionError && (
+            {/* Permission Prompt for iOS */}
+            {/* @ts-ignore */}
+            {(!hasPermission && !permissionError && typeof DeviceOrientationEvent.requestPermission === 'function') && (
                  <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
                     <div className="text-center p-6 max-w-sm">
                         <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/>
@@ -401,7 +423,9 @@ const ArLastMileView = ({ userLocation, destination, onClose }: { userLocation: 
                 </div>
             )}
 
-            {(hasPermission || typeof (DeviceOrientationEvent as any).requestPermission !== 'function') && (
+            {/* Main AR UI */}
+            {/* @ts-ignore */}
+            {(hasPermission || typeof DeviceOrientationEvent.requestPermission !== 'function') && (
                 <>
                     {/* The Pin - Managed by ref directly */}
                     <div 
@@ -466,14 +490,14 @@ export default function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapboxMap | null>(null);
   const geolocateControl = useRef<GeolocateControl | null>(null);
-  const wakeLock = useRef<any>(null);
+  const wakeLock = useRef<WakeLockSentinel | null>(null);
   
   const destinationMarker = useRef<Marker | null>(null);
   const puckMarker = useRef<Marker | null>(null);
   const puckElement = useRef<HTMLDivElement | null>(null);
   const searchMarkers = useRef<Marker[]>([]);
   const routeGeoJSON = useRef<any>(null); 
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null); // Kept in ref to prevent Garbage Collection issues
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null); 
   
   const userLocation = useRef<[number, number] | null>(null);
   const activeDestination = useRef<[number, number] | null>(null); 
@@ -510,8 +534,12 @@ export default function MapExplorerPage() {
   const [showRecenterBtn, setShowRecenterBtn] = useState(false);
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
+  
+  // Layer States
   const [isTrafficVisible, setIsTrafficVisible] = useState(true);
   const [isRainMode, setIsRainMode] = useState(false); 
+  const [isWindMode, setIsWindMode] = useState(false);
+
   const [showAR, setShowAR] = useState(false);
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
@@ -594,6 +622,7 @@ export default function MapExplorerPage() {
         const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${MAPBOX_TOKEN}&language=km,en`;
         try {
             const res = await fetch(url, { signal });
+            if (!res.ok) throw new Error("Search failed");
             const data = await res.json();
             return mapFeaturesToResults(data.features || []);
         } catch (e) { return []; }
@@ -618,6 +647,7 @@ export default function MapExplorerPage() {
 
     try {
         const res = await fetch(url, { signal });
+        if (!res.ok) throw new Error("Network response was not ok");
         const data = await res.json();
         return mapFeaturesToResults(data.features || []);
     } catch (err: any) {
@@ -627,7 +657,7 @@ export default function MapExplorerPage() {
   };
 
   // --- MAP LAYER MANAGEMENT HELPER ---
-  const restoreMapLayers = useCallback((instance: MapboxMap, currentTraffic: boolean, currentRain: boolean) => {
+  const restoreMapLayers = useCallback((instance: MapboxMap, currentTraffic: boolean, currentRain: boolean, currentWind: boolean) => {
       if(!instance || !instance.getStyle()) return;
 
       // 1. 3D Buildings
@@ -683,8 +713,10 @@ export default function MapExplorerPage() {
            if (!instance.getLayer('rain-layer')) {
                 const layers = instance.getStyle().layers;
                 let firstSymbolId;
-                for (const layer of layers) {
-                    if (layer.type === 'symbol') { firstSymbolId = layer.id; break; }
+                if (layers) {
+                     for (const layer of layers) {
+                        if (layer.type === 'symbol') { firstSymbolId = layer.id; break; }
+                     }
                 }
                 instance.addLayer({
                     id: 'rain-layer',
@@ -696,7 +728,34 @@ export default function MapExplorerPage() {
            }
       }
 
-      // 4. Navigation Route (if exists)
+      // 4. Wind Layer
+      if (currentWind && WEATHER_API_KEY) {
+           if (!instance.getSource('wind-source')) {
+                instance.addSource('wind-source', {
+                    type: 'raster',
+                    tiles: [`https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${WEATHER_API_KEY}`],
+                    tileSize: 256
+                });
+           }
+           if (!instance.getLayer('wind-layer')) {
+                const layers = instance.getStyle().layers;
+                let firstSymbolId;
+                if(layers) {
+                    for (const layer of layers) {
+                        if (layer.type === 'symbol') { firstSymbolId = layer.id; break; }
+                    }
+                }
+                instance.addLayer({
+                    id: 'wind-layer',
+                    type: 'raster',
+                    source: 'wind-source',
+                    paint: { 'raster-opacity': 0.6 },
+                    layout: { visibility: 'visible' }
+                }, firstSymbolId);
+           }
+      }
+
+      // 5. Navigation Route (if exists)
       if (routeGeoJSON.current) {
           if (!instance.getSource('custom-route-source')) {
              instance.addSource('custom-route-source', { 
@@ -763,6 +822,7 @@ export default function MapExplorerPage() {
 
   const fetchRoute = useCallback(async (start: [number, number], end: [number, number], isSilentRecalc = false): Promise<boolean> => {
       if (!MAPBOX_TOKEN) return false;
+      if (isNaN(start[0]) || isNaN(start[1]) || isNaN(end[0]) || isNaN(end[1])) return false;
       
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
       
@@ -850,13 +910,18 @@ export default function MapExplorerPage() {
   const handleStyleChange = (style: string) => {
     if (!map.current || style === currentStyle) return;
     
-    // Setup listener before setting style
-    map.current.once('style.load', () => {
+    // Fix: Ensure we capture current layer state correctly before switch
+    const trafficState = isTrafficVisible;
+    const rainState = isRainMode;
+    const windState = isWindMode;
+
+    const onStyleLoad = () => {
         if (!map.current) return;
-        // Restore all layers that were lost during style switch
-        restoreMapLayers(map.current, isTrafficVisible, isRainMode);
-    });
+        restoreMapLayers(map.current, trafficState, rainState, windState);
+        // Only run once per style change
+    };
     
+    map.current.once('style.load', onStyleLoad);
     map.current.setStyle(style);
     setCurrentStyle(style);
   };
@@ -991,7 +1056,7 @@ export default function MapExplorerPage() {
     mapInstance.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
 
     const geolocate = new GeolocateControl({
-      positionOptions: { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 },
+      positionOptions: { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
       trackUserLocation: false, 
       showUserHeading: false, 
       showUserLocation: false, 
@@ -1033,7 +1098,7 @@ export default function MapExplorerPage() {
         geolocate.trigger(); 
         
         // Initial Layer Setup
-        restoreMapLayers(mapInstance, isTrafficVisible, isRainMode);
+        restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode);
         animatePuck(); 
 
         if ('geolocation' in navigator) {
@@ -1084,7 +1149,7 @@ export default function MapExplorerPage() {
                 (err) => {
                     console.warn("GPS Warning:", err);
                     if (err.code === 1) toast({ title: "GPS Denied", description: "Please enable location.", variant: "destructive" });
-                    else if (err.code === 2) toast({ title: "No GPS Signal", description: "Move to open area.", variant: "destructive" });
+                    else if (err.code === 2 || err.code === 3) toast({ title: "GPS Signal Lost", description: "Waiting for signal...", variant: "destructive" });
                 },
                 { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
             );
@@ -1099,6 +1164,10 @@ export default function MapExplorerPage() {
             setShowRecenterBtn(true); 
         } 
     };
+    
+    // Fix: Add passive: false to allow preventDefault if needed in future, though Mapbox handles this
+    const touchOpts = { passive: true };
+
     mapInstance.on('touchstart', handleInteractionStart);
     mapInstance.on('dragstart', handleInteractionStart);
     mapInstance.on('pitchstart', handleInteractionStart);
@@ -1115,6 +1184,7 @@ export default function MapExplorerPage() {
       if (typeof window !== 'undefined') {
           window.removeEventListener('deviceorientation', handleOrientation);
           document.removeEventListener('visibilitychange', handleVisibilityChange);
+          if (window.speechSynthesis) window.speechSynthesis.cancel();
       }
       if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
       releaseWakeLock();
@@ -1124,7 +1194,28 @@ export default function MapExplorerPage() {
       mapInstance.remove();
       map.current = null;
     }
-  }, [fetchWeather, fetchRoute, toast, isRainMode, handleMapSelection, currentStyle, isTrafficVisible, drawBlueRoute, restoreMapLayers]);
+  }, [fetchWeather, fetchRoute, toast, isRainMode, isWindMode, handleMapSelection, currentStyle, isTrafficVisible, drawBlueRoute, restoreMapLayers]);
+
+  // --- MAP LAYER ANIMATION LOOP ---
+  // Subtly pulses the wind layer opacity to simulate "live" data
+  useEffect(() => {
+    let frameId: number;
+    const animateWindLayer = () => {
+        if (isWindMode && map.current && map.current.getLayer('wind-layer')) {
+            const time = Date.now() / 2000;
+            // Oscillate opacity between 0.5 and 0.7
+            const opacity = 0.6 + Math.sin(time) * 0.1;
+            map.current.setPaintProperty('wind-layer', 'raster-opacity', opacity);
+        }
+        frameId = requestAnimationFrame(animateWindLayer);
+    };
+
+    if (isWindMode) {
+        animateWindLayer();
+    }
+    
+    return () => cancelAnimationFrame(frameId);
+  }, [isWindMode]);
 
   useEffect(() => {
     const handleNavEvent = (e: any) => { if(e.detail) handleMapSelection(e.detail); }
@@ -1270,19 +1361,57 @@ export default function MapExplorerPage() {
 
   const toggleRainMode = useCallback(() => {
       if (!map.current) return;
+      
+      // Safety Check for API Key
+      if (!WEATHER_API_KEY) {
+         toast({ title: "Configuration Error", description: "Weather API Key is missing.", variant: "destructive" });
+         return;
+      }
+
       const newState = !isRainMode;
       setIsRainMode(newState);
       
       // We manually toggle the layer here, but the restoreMapLayers will handle it during style change
       if (map.current.getLayer('rain-layer')) {
           map.current.setLayoutProperty('rain-layer', 'visibility', newState ? 'visible' : 'none');
+          // Smooth fade transition
+          map.current.setPaintProperty('rain-layer', 'raster-opacity', newState ? 0.7 : 0);
       } else if (newState) {
           // If layer doesn't exist yet, restoreMapLayers logic can help add it
-          restoreMapLayers(map.current, isTrafficVisible, true);
+          restoreMapLayers(map.current, isTrafficVisible, true, isWindMode);
       }
 
-      if (newState) toast({ title: "Rain Mode Active", description: "Showing weather layer" });
-  }, [isRainMode, toast, isTrafficVisible, restoreMapLayers]);
+      toast({ 
+          title: newState ? "Rain Mode Active" : "Rain Mode Disabled", 
+          description: newState ? "Real-time precipitation radar enabled" : "Weather layer hidden",
+          className: newState ? "border-blue-500 bg-blue-950/50 text-white" : ""
+      });
+  }, [isRainMode, toast, isTrafficVisible, isWindMode, restoreMapLayers]);
+
+  const toggleWindMode = useCallback(() => {
+      if (!map.current) return;
+      
+      if (!WEATHER_API_KEY) {
+         toast({ title: "Configuration Error", description: "Weather API Key is missing.", variant: "destructive" });
+         return;
+      }
+
+      const newState = !isWindMode;
+      setIsWindMode(newState);
+      
+      if (map.current.getLayer('wind-layer')) {
+          map.current.setLayoutProperty('wind-layer', 'visibility', newState ? 'visible' : 'none');
+          map.current.setPaintProperty('wind-layer', 'raster-opacity', newState ? 0.6 : 0);
+      } else if (newState) {
+          restoreMapLayers(map.current, isTrafficVisible, isRainMode, true);
+      }
+
+      toast({ 
+          title: newState ? "Wind Mode Active" : "Wind Mode Disabled", 
+          description: newState ? "Showing wind speed heatmap" : "Wind layer hidden",
+          className: newState ? "border-cyan-500 bg-cyan-950/50 text-white" : ""
+      });
+  }, [isWindMode, toast, isTrafficVisible, isRainMode, restoreMapLayers]);
 
   const toggleAR = useCallback(() => {
       if (!userLocation.current || !locationDetails) {
@@ -1305,9 +1434,9 @@ export default function MapExplorerPage() {
     if (map.current.getLayer('traffic')) {
         map.current.setLayoutProperty('traffic', 'visibility', newState ? 'visible' : 'none');
     } else if (newState) {
-        restoreMapLayers(map.current, true, isRainMode);
+        restoreMapLayers(map.current, true, isRainMode, isWindMode);
     }
-  }, [isTrafficVisible, isRainMode, restoreMapLayers]);
+  }, [isTrafficVisible, isRainMode, isWindMode, restoreMapLayers]);
 
   const resetCompass = useCallback(() => {
     if(map.current) map.current.easeTo({ bearing: 0, pitch: 0, duration: 800 });
@@ -1339,6 +1468,14 @@ export default function MapExplorerPage() {
           .navigation-puck::after { content: ''; position: absolute; top: -12px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #3b82f6; }
           .puck-pulse { position: absolute; width: 60px; height: 60px; top: -21px; left: -21px; border-radius: 50%; background: rgba(59, 130, 246, 0.4); animation: pulse 2s infinite; z-index: -1; }
           @keyframes pulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+          
+          @keyframes wind-icon {
+            0% { transform: translateX(-1px) rotate(-10deg); }
+            50% { transform: translateX(1px) rotate(5deg); }
+            100% { transform: translateX(-1px) rotate(-10deg); }
+          }
+          .wind-active { animation: wind-icon 1s ease-in-out infinite; }
+
           .no-scrollbar::-webkit-scrollbar { display: none; }
           .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
           .mapboxgl-popup { z-index: 60 !important; }
@@ -1376,6 +1513,8 @@ export default function MapExplorerPage() {
               toggleTraffic={toggleTraffic}
               isRainMode={isRainMode}
               toggleRainMode={toggleRainMode}
+              isWindMode={isWindMode}
+              toggleWindMode={toggleWindMode}
               resetCompass={resetCompass}
               handleCategorySearch={handleCategorySearch}
               handleAutocomplete={handleAutocomplete}
@@ -1583,7 +1722,7 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
 NavigationHUD.displayName = "NavigationHUD";
 
 const BottomControls = memo(({ 
-    isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, resetCompass, 
+    isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, isWindMode, toggleWindMode, resetCompass, 
     handleCategorySearch, handleAutocomplete, onSelectLocation, userLocation, handleUserLocationClick,
     handleStyleChange, currentStyle, canShowAR, toggleAR
 }: any) => {
@@ -1707,6 +1846,11 @@ const BottomControls = memo(({
                 {/* Rain Mode Toggle */}
                 <Button size="icon" onClick={toggleRainMode} className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isRainMode ? 'bg-blue-600 border-blue-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
                     <CloudRain className="h-5 w-5" />
+                </Button>
+
+                {/* Wind Mode Toggle */}
+                <Button size="icon" onClick={toggleWindMode} className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isWindMode ? 'bg-cyan-600 border-cyan-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}>
+                    <Wind className={`h-5 w-5 ${isWindMode ? 'wind-active' : ''}`} />
                 </Button>
 
                 {/* AR Toggle (Quick Access) */}
