@@ -33,7 +33,7 @@ import {
   ChevronDown, ChevronUp, Trash2, ChevronLeft, ChevronRight,
   Phone, Globe, Satellite, Map as MapIcon,
   CarFront, ExternalLink, Camera, ScanEye, Lock,
-  Mountain, Shield, Share2, StopCircle, Copy // Added Safety Icons
+  Mountain, Shield, Share2, StopCircle, Copy
 } from 'lucide-react';
 
 // ==========================================
@@ -55,19 +55,26 @@ const kantumruy = Kantumruy_Pro({
   display: 'swap',
 });
 
+// --- ENV VARS ---
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const WEATHER_API_KEY = process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY;
 const GEOAPIFY_API_KEY = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY;
-// Supabase Config
+
+// FIX: Check for standard key OR the one you provided
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
 
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
-// Initialize Supabase only if keys exist
-const supabase = (SUPABASE_URL && SUPABASE_KEY) 
-    ? createClient(SUPABASE_URL, SUPABASE_KEY) 
-    : null;
+// Initialize Supabase safely
+let supabase: any = null;
+if (SUPABASE_URL && SUPABASE_KEY) {
+    try {
+        supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+    } catch (e) {
+        console.error("Supabase Init Failed:", e);
+    }
+}
 
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
@@ -234,7 +241,7 @@ type RouteDetails = { distance: number; duration: number; instruction: string; a
 interface ArLastMileViewProps {
     userLocation: [number, number];
     destination: [number, number];
-    routePath?: number[][]; // Added Route Path
+    routePath?: number[][];
     onClose: () => void;
     hasParentPermission: boolean;
     setParentPermission: (val: boolean) => void;
@@ -260,24 +267,15 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const sensorData = useRef({ heading: 0, rawHeading: 0 });
     const lastRenderedState = useRef({ distanceText: "" });
 
-    // Filter relevant path points (performance optimization)
     const visiblePathSegments = useMemo(() => {
         if (!routePath || routePath.length === 0) return [];
-        
-        // Take every 3rd point to reduce DOM elements, but only within 150m range
         const segments: {x: number, z: number, dist: number}[] = [];
         let count = 0;
-        
-        for(let i=0; i<routePath.length; i+=1) { // Analyze precision vs perf
+        for(let i=0; i<routePath.length; i+=1) { 
             const pt = routePath[i];
             const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]);
-            
-            // Only render points ahead within 150m
             if (dist < 150 && count < 30) {
                  const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]);
-                 // Convert to Cartesian relative to user (North = -Z)
-                 // x = dist * sin(bearing)
-                 // z = -dist * cos(bearing)
                  const rad = bearing * (Math.PI / 180);
                  segments.push({
                      x: dist * Math.sin(rad),
@@ -287,7 +285,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                  count++;
             }
         }
-        return segments.sort((a,b) => b.dist - a.dist); // Draw far points first
+        return segments.sort((a,b) => b.dist - a.dist);
     }, [routePath, userLocation]);
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
@@ -311,7 +309,6 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
             setPermissionError("AR requires HTTPS.");
             return;
         }
-
         const startCamera = async () => {
             try {
                 streamRef.current = await navigator.mediaDevices.getUserMedia({
@@ -326,26 +323,19 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                     return;
                 }
             }
-            if (videoRef.current && streamRef.current) {
-                videoRef.current.srcObject = streamRef.current;
-            }
+            if (videoRef.current && streamRef.current) videoRef.current.srcObject = streamRef.current;
         };
-
         const checkSavedPermission = () => {
             const isIOS = typeof (DeviceOrientationEvent as unknown as DeviceOrientationEventiOS).requestPermission === 'function';
             if (!isIOS) {
                 setParentPermission(true);
                 setTimeout(() => { if(!hasFiredOnce.current) setSensorsActive(true); }, 1000); 
             } else if (hasParentPermission) {
-                setTimeout(() => {
-                    if (!hasFiredOnce.current) setShowManualCalibrate(true);
-                }, 3000);
+                setTimeout(() => { if (!hasFiredOnce.current) setShowManualCalibrate(true); }, 3000);
             }
         };
-
         startCamera();
         checkSavedPermission();
-
         return () => {
             if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
             cancelAnimationFrame(requestRef.current);
@@ -355,15 +345,11 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     useEffect(() => {
         if (hasParentPermission) {
             window.addEventListener('deviceorientation', handleOrientation);
-            if ('ondeviceorientationabsolute' in window) {
-                 window.addEventListener('deviceorientationabsolute', handleOrientation as any);
-            }
+            if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', handleOrientation as any);
         }
         return () => {
             window.removeEventListener('deviceorientation', handleOrientation);
-             if ('ondeviceorientationabsolute' in window) {
-                 window.removeEventListener('deviceorientationabsolute', handleOrientation as any);
-            }
+             if ('ondeviceorientationabsolute' in window) window.removeEventListener('deviceorientationabsolute', handleOrientation as any);
         }
     }, [hasParentPermission, handleOrientation]);
 
@@ -384,97 +370,52 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         }
     };
 
-    // 3D Animation Loop
     useEffect(() => {
         if (!hasParentPermission || !sensorsActive) return;
-
         const updateLoop = () => {
             const currentObj = sensorData.current;
             const diff = getShortestAngleDistance(currentObj.rawHeading, currentObj.heading);
-            currentObj.heading += diff * 0.15; // Slightly faster tracking for road lines
-
+            currentObj.heading += diff * 0.15; 
             const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
             const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
             const formattedDist = formatDistance(distance);
-
             if (bearingTextRef.current) bearingTextRef.current.innerText = `${Math.round(bearing)}°`;
-            
             if (distanceTextRef.current && lastRenderedState.current.distanceText !== formattedDist) {
                 distanceTextRef.current.innerText = formattedDist;
                 lastRenderedState.current.distanceText = formattedDist;
             }
-
             const angleDiff = Math.abs(getShortestAngleDistance(bearing, currentObj.heading));
             setTargetInSight(angleDiff < 15);
-
-            // ROTATE THE WORLD based on Heading. 
-            // -Heading makes the world North align with Real North.
-            if (worldRef.current) {
-                worldRef.current.style.transform = `translateZ(0) rotateY(${-currentObj.heading}deg)`;
-            }
-
+            if (worldRef.current) worldRef.current.style.transform = `translateZ(0) rotateY(${-currentObj.heading}deg)`;
             requestRef.current = requestAnimationFrame(updateLoop);
         };
-
         requestRef.current = requestAnimationFrame(updateLoop);
         return () => cancelAnimationFrame(requestRef.current);
     }, [userLocation, destination, hasParentPermission, sensorsActive]);
 
-    // Destination Pin Calculation (North-Relative)
     const destBearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
     const destDist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
     const destRad = destBearing * (Math.PI / 180);
     const destX = destDist * Math.sin(destRad);
     const destZ = -(destDist * Math.cos(destRad));
-
     const showPermissionButton = !hasParentPermission && !permissionError && isSecure && !showManualCalibrate;
 
     return (
         <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
             <style jsx>{`
-                .perspective-container {
-                    perspective: 600px;
-                    perspective-origin: 50% 50%;
-                }
-                .world-3d {
-                    position: absolute;
-                    top: 50%;
-                    left: 50%;
-                    width: 0;
-                    height: 0;
-                    transform-style: preserve-3d;
-                }
+                .perspective-container { perspective: 600px; perspective-origin: 50% 50%; }
+                .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; }
                 .path-segment {
-                    position: absolute;
-                    width: 100px; 
-                    height: 100px;
+                    position: absolute; width: 100px; height: 100px;
                     background: radial-gradient(circle, rgba(16, 185, 129, 0.8) 0%, rgba(16, 185, 129, 0) 70%);
-                    transform-origin: center center;
-                    transform: rotateX(90deg) translate(-50%, -50%);
-                    box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
-                    border-radius: 50%;
-                    pointer-events: none;
+                    transform-origin: center center; transform: rotateX(90deg) translate(-50%, -50%);
+                    box-shadow: 0 0 15px rgba(16, 185, 129, 0.4); border-radius: 50%; pointer-events: none;
                 }
-                /* Connectors */
-                .path-line {
-                     position: absolute;
-                     height: 20px;
-                     background: linear-gradient(90deg, rgba(16,185,129,0) 0%, rgba(16,185,129,0.5) 50%, rgba(16,185,129,0) 100%);
-                     transform-origin: 0 50%;
-                     transform: rotateX(90deg);
-                     pointer-events: none;
-                }
-                .destination-marker {
-                    position: absolute;
-                    left: 0;
-                    top: 0;
-                    transform-style: preserve-3d;
-                }
+                .destination-marker { position: absolute; left: 0; top: 0; transform-style: preserve-3d; }
             `}</style>
 
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
 
-            {/* Target Lock Overlay */}
             {targetInSight && (
                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                      <div className="w-64 h-64 border-2 border-emerald-500 rounded-lg opacity-80 animate-pulse flex items-center justify-center relative">
@@ -502,19 +443,12 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
             {hasParentPermission && sensorsActive && (
                 <>
                     <div ref={worldRef} className="world-3d">
-                        {/* 1. Render Road Segments (The Path) */}
-                        <div ref={pathContainerRef}>
+                        <div>
                             {visiblePathSegments.map((seg, i) => {
-                                // Scale down based on distance to add perspective/fade
                                 const scale = Math.max(0.5, 1 - (seg.dist / 150)); 
-                                // Translate calculates pixel position in 3D world (1m approx 50px-100px in CSS pixels depending on scaling)
-                                // We use a multiplier to map meters to CSS pixels. 
-                                // In a perspective: 600px view, 1 meter approx 20-40px depending on Z.
                                 const PIXEL_PER_METER = 40; 
                                 return (
-                                    <div 
-                                        key={i} 
-                                        className="path-segment"
+                                    <div key={i} className="path-segment"
                                         style={{
                                             transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(120px) translateZ(${seg.z * PIXEL_PER_METER}px) rotateX(90deg) scale(${scale})`,
                                             opacity: scale
@@ -523,19 +457,11 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                                 )
                             })}
                         </div>
-
-                        {/* 2. Destination Marker */}
-                        <div 
-                            className="destination-marker flex flex-col items-center justify-center"
-                            style={{
-                                transform: `translateX(${destX * 40}px) translateY(-50px) translateZ(${destZ * 40}px)`
-                            }}
-                        >
+                        <div className="destination-marker flex flex-col items-center justify-center"
+                            style={{ transform: `translateX(${destX * 40}px) translateY(-50px) translateZ(${destZ * 40}px)` }}>
                             <div className="relative animate-bounce-slow">
                                 <div ref={distanceTextRef} className="bg-indigo-600 text-white px-3 py-1 rounded-full text-lg font-bold shadow-lg border-2 border-white mb-2 whitespace-nowrap">0m</div>
-                                <div className="w-16 h-16 bg-red-600 rounded-full border-4 border-white shadow-xl flex items-center justify-center">
-                                    <MapPin className="h-8 w-8 text-white" />
-                                </div>
+                                <div className="w-16 h-16 bg-red-600 rounded-full border-4 border-white shadow-xl flex items-center justify-center"><MapPin className="h-8 w-8 text-white" /></div>
                                 <div className="w-4 h-20 bg-white/50 mx-auto rounded-full mt-[-10px] blur-[2px]"></div>
                             </div>
                         </div>
@@ -546,9 +472,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                             <p className="text-xs text-gray-300 font-bold uppercase tracking-wider">Heading</p>
                             <p className="text-lg font-bold font-mono"><span ref={bearingTextRef}>0°</span></p>
                         </div>
-                        <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20">
-                            <X className="h-5 w-5" />
-                        </Button>
+                        <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20"><X className="h-5 w-5" /></Button>
                     </div>
                 </>
             )}
@@ -638,13 +562,8 @@ export default function MapExplorerPage() {
     if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
       setIsSecureContext(false);
     }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-        const saved = localStorage.getItem(AR_PERMISSION_KEY);
-        if (saved === 'true') setHasArPermission(true);
-    }
+    const saved = localStorage.getItem(AR_PERMISSION_KEY);
+    if (saved === 'true') setHasArPermission(true);
   }, []);
 
   useEffect(() => {
@@ -665,20 +584,16 @@ export default function MapExplorerPage() {
     if (typeof window === 'undefined' || isMuted || !window.speechSynthesis) return;
     if (window.speechSynthesis.speaking && lastSpokenInstruction.current === text) return;
     window.speechSynthesis.cancel();
-
     utteranceRef.current = new SpeechSynthesisUtterance(text);
-    const preferredVoice = availableVoices.find(v => v.lang.includes('km')) ||
-                           availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')) ||
-                           availableVoices.find(v => v.name.includes('Samantha'));
+    const preferredVoice = availableVoices.find(v => v.lang.includes('km')) || availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en'));
     if (preferredVoice) utteranceRef.current.voice = preferredVoice;
     utteranceRef.current.rate = 1.0;
-
     window.speechSynthesis.speak(utteranceRef.current);
   }, [isMuted, availableVoices]);
 
   // --- SAFETY MODE FUNCTIONS ---
   const startSafetyMode = async () => {
-      if (!supabase) { toast({ title: "Error", description: "Backend not configured." }); return; }
+      if (!supabase) { toast({ title: "Configuration Error", description: "Supabase not connected. Check environment variables." }); return; }
       if (!userLocation.current) { toast({ title: "No GPS", description: "Wait for location signal." }); return; }
       try {
           const { data, error } = await supabase.from('active_trips').insert({
@@ -689,7 +604,13 @@ export default function MapExplorerPage() {
           setIsSafetyModeActive(true);
           setShowShareDialog(true);
           toast({ title: "Safety Mode On", description: "Trip created successfully." });
-      } catch (e) { console.error(e); toast({ title: "Error", description: "Could not start safety mode." }); }
+      } catch (e: any) { 
+          console.error("Supabase Error:", e);
+          let msg = "Could not start safety mode.";
+          if(e.code === '42P01') msg = "Database table missing. Run SQL script.";
+          if(e.code === 'PGRST301') msg = "API Key Invalid (Use Anon Key).";
+          toast({ title: "Error", description: msg, variant: "destructive" }); 
+      }
   };
 
   const stopSafetyMode = async () => {
@@ -701,19 +622,9 @@ export default function MapExplorerPage() {
   };
 
   const requestWakeLock = async () => {
-    try {
-        if ('wakeLock' in navigator) {
-            wakeLock.current = await navigator.wakeLock.request('screen');
-        }
-    } catch (err) { console.error("Wake Lock error", err); }
+    try { if ('wakeLock' in navigator) wakeLock.current = await navigator.wakeLock.request('screen'); } catch (err) {}
   };
-
-  const releaseWakeLock = async () => {
-    if(wakeLock.current) {
-        await wakeLock.current.release().catch(() => {});
-        wakeLock.current = null;
-    }
-  };
+  const releaseWakeLock = async () => { if(wakeLock.current) { await wakeLock.current.release().catch(() => {}); wakeLock.current = null; } };
 
   const fetchWeather = useCallback(async (lat: number, lon: number) => {
       const now = Date.now();
@@ -721,507 +632,206 @@ export default function MapExplorerPage() {
       lastWeatherFetchTime.current = now;
       try {
           const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&lang=km&appid=${WEATHER_API_KEY}`);
-          if (!res.ok) throw new Error("Weather API Error");
           const data = await res.json();
-          if (data.main && data.weather) {
-              setWeather({
-                  temp: Math.round(data.main.temp),
-                  condition: data.weather[0].main,
-                  description: data.weather[0].description
-              });
-          }
-      } catch (err) { /* silent fail */ }
+          if (data.main && data.weather) setWeather({ temp: Math.round(data.main.temp), condition: data.weather[0].main, description: data.weather[0].description });
+      } catch (err) {}
   }, [weather]);
 
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
     if (!MAPBOX_TOKEN) return [];
-
     let searchQuery = query.trim();
-    const lowerQuery = query.toLowerCase();
-
     if (isCoordinate(searchQuery)) {
         const [lat, lng] = searchQuery.split(',').map(n => parseFloat(n.trim()));
         const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${MAPBOX_TOKEN}&language=km,en`;
-        try {
-            const res = await fetch(url, { signal });
-            if (!res.ok) throw new Error("Search failed");
-            const data = await res.json();
-            return mapFeaturesToResults(data.features || []);
-        } catch (e) { return []; }
+        try { const res = await fetch(url, { signal }); const data = await res.json(); return mapFeaturesToResults(data.features || []); } catch (e) { return []; }
     }
+    if (KHMER_SEARCH_ALIASES[searchQuery.toLowerCase()]) searchQuery = KHMER_SEARCH_ALIASES[searchQuery.toLowerCase()];
+    else if (searchQuery.match(/gas|fuel|station|បូមសាំង/i)) searchQuery = "gas station";
 
-    if (KHMER_SEARCH_ALIASES[searchQuery]) {
-        searchQuery = KHMER_SEARCH_ALIASES[searchQuery];
-    } else if (lowerQuery.match(/gas|fuel|station|បូមសាំង/i)) searchQuery = "gas station";
-    else if (lowerQuery.match(/hospital|clinic|doctor/i)) searchQuery = "hospital";
-
-    let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${MAPBOX_TOKEN}`;
-    url += `&language=km,en&country=kh&limit=10&fuzzyMatch=true&proximity=${center[0]},${center[1]}`;
-    url += `&types=poi,address,neighborhood,locality,place`;
-
+    let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${MAPBOX_TOKEN}&language=km,en&country=kh&limit=10&fuzzyMatch=true&proximity=${center[0]},${center[1]}&types=poi,address,neighborhood,locality,place`;
     if (bboxOnly) {
         const radiusKm = 10;
         const latDelta = radiusKm / 111;
         const lonDelta = radiusKm / (111 * Math.cos(center[1] * (Math.PI / 180)));
-        const bbox = `${center[0] - lonDelta},${center[1] - latDelta},${center[0] + lonDelta},${center[1] + latDelta}`;
-        url += `&bbox=${bbox}`;
+        url += `&bbox=${center[0] - lonDelta},${center[1] - latDelta},${center[0] + lonDelta},${center[1] + latDelta}`;
     }
-
-    try {
-        const res = await fetch(url, { signal });
-        if (!res.ok) throw new Error("Network response was not ok");
-        const data = await res.json();
-        return mapFeaturesToResults(data.features || []);
-    } catch (err: any) {
-        if (err.name !== 'AbortError') console.error(err);
-        return [];
-    }
+    try { const res = await fetch(url, { signal }); const data = await res.json(); return mapFeaturesToResults(data.features || []); } catch (err) { return []; }
   };
 
   const restoreMapLayers = useCallback((instance: MapboxMap, currentTraffic: boolean, currentRain: boolean, currentWind: boolean) => {
       if(!instance || !instance.getStyle()) return;
-
       const layers = instance.getStyle().layers;
       const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
-
-      if (!instance.getLayer('3d-buildings')) {
-          instance.addLayer({
-              'id': '3d-buildings', 'source': 'composite', 'source-layer': 'building',
-              'filter': ['==', 'extrude', 'true'], 'type': 'fill-extrusion', 'minzoom': 14,
-              'paint': {
-                  'fill-extrusion-color': '#2a2a2e',
-                  'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.05, ['get', 'height']],
-                  'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.05, ['get', 'min_height']],
-                  'fill-extrusion-opacity': 0.8
-              }
-          }, labelLayerId);
-      }
       
-      if(!instance.getLayer('sky')) {
-           instance.addLayer({
-                'id': 'sky', 'type': 'sky',
-                'paint': {
-                    'sky-type': 'atmosphere',
-                    'sky-atmosphere-sun': [0.0, 0.0],
-                    'sky-atmosphere-sun-intensity': 15
-                }
-            });
+      if (!instance.getLayer('3d-buildings')) {
+          instance.addLayer({ 'id': '3d-buildings', 'source': 'composite', 'source-layer': 'building', 'filter': ['==', 'extrude', 'true'], 'type': 'fill-extrusion', 'minzoom': 14, 'paint': { 'fill-extrusion-color': '#2a2a2e', 'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.05, ['get', 'height']], 'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.05, ['get', 'min_height']], 'fill-extrusion-opacity': 0.8 } }, labelLayerId);
       }
+      if(!instance.getLayer('sky')) instance.addLayer({ 'id': 'sky', 'type': 'sky', 'paint': { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0.0, 0.0], 'sky-atmosphere-sun-intensity': 15 } });
 
       if (currentTraffic) {
-          if (!instance.getSource('mapbox-traffic')) {
-              instance.addSource('mapbox-traffic', { type: 'vector', url: 'mapbox://mapbox.mapbox-traffic-v1' });
-          }
-          if (!instance.getLayer('traffic')) {
-              instance.addLayer({
-                  'id': 'traffic', 'type': 'line', 'source': 'mapbox-traffic', 'source-layer': 'traffic', 'minzoom': 12,
-                  'layout': { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' },
-                  'paint': {
-                      'line-width': 2.5,
-                      'line-color': [
-                          'case',
-                          ['==', ['get', 'congestion'], 'low'], '#22c55e',
-                          ['==', ['get', 'congestion'], 'moderate'], '#eab308',
-                          ['==', ['get', 'congestion'], 'heavy'], '#ef4444',
-                          ['==', ['get', 'congestion'], 'severe'], '#7f1d1d',
-                          'rgba(0,0,0,0)'
-                      ],
-                      'line-opacity': 0.8
-                  }
-              });
-          }
+          if (!instance.getSource('mapbox-traffic')) instance.addSource('mapbox-traffic', { type: 'vector', url: 'mapbox://mapbox.mapbox-traffic-v1' });
+          if (!instance.getLayer('traffic')) instance.addLayer({ 'id': 'traffic', 'type': 'line', 'source': 'mapbox-traffic', 'source-layer': 'traffic', 'minzoom': 12, 'layout': { 'line-join': 'round', 'line-cap': 'round', 'visibility': 'visible' }, 'paint': { 'line-width': 2.5, 'line-color': ['case', ['==', ['get', 'congestion'], 'low'], '#22c55e', ['==', ['get', 'congestion'], 'moderate'], '#eab308', ['==', ['get', 'congestion'], 'heavy'], '#ef4444', ['==', ['get', 'congestion'], 'severe'], '#7f1d1d', 'rgba(0,0,0,0)'], 'line-opacity': 0.8 } });
       }
-
       if (currentRain && WEATHER_API_KEY) {
-           if (!instance.getSource('rain-source')) {
-                instance.addSource('rain-source', {
-                    type: 'raster',
-                    tiles: [`https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${WEATHER_API_KEY}`],
-                    tileSize: 256
-                });
-           }
-           if (!instance.getLayer('rain-layer')) {
-                instance.addLayer({
-                    id: 'rain-layer',
-                    type: 'raster',
-                    source: 'rain-source',
-                    paint: { 'raster-opacity': 0.7 },
-                    layout: { visibility: 'visible' }
-                }, labelLayerId);
-           }
+           if (!instance.getSource('rain-source')) instance.addSource('rain-source', { type: 'raster', tiles: [`https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${WEATHER_API_KEY}`], tileSize: 256 });
+           if (!instance.getLayer('rain-layer')) instance.addLayer({ id: 'rain-layer', type: 'raster', source: 'rain-source', paint: { 'raster-opacity': 0.7 }, layout: { visibility: 'visible' } }, labelLayerId);
       }
-
       if (currentWind && WEATHER_API_KEY) {
-           if (!instance.getSource('wind-source')) {
-                instance.addSource('wind-source', {
-                    type: 'raster',
-                    tiles: [`https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${WEATHER_API_KEY}`],
-                    tileSize: 256
-                });
-           }
-           if (!instance.getLayer('wind-layer')) {
-                instance.addLayer({
-                    id: 'wind-layer',
-                    type: 'raster',
-                    source: 'wind-source',
-                    paint: { 'raster-opacity': 0.6 },
-                    layout: { visibility: 'visible' }
-                }, labelLayerId);
-           }
+           if (!instance.getSource('wind-source')) instance.addSource('wind-source', { type: 'raster', tiles: [`https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${WEATHER_API_KEY}`], tileSize: 256 });
+           if (!instance.getLayer('wind-layer')) instance.addLayer({ id: 'wind-layer', type: 'raster', source: 'wind-source', paint: { 'raster-opacity': 0.6 }, layout: { visibility: 'visible' } }, labelLayerId);
       }
-
       if (routeGeoJSON.current) {
-          if (!instance.getSource('custom-route-source')) {
-             instance.addSource('custom-route-source', {
-                type: 'geojson',
-                data: {
-                    type: 'Feature',
-                    properties: {},
-                    geometry: { type: 'LineString', coordinates: routeGeoJSON.current }
-                }
-             });
-          }
-
-          if (!instance.getLayer('custom-route-casing')) {
-             instance.addLayer({
-                id: 'custom-route-casing', type: 'line', source: 'custom-route-source',
-                layout: { 'line-join': 'round', 'line-cap': 'round' },
-                paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 }
-             }, labelLayerId);
-          }
-          if (!instance.getLayer('custom-route-core')) {
-             instance.addLayer({
-                id: 'custom-route-core', type: 'line', source: 'custom-route-source',
-                layout: { 'line-join': 'round', 'line-cap': 'round' },
-                paint: { 'line-color': '#4285F4', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 4, 18, 14 ], 'line-opacity': 1 }
-             }, labelLayerId);
-          }
+          if (!instance.getSource('custom-route-source')) instance.addSource('custom-route-source', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: routeGeoJSON.current } } });
+          if (!instance.getLayer('custom-route-casing')) instance.addLayer({ id: 'custom-route-casing', type: 'line', source: 'custom-route-source', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 } }, labelLayerId);
+          if (!instance.getLayer('custom-route-core')) instance.addLayer({ id: 'custom-route-core', type: 'line', source: 'custom-route-source', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#4285F4', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 4, 18, 14 ], 'line-opacity': 1 } }, labelLayerId);
       }
   }, []);
 
   const drawBlueRoute = useCallback((instance: MapboxMap, geojson: any) => {
       if (!geojson || !geojson.geometry) return;
       const source = instance.getSource('custom-route-source') as GeoJSONSource;
-      if (source) {
-          source.setData(geojson);
-      } else {
+      if (source) source.setData(geojson);
+      else {
           const layers = instance.getStyle().layers;
           const labelLayerId = layers?.find((layer) => layer.type === 'symbol')?.id;
-
-          if(!instance.getSource('custom-route-source')) {
-              instance.addSource('custom-route-source', { type: 'geojson', data: geojson });
-          }
-          if(!instance.getLayer('custom-route-casing')) {
-            instance.addLayer({
-                id: 'custom-route-casing', type: 'line', source: 'custom-route-source',
-                layout: { 'line-join': 'round', 'line-cap': 'round' },
-                paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 }
-            }, labelLayerId);
-          }
-          if(!instance.getLayer('custom-route-core')) {
-            instance.addLayer({
-                id: 'custom-route-core', type: 'line', source: 'custom-route-source',
-                layout: { 'line-join': 'round', 'line-cap': 'round' },
-                paint: { 'line-color': '#4285F4', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 4, 18, 14 ], 'line-opacity': 1 }
-            }, labelLayerId);
-          }
+          instance.addSource('custom-route-source', { type: 'geojson', data: geojson });
+          instance.addLayer({ id: 'custom-route-casing', type: 'line', source: 'custom-route-source', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#1557b0', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 7, 18, 20 ], 'line-opacity': 0.9 } }, labelLayerId);
+          instance.addLayer({ id: 'custom-route-core', type: 'line', source: 'custom-route-source', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#4285F4', 'line-width': [ 'interpolate', ['linear'], ['zoom'], 12, 4, 18, 14 ], 'line-opacity': 1 } }, labelLayerId);
       }
   }, []);
 
   const removeRouteLayers = useCallback((instance: MapboxMap) => {
-    if (!instance) return;
-    const source = instance.getSource('custom-route-source') as GeoJSONSource;
-    if (source) {
-        source.setData({ type: 'FeatureCollection', features: [] });
-    }
+    const source = instance?.getSource('custom-route-source') as GeoJSONSource;
+    if (source) source.setData({ type: 'FeatureCollection', features: [] });
   }, []);
 
   const fetchRoute = useCallback(async (start: [number, number], end: [number, number], isSilentRecalc = false): Promise<boolean> => {
       if (!MAPBOX_TOKEN) return false;
-      if (isNaN(start[0]) || isNaN(start[1]) || isNaN(end[0]) || isNaN(end[1])) return false;
-
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
-
       try {
           const res = await fetch(url);
           const data = await res.json();
-
-          if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
-              if(!isSilentRecalc) toast({ title: "កំហុស", description: "រកផ្លូវមិនឃើញ ឬមានបញ្ហាបច្ចេកទេស", variant: "destructive" });
-              return false;
-          }
+          if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) { if(!isSilentRecalc) toast({ title: "កំហុស", description: "រកផ្លូវមិនឃើញ", variant: "destructive" }); return false; }
           const route = data.routes[0];
           routeGeoJSON.current = route.geometry.coordinates;
-
-          if (map.current) {
-            drawBlueRoute(map.current, {
-                type: 'Feature',
-                properties: {},
-                geometry: route.geometry
-            });
-          }
-
+          if (map.current) drawBlueRoute(map.current, { type: 'Feature', properties: {}, geometry: route.geometry });
           const leg = route.legs[0];
-          const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1])
-            ? leg.steps[1].maneuver.instruction
-            : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
-
-          setRouteDetails({
-              distance: route.distance,
-              duration: route.duration,
-              instruction: instructionText,
-              arrivalTime: new Date(Date.now() + route.duration * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              totalDistance: route.distance
-          });
+          const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) ? leg.steps[1].maneuver.instruction : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
+          setRouteDetails({ distance: route.distance, duration: route.duration, instruction: instructionText, arrivalTime: new Date(Date.now() + route.duration * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), totalDistance: route.distance });
           return true;
-      } catch (error) {
-          if(!isSilentRecalc) toast({ title: "កំហុសបណ្តាញ", description: "សូមពិនិត្យអ៊ីនធឺណិតរបស់អ្នក", variant: "destructive" });
-          return false;
-      }
+      } catch (error) { if(!isSilentRecalc) toast({ title: "កំហុសបណ្តាញ", description: "សូមពិនិត្យអ៊ីនធឺណិតរបស់អ្នក", variant: "destructive" }); return false; }
   }, [toast, drawBlueRoute]);
 
   const fetchRichDetails = async (lat: number, lng: number) => {
     if (!GEOAPIFY_API_KEY) return;
-    setIsFetchingRichDetails(true);
-    setRichPlaceDetails(null);
+    setIsFetchingRichDetails(true); setRichPlaceDetails(null);
     try {
         const url = `https://api.geoapify.com/v2/place-details?lat=${lat}&lon=${lng}&features=details,contact,opening_hours&apiKey=${GEOAPIFY_API_KEY}`;
-        const res = await fetch(url);
-        const data = await res.json();
-        if (data.features && data.features.length > 0) {
-            setRichPlaceDetails(data.features[0].properties);
-        }
-    } catch (e) { console.error("X-Ray Failed", e); }
-    finally { setIsFetchingRichDetails(false); }
+        const res = await fetch(url); const data = await res.json();
+        if (data.features?.length > 0) setRichPlaceDetails(data.features[0].properties);
+    } catch (e) {} finally { setIsFetchingRichDetails(false); }
   };
 
   const animatePuck = useCallback(() => {
-      if (!puckMarker.current || !isMounted.current) {
-        animationFrameId.current = 0;
-        return;
-      }
-
-      const distDelta = getDistanceFromLatLonInMeters(
-          currentPuckPos.current[1], currentPuckPos.current[0],
-          targetPuckPos.current[1], targetPuckPos.current[0]
-      );
+      if (!puckMarker.current || !isMounted.current) { animationFrameId.current = 0; return; }
+      const distDelta = getDistanceFromLatLonInMeters(currentPuckPos.current[1], currentPuckPos.current[0], targetPuckPos.current[1], targetPuckPos.current[0]);
       const angleDelta = Math.abs(getShortestAngleDistance(targetHeading.current, currentHeading.current));
       
       if (distDelta < 0.1 && angleDelta < 1) {
-          currentPuckPos.current = targetPuckPos.current;
-          currentHeading.current = targetHeading.current;
-          puckMarker.current.setLngLat(currentPuckPos.current);
-          puckMarker.current.setRotation(currentHeading.current);
-          animationFrameId.current = 0;
-          return;
+          currentPuckPos.current = targetPuckPos.current; currentHeading.current = targetHeading.current;
+          puckMarker.current.setLngLat(currentPuckPos.current); puckMarker.current.setRotation(currentHeading.current);
+          animationFrameId.current = 0; return;
       }
-
       currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
       currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.12);
-
-      puckMarker.current.setLngLat(currentPuckPos.current);
-      puckMarker.current.setRotation(currentHeading.current);
-
+      puckMarker.current.setLngLat(currentPuckPos.current); puckMarker.current.setRotation(currentHeading.current);
       if (map.current && isNavigatingRef.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           const speed = currentSpeedRef.current;
-          const targetPitch = speed > 30 ? 60 : 40; 
-          const targetZoom = speed > 50 ? 16 : 18; 
-
-          map.current.easeTo({
-              center: currentPuckPos.current,
-              bearing: currentHeading.current,
-              pitch: targetPitch,
-              zoom: targetZoom,
-              duration: 500,
-              padding: { top: 0, bottom: 200, left: 0, right: 0 }
-          });
+          map.current.easeTo({ center: currentPuckPos.current, bearing: currentHeading.current, pitch: speed > 30 ? 60 : 40, zoom: speed > 50 ? 16 : 18, duration: 500, padding: { top: 0, bottom: 200, left: 0, right: 0 } });
       }
-      
       animationFrameId.current = requestAnimationFrame(animatePuck);
   }, []);
 
-
   const handleStyleChange = (style: string) => {
     if (!map.current || style === currentStyle) return;
-
     map.current.once('style.load', () => {
         if (map.current) {
-             map.current.addSource('mapbox-dem', {
-                'type': 'raster-dem',
-                'url': 'mapbox://mapbox.mapbox-terrain-dem-v1',
-                'tileSize': 512,
-                'maxzoom': 14
-             });
+             map.current.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 });
              map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
             restoreMapLayers(map.current, isTrafficVisible, isRainMode, isWindMode);
         }
     });
-    map.current.setStyle(style);
-    setCurrentStyle(style);
+    map.current.setStyle(style); setCurrentStyle(style);
   };
 
-  const clearSearchMarkers = useCallback(() => {
-      searchMarkers.current.forEach(m => m.remove());
-      searchMarkers.current = [];
-  }, []);
-
+  const clearSearchMarkers = useCallback(() => { searchMarkers.current.forEach(m => m.remove()); searchMarkers.current = []; }, []);
   const handleMapSelection = useCallback((lngLat: { lng: number, lat: number }) => {
       if(!map.current) return;
-
       clearRoute();
-
       if (destinationMarker.current) destinationMarker.current.remove();
       destinationMarker.current = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current);
-
-      setLocationDetails(lngLat);
-      setIsDrawerOpen(true);
-      fetchRichDetails(lngLat.lat, lngLat.lng);
-
-      map.current.flyTo({
-          center: lngLat,
-          zoom: 16,
-          padding: { top: 0, bottom: 250, left: 0, right: 0 },
-          essential: true,
-          duration: 1500
-      });
+      setLocationDetails(lngLat); setIsDrawerOpen(true); fetchRichDetails(lngLat.lat, lngLat.lng);
+      map.current.flyTo({ center: lngLat, zoom: 16, padding: { top: 0, bottom: 250, left: 0, right: 0 }, essential: true, duration: 1500 });
   }, [removeRouteLayers]);
 
   const plotSearchResults = useCallback((results: SearchResult[], type: string) => {
      if(!map.current) return;
      const bounds = new LngLatBounds();
      results.forEach(r => {
-         const el = document.createElement('div');
-         el.className = 'marker-pin';
-         el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`;
-         const marker = new Marker({ element: el })
-            .setLngLat([r.lng, r.lat])
-            .setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`))
-            .addTo(map.current!);
-
-         marker.getElement().addEventListener('click', () => {
-             handleMapSelection({ lng: r.lng, lat: r.lat });
-         });
-
-         searchMarkers.current.push(marker);
-         bounds.extend([r.lng, r.lat]);
+         const el = document.createElement('div'); el.className = 'marker-pin'; el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`;
+         const marker = new Marker({ element: el }).setLngLat([r.lng, r.lat]).setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`)).addTo(map.current!);
+         marker.getElement().addEventListener('click', () => { handleMapSelection({ lng: r.lng, lat: r.lat }); });
+         searchMarkers.current.push(marker); bounds.extend([r.lng, r.lat]);
      });
-
-     if (results.length > 0) {
-         map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 });
-     } else {
-         toast({ title: "No results", description: "Nothing found nearby." });
-     }
+     if (results.length > 0) map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 });
+     else toast({ title: "No results", description: "Nothing found nearby." });
   }, [handleMapSelection, toast]);
 
   const handleCategorySearch = useCallback(async (query: string) => {
     const geoKey = GEOAPIFY_API_KEY;
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
     clearSearchMarkers();
-
     if (isNavigating && routeGeoJSON.current && geoKey) {
         let category = "commercial";
         if (query === "gas station") category = "service.vehicle.fuel";
-        if (query === "restaurant") category = "catering.restaurant";
-        if (query === "coffee") category = "catering.cafe";
-        if (query === "bank") category = "service.financial";
-        if (query === "hospital") category = "healthcare";
-        if (query === "school") category = "education";
-
-        const geometryStr = simplifyGeometry(routeGeoJSON.current);
-        const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${geometryStr}&limit=10&apiKey=${geoKey}`;
-
+        else if (query === "restaurant") category = "catering.restaurant";
+        else if (query === "coffee") category = "catering.cafe";
+        else if (query === "bank") category = "service.financial";
+        else if (query === "school") category = "education";
         try {
-            toast({ title: "កំពុងស្វែងរកតាមដងផ្លូវ...", description: "Looking along your route" });
-            const res = await fetch(url);
-            const data = await res.json();
-            const results = data.features.map((f: any) => ({
-                lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
-                name: f.properties.name || f.properties.address_line1 || "Unknown",
-                address: f.properties.address_line2 || "", type: query
-            }));
+            const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${simplifyGeometry(routeGeoJSON.current)}&limit=10&apiKey=${geoKey}`;
+            const res = await fetch(url); const data = await res.json();
+            const results = data.features.map((f: any) => ({ lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], name: f.properties.name || f.properties.address_line1 || "Unknown", address: f.properties.address_line2 || "", type: query }));
             plotSearchResults(results, query);
-        } catch (e) {
-            console.error("Along route search failed, falling back", e);
-            const fallbackResults = await searchPlaces(query, center, true);
-            plotSearchResults(fallbackResults, query);
-        }
-    } else {
-        const results = await searchPlaces(query, center, true);
-        plotSearchResults(results, query);
-    }
+        } catch (e) { const fallbackResults = await searchPlaces(query, center, true); plotSearchResults(fallbackResults, query); }
+    } else { const results = await searchPlaces(query, center, true); plotSearchResults(results, query); }
   }, [clearSearchMarkers, plotSearchResults, toast, isNavigating]);
 
   useEffect(() => {
     isMounted.current = true;
     if (!MAPBOX_TOKEN || !mapContainer.current || map.current) return;
-
-    const mapInstance = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: currentStyle,
-      center: DEFAULT_CENTER,
-      zoom: DEFAULT_ZOOM,
-      pitch: 45,
-      bearing: 0,
-      attributionControl: false,
-      antialias: true,
-      logoPosition: 'bottom-left',
-    });
+    const mapInstance = new mapboxgl.Map({ container: mapContainer.current, style: currentStyle, center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, pitch: 45, bearing: 0, attributionControl: false, antialias: true, logoPosition: 'bottom-left' });
     map.current = mapInstance;
     mapInstance.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
-
-    const geolocate = new GeolocateControl({
-      positionOptions: { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
-      trackUserLocation: false, showUserHeading: false, showUserLocation: false, showAccuracyCircle: false,
-    });
+    const geolocate = new GeolocateControl({ positionOptions: { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }, trackUserLocation: false, showUserHeading: false, showUserLocation: false, showAccuracyCircle: false });
     geolocateControl.current = geolocate;
     mapInstance.addControl(geolocate, 'top-right');
-
-    const el = document.createElement('div');
-    el.className = 'navigation-puck';
-    el.style.display = 'none';
-    el.innerHTML = `<div class="puck-pulse"></div>`;
+    const el = document.createElement('div'); el.className = 'navigation-puck'; el.style.display = 'none'; el.innerHTML = `<div class="puck-pulse"></div>`;
     puckElement.current = el;
-    puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
-        .setLngLat(DEFAULT_CENTER).addTo(mapInstance);
+    puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(DEFAULT_CENTER).addTo(mapInstance);
 
-    const handleOrientation = (event: DeviceOrientationEvent) => {
-        if (event.alpha !== null) {
-            let compass = (event as any).webkitCompassHeading || (360 - event.alpha);
-            compassHeading.current = compass;
-        }
-    };
-
-    const handleVisibilityChange = () => {
-        if (document.visibilityState === 'visible' && isNavigatingRef.current) {
-            requestWakeLock();
-        }
-    };
-
-    if (typeof window !== 'undefined') {
-        window.addEventListener('deviceorientation', handleOrientation);
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-    }
+    const handleOrientation = (event: DeviceOrientationEvent) => { if (event.alpha !== null) compassHeading.current = (event as any).webkitCompassHeading || (360 - event.alpha); };
+    const handleVisibilityChange = () => { if (document.visibilityState === 'visible' && isNavigatingRef.current) requestWakeLock(); };
+    if (typeof window !== 'undefined') { window.addEventListener('deviceorientation', handleOrientation); document.addEventListener('visibilitychange', handleVisibilityChange); }
 
     mapInstance.on('load', () => {
         if (!isMounted.current) return;
-        setIsMapLoaded(true);
-        geolocate.trigger();
-
-        // 3D Terrain
-        mapInstance.addSource('mapbox-dem', {
-            'type': 'raster-dem',
-            'url': 'mapbox://mapbox.mapbox-terrain-dem-v1',
-            'tileSize': 512,
-            'maxzoom': 14
-        });
+        setIsMapLoaded(true); geolocate.trigger();
+        mapInstance.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 });
         mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
-
         restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode);
-        
-        if (!animationFrameId.current) {
-            animationFrameId.current = requestAnimationFrame(animatePuck);
-        }
+        if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
 
         if ('geolocation' in navigator) {
             watchId.current = navigator.geolocation.watchPosition(
@@ -1229,34 +839,22 @@ export default function MapExplorerPage() {
                     if (!isMounted.current) return;
                     const { latitude, longitude, heading, speed } = pos.coords;
                     if (puckElement.current) puckElement.current.style.display = 'block';
-
                     const speedKmh = speed ? Math.round(speed * 3.6) : 0;
                     setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev));
                     userLocation.current = [longitude, latitude];
                     setCurrentUserLocationForAR([longitude, latitude]); 
                     targetPuckPos.current = [longitude, latitude];
                     if (heading !== null && !isNaN(heading)) gpsHeading.current = heading;
-                    
                     const isMoving = speedKmh > 5;
                     targetHeading.current = isMoving && heading !== null ? heading : compassHeading.current;
-
-                    if (!animationFrameId.current) {
-                        animationFrameId.current = requestAnimationFrame(animatePuck);
-                    }
-
+                    if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
                     fetchWeather(latitude, longitude);
 
                     // --- SAFETY MODE UPDATE ---
                     if (isSafetyModeActive && currentTripId && supabase) {
                         const now = Date.now();
                         if (now - lastSafetyUpdate.current > 5000) {
-                            supabase.from('active_trips').update({
-                                current_lat: latitude,
-                                current_lng: longitude,
-                                heading: heading || 0,
-                                speed: speed || 0,
-                                last_updated: new Date().toISOString()
-                            }).eq('id', currentTripId).then(() => {});
+                            supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading || 0, speed: speed || 0, last_updated: new Date().toISOString() }).eq('id', currentTripId).then(() => {});
                             lastSafetyUpdate.current = now;
                         }
                     }
@@ -1265,12 +863,10 @@ export default function MapExplorerPage() {
                     if (isNavigatingRef.current && routeGeoJSON.current && activeDestination.current) {
                         const remainingDist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]);
                         setRouteDetails(prev => prev ? { ...prev, distance: remainingDist, duration: (remainingDist / 1000) / (Math.max(20, speedKmh) / 60) * 60 } : null);
-
                         if (!isRecalculating.current && (Date.now() - lastRerouteTime.current > 5000)) {
                             const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current);
                             if (distanceToPath > REROUTE_THRESHOLD_METERS) {
-                                isRecalculating.current = true;
-                                lastRerouteTime.current = Date.now();
+                                isRecalculating.current = true; lastRerouteTime.current = Date.now();
                                 toast({ title: "Rerouting...", description: "កំពុងគណនាផ្លូវថ្មី", duration: 2000 });
                                 await fetchRoute([longitude, latitude], activeDestination.current, true);
                                 isRecalculating.current = false;
@@ -1278,272 +874,71 @@ export default function MapExplorerPage() {
                         }
                     }
                 },
-                (err) => {
-                    console.warn("GPS Warning:", err);
-                    if (err.code === 1) toast({ title: "GPS Denied", description: "Please enable location.", variant: "destructive" });
-                    else if (err.code === 2 || err.code === 3) toast({ title: "GPS Signal Lost", description: "Waiting for signal...", variant: "destructive" });
-                },
+                (err) => { console.warn("GPS Warning:", err); },
                 { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
             );
-        } else {
-             toast({ title: "Error", description: "Geolocation not supported", variant: "destructive" });
         }
     });
 
-    const handleInteractionStart = () => {
-        if (isNavigatingRef.current) {
-            userIsInteracting.current = true;
-            setShowRecenterBtn(true);
-        }
-    };
+    const handleInteractionStart = () => { if (isNavigatingRef.current) { userIsInteracting.current = true; setShowRecenterBtn(true); } };
+    const handleMapClick = (e: MapMouseEvent) => { if (!isNavigatingRef.current) handleMapSelection(e.lngLat); };
     
-    const handleMapClick = (e: MapMouseEvent) => {
-        if (!isNavigatingRef.current) handleMapSelection(e.lngLat);
-    };
-    
-    mapInstance.on('touchstart', handleInteractionStart);
-    mapInstance.on('dragstart', handleInteractionStart);
-    mapInstance.on('pitchstart', handleInteractionStart);
-    mapInstance.on('zoomstart', handleInteractionStart);
-    mapInstance.on('wheel', handleInteractionStart);
-    mapInstance.on('click', handleMapClick);
+    mapInstance.on('touchstart', handleInteractionStart); mapInstance.on('dragstart', handleInteractionStart); mapInstance.on('pitchstart', handleInteractionStart); mapInstance.on('zoomstart', handleInteractionStart); mapInstance.on('wheel', handleInteractionStart); mapInstance.on('click', handleMapClick);
 
     return () => {
       isMounted.current = false;
-      if (animationFrameId.current) {
-          cancelAnimationFrame(animationFrameId.current);
-      }
-      if (typeof window !== 'undefined') {
-          window.removeEventListener('deviceorientation', handleOrientation);
-          document.removeEventListener('visibilitychange', handleVisibilityChange);
-          if (window.speechSynthesis) window.speechSynthesis.cancel();
-      }
+      if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+      if (typeof window !== 'undefined') { window.removeEventListener('deviceorientation', handleOrientation); document.removeEventListener('visibilitychange', handleVisibilityChange); if (window.speechSynthesis) window.speechSynthesis.cancel(); }
       if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
       releaseWakeLock();
-      
-      if (map.current) {
-          map.current.off('touchstart', handleInteractionStart);
-          map.current.off('dragstart', handleInteractionStart);
-          map.current.off('pitchstart', handleInteractionStart);
-          map.current.off('zoomstart', handleInteractionStart);
-          map.current.off('wheel', handleInteractionStart);
-          map.current.off('click', handleMapClick);
-          map.current.remove();
-      }
+      if (map.current) map.current.remove();
       map.current = null;
-      
-      if (destinationMarker.current) destinationMarker.current.remove();
-      if (puckMarker.current) puckMarker.current.remove();
-      searchMarkers.current.forEach(m => m.remove());
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     let frameId: number;
-    const animateWindLayer = () => {
-        if (isWindMode && map.current?.getLayer('wind-layer')) {
-            const time = Date.now() / 2000;
-            const opacity = 0.6 + Math.sin(time) * 0.1;
-            map.current.setPaintProperty('wind-layer', 'raster-opacity', opacity);
-        }
-        frameId = requestAnimationFrame(animateWindLayer);
-    };
+    const animateWindLayer = () => { if (isWindMode && map.current?.getLayer('wind-layer')) { const time = Date.now() / 2000; map.current.setPaintProperty('wind-layer', 'raster-opacity', 0.6 + Math.sin(time) * 0.1); } frameId = requestAnimationFrame(animateWindLayer); };
     if (isWindMode) animateWindLayer();
     return () => cancelAnimationFrame(frameId);
   }, [isWindMode]);
 
-  useEffect(() => {
-    if (routeDetails?.instruction && isNavigating && lastSpokenInstruction.current !== routeDetails.instruction) {
-        speak(routeDetails.instruction);
-        lastSpokenInstruction.current = routeDetails.instruction;
-    }
-  }, [routeDetails, speak, isNavigating]);
+  useEffect(() => { if (routeDetails?.instruction && isNavigating && lastSpokenInstruction.current !== routeDetails.instruction) { speak(routeDetails.instruction); lastSpokenInstruction.current = routeDetails.instruction; } }, [routeDetails, speak, isNavigating]);
 
   useEffect(() => {
     if (locationDetails) {
       if (addressAbortController.current) addressAbortController.current.abort();
-      const controller = new AbortController();
-      addressAbortController.current = controller;
-
-      setIsFetchingAddress(true);
-      setAddressDetails(null);
-
+      const controller = new AbortController(); addressAbortController.current = controller;
+      setIsFetchingAddress(true); setAddressDetails(null);
       const timeoutId = setTimeout(async () => {
-          if (!GEOAPIFY_API_KEY) {
-              setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` });
-              setIsFetchingAddress(false);
-              return;
-          }
-          try {
-            const res = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${GEOAPIFY_API_KEY}&lang=km`, { signal: controller.signal });
-            const data = await res.json();
-            if (isMounted.current && !controller.signal.aborted) {
-               setAddressDetails((data.features?.length) ? data.features[0].properties : { formatted: "ទីតាំងមិនស្គាល់" });
-            }
-          } catch (error: any) {
-            if (error.name !== 'AbortError' && isMounted.current) {
-               setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" });
-            }
-          } finally {
-            if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false);
-          }
+          if (!GEOAPIFY_API_KEY) { setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` }); setIsFetchingAddress(false); return; }
+          try { const res = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${GEOAPIFY_API_KEY}&lang=km`, { signal: controller.signal }); const data = await res.json(); if (isMounted.current && !controller.signal.aborted) setAddressDetails((data.features?.length) ? data.features[0].properties : { formatted: "ទីតាំងមិនស្គាល់" }); } catch (error: any) { if (error.name !== 'AbortError' && isMounted.current) setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" }); } finally { if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false); }
       }, 600); 
-
       return () => clearTimeout(timeoutId);
     }
   }, [locationDetails]);
 
   const handleStartNavigation = async () => {
-    if (!userLocation.current) {
-      toast({ title: "កំពុងស្វែងរក GPS...", description: "សូមរង់ចាំបន្តិច" });
-      geolocateControl.current?.trigger();
-      return;
-    }
+    if (!userLocation.current) { toast({ title: "កំពុងស្វែងរក GPS...", description: "សូមរង់ចាំបន្តិច" }); geolocateControl.current?.trigger(); return; }
     if (!locationDetails) return;
-
-    setIsRouting(true);
-    requestWakeLock();
+    setIsRouting(true); requestWakeLock();
     activeDestination.current = [locationDetails.lng, locationDetails.lat];
     const success = await fetchRoute(userLocation.current, [locationDetails.lng, locationDetails.lat]);
     setIsRouting(false);
-
-    if (success) {
-        setIsNavigating(true);
-        userIsInteracting.current = false;
-        setShowRecenterBtn(false);
-        if (!isMuted) speak("ចាប់ផ្តើមការនាំផ្លូវ");
-        setIsDrawerOpen(false);
-
-        if(map.current && routeGeoJSON.current?.length > 1) {
-            const initialRouteBearing = getBearing(
-                routeGeoJSON.current[0][1],
-                routeGeoJSON.current[0][0],
-                routeGeoJSON.current[1][1],
-                routeGeoJSON.current[1][0]
-            );
-            map.current.flyTo({
-                center: userLocation.current, zoom: 19, pitch: 70, bearing: initialRouteBearing,
-                padding: { top: 0, bottom: 200, left: 0, right: 0 },
-                essential: true, duration: 2000
-            });
-        }
-    }
+    if (success) { setIsNavigating(true); userIsInteracting.current = false; setShowRecenterBtn(false); if (!isMuted) speak("ចាប់ផ្តើមការនាំផ្លូវ"); setIsDrawerOpen(false); if(map.current && routeGeoJSON.current?.length > 1) { const initialRouteBearing = getBearing(routeGeoJSON.current[0][1], routeGeoJSON.current[0][0], routeGeoJSON.current[1][1], routeGeoJSON.current[1][0]); map.current.flyTo({ center: userLocation.current, zoom: 19, pitch: 70, bearing: initialRouteBearing, padding: { top: 0, bottom: 200, left: 0, right: 0 }, essential: true, duration: 2000 }); } }
   }
 
-  const handleRecenter = () => {
-      if(!userLocation.current || !map.current) return;
-      userIsInteracting.current = false;
-      setShowRecenterBtn(false);
-      showRecenterBtnRef.current = false;
-      map.current.flyTo({
-          center: userLocation.current, zoom: 19, pitch: 70, bearing: targetHeading.current,
-          padding: { top: 0, bottom: 200, left: 0, right: 0 },
-          duration: 1200
-      });
-  }
+  const handleRecenter = () => { if(!userLocation.current || !map.current) return; userIsInteracting.current = false; setShowRecenterBtn(false); showRecenterBtnRef.current = false; map.current.flyTo({ center: userLocation.current, zoom: 19, pitch: 70, bearing: targetHeading.current, padding: { top: 0, bottom: 200, left: 0, right: 0 }, duration: 1200 }); }
+  const handleUserLocationClick = useCallback(() => { if(!userLocation.current || !map.current) { geolocateControl.current?.trigger(); toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 }); return; } map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 }); }, [toast]);
+  const clearRoute = useCallback(() => { setIsNavigating(false); activeDestination.current = null; routeGeoJSON.current = null; releaseWakeLock(); if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel(); if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; } if(map.current) removeRouteLayers(map.current); clearSearchMarkers(); setRouteDetails(null); setLocationDetails(null); setIsDrawerOpen(false); setShowRecenterBtn(false); if(map.current && userLocation.current) map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, duration: 1500 }); }, [clearSearchMarkers, removeRouteLayers]);
+  const toggleLayer = useCallback((layerName: 'rain' | 'wind' | 'traffic') => { if (!map.current) return; let isActive: boolean, setIsActive: Function, layerId: string; switch(layerName) { case 'traffic': isActive = isTrafficVisible; setIsActive = setIsTrafficVisible; layerId = 'traffic'; break; case 'rain': isActive = isRainMode; setIsActive = setIsRainMode; layerId = 'rain-layer'; break; case 'wind': isActive = isWindMode; setIsActive = setIsWindMode; layerId = 'wind-layer'; break; } const newState = !isActive; setIsActive(newState); if (map.current.getLayer(layerId)) map.current.setLayoutProperty(layerId, 'visibility', newState ? 'visible' : 'none'); else if (newState) restoreMapLayers(map.current, layerName === 'traffic' ? true : isTrafficVisible, layerName === 'rain' ? true : isRainMode, layerName === 'wind' ? true : isWindMode); }, [isTrafficVisible, isRainMode, isWindMode, restoreMapLayers]);
+  const toggleAR = useCallback(() => { if (!userLocation.current || !locationDetails) { toast({ title: "Cannot start AR", description: "Set a destination first", variant: "destructive" }); return; } setShowAR(prev => !prev); }, [locationDetails, toast]);
+  const handleAutocomplete = useCallback(async (query: string, signal: AbortSignal) => { if (!query.trim()) return []; const center = map.current ? map.current.getCenter().toArray() as [number, number] : (userLocation.current || DEFAULT_CENTER); return await searchPlaces(query, center, false, signal); }, []);
+  const resetCompass = useCallback(() => { if(map.current) map.current.easeTo({ bearing: 0, pitch: 45, duration: 800 }); }, []);
 
-  const handleUserLocationClick = useCallback(() => {
-    if(!userLocation.current || !map.current) {
-        geolocateControl.current?.trigger();
-        toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 });
-        return;
-    }
-    map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 });
-  }, [toast]);
-
-  const clearRoute = useCallback(() => {
-    setIsNavigating(false);
-    activeDestination.current = null;
-    routeGeoJSON.current = null;
-    releaseWakeLock();
-    if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
-    if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; }
-    if(map.current) removeRouteLayers(map.current);
-    clearSearchMarkers();
-    setRouteDetails(null);
-    setLocationDetails(null);
-    setIsDrawerOpen(false);
-    setShowRecenterBtn(false);
-    if(map.current && userLocation.current) {
-        map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, duration: 1500 });
-    }
-  }, [clearSearchMarkers, removeRouteLayers]);
-
-  const toggleLayer = useCallback((layerName: 'rain' | 'wind' | 'traffic') => {
-      if (!map.current) return;
-      if ((layerName === 'rain' || layerName === 'wind') && !WEATHER_API_KEY) {
-          toast({ title: "Configuration Error", description: "Weather API Key is missing.", variant: "destructive" });
-          return;
-      }
-
-      let isActive: boolean, setIsActive: Function, layerId: string, toastTitle: string, toastDesc: string, toastClass: string;
-
-      switch(layerName) {
-          case 'traffic':
-              isActive = isTrafficVisible; setIsActive = setIsTrafficVisible; layerId = 'traffic';
-              toastTitle = !isActive ? "Traffic Enabled" : "Traffic Disabled";
-              toastDesc = !isActive ? "Showing real-time traffic" : "Traffic hidden";
-              toastClass = !isActive ? "border-indigo-500 bg-indigo-950/50 text-white" : "";
-              break;
-          case 'rain':
-              isActive = isRainMode; setIsActive = setIsRainMode; layerId = 'rain-layer';
-              toastTitle = !isActive ? "Rain Radar Active" : "Rain Radar Disabled";
-              toastDesc = !isActive ? "Showing precipitation radar" : "Weather layer hidden";
-              toastClass = !isActive ? "border-blue-500 bg-blue-950/50 text-white" : "";
-              break;
-          case 'wind':
-              isActive = isWindMode; setIsActive = setIsWindMode; layerId = 'wind-layer';
-              toastTitle = !isActive ? "Wind Mode Active" : "Wind Mode Disabled";
-              toastDesc = !isActive ? "Showing wind speed heatmap" : "Wind layer hidden";
-              toastClass = !isActive ? "border-cyan-500 bg-cyan-950/50 text-white" : "";
-              break;
-      }
-      
-      const newState = !isActive;
-      setIsActive(newState);
-
-      if (map.current.getLayer(layerId)) {
-          map.current.setLayoutProperty(layerId, 'visibility', newState ? 'visible' : 'none');
-      } else if (newState) {
-          restoreMapLayers(map.current, layerName === 'traffic' ? true : isTrafficVisible, layerName === 'rain' ? true : isRainMode, layerName === 'wind' ? true : isWindMode);
-      }
-      
-      toast({ title: toastTitle, description: toastDesc, className: toastClass });
-  }, [isTrafficVisible, isRainMode, isWindMode, restoreMapLayers, toast]);
-
-  const toggleAR = useCallback(() => {
-      if (!userLocation.current || !locationDetails) {
-          toast({ title: "Cannot start AR", description: "Set a destination first", variant: "destructive" });
-          return;
-      }
-      setShowAR(prev => !prev);
-  }, [locationDetails, toast]);
-
-  const handleAutocomplete = useCallback(async (query: string, signal: AbortSignal) => {
-    if (!query.trim()) return [];
-    const center = map.current ? map.current.getCenter().toArray() as [number, number] : (userLocation.current || DEFAULT_CENTER);
-    return await searchPlaces(query, center, false, signal);
-  }, []);
-  
-  const resetCompass = useCallback(() => {
-    if(map.current) map.current.easeTo({ bearing: 0, pitch: 45, duration: 800 });
-  }, []);
-
-  const openGrab = () => {
-      if(!locationDetails) return;
-      const url = `grab://open?screenType=GRABRIDE&dropOffLatitude=${locationDetails.lat}&dropOffLongitude=${locationDetails.lng}`;
-      window.location.href = url;
-      setTimeout(() => { window.open('https://www.grab.com/kh/', '_blank'); }, 1500);
-  };
-  const openPassApp = () => {
-     window.location.href = "passapp://";
-     setTimeout(() => { window.open('https://passapp-taxi.com/', '_blank'); }, 1500);
-  };
-  const openGoogleMaps = () => {
-      if(!locationDetails) return;
-      window.open(`https://www.google.com/maps/dir/?api=1&destination=${locationDetails.lat},${locationDetails.lng}`, '_blank');
-  };
+  const openGrab = () => { if(!locationDetails) return; window.location.href = `grab://open?screenType=GRABRIDE&dropOffLatitude=${locationDetails.lat}&dropOffLongitude=${locationDetails.lng}`; setTimeout(() => { window.open('https://www.grab.com/kh/', '_blank'); }, 1500); };
+  const openPassApp = () => { window.location.href = "passapp://"; setTimeout(() => { window.open('https://passapp-taxi.com/', '_blank'); }, 1500); };
+  const openGoogleMaps = () => { if(!locationDetails) return; window.open(`https://www.google.com/maps/dir/?api=1&destination=${locationDetails.lat},${locationDetails.lng}`, '_blank'); };
 
   if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Missing Token</h2><p className="text-center text-zinc-400">Mapbox Access Token is missing.</p></CardContent></Card></div>;
   if (!isSecureContext) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><Lock className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Insecure Connection</h2><p className="text-center text-zinc-400">Core features like GPS and AR require a secure (HTTPS) connection to function.</p></CardContent></Card></div>;
@@ -1570,14 +965,13 @@ export default function MapExplorerPage() {
         </div>
 
         <div ref={mapContainer} className="absolute inset-0 w-full h-full touch-none" />
-
         <WeatherWidget weather={weather} isNavigating={isNavigating} />
 
         {showAR && currentUserLocationForAR && locationDetails && (
             <ArLastMileView
                 userLocation={currentUserLocationForAR}
                 destination={[locationDetails.lng, locationDetails.lat]}
-                routePath={routeGeoJSON.current} // Pass full path to AR
+                routePath={routeGeoJSON.current}
                 onClose={() => setShowAR(false)}
                 hasParentPermission={hasArPermission}
                 setParentPermission={setHasArPermission}
@@ -1618,9 +1012,7 @@ export default function MapExplorerPage() {
 
         {isNavigating && showRecenterBtn && (
              <div className="absolute bottom-32 right-4 z-20 pointer-events-auto pb-[safe-area-inset-bottom] animate-in zoom-in-50 duration-300">
-                <Button onClick={handleRecenter} className="h-14 w-14 rounded-full bg-zinc-900 border border-zinc-700 shadow-2xl text-blue-500 flex flex-col items-center justify-center gap-0 hover:bg-zinc-800 transition-transform active:scale-90">
-                    <LocateFixed className="h-6 w-6" /><span className="text-[9px] font-bold uppercase">ទីតាំងខ្ញុំ</span>
-                </Button>
+                <Button onClick={handleRecenter} className="h-14 w-14 rounded-full bg-zinc-900 border border-zinc-700 shadow-2xl text-blue-500 flex flex-col items-center justify-center gap-0 hover:bg-zinc-800 transition-transform active:scale-90"><LocateFixed className="h-6 w-6" /><span className="text-[9px] font-bold uppercase">ទីតាំងខ្ញុំ</span></Button>
              </div>
         )}
 
@@ -1631,28 +1023,14 @@ export default function MapExplorerPage() {
                     <DialogTitle className="flex items-center gap-2"><Shield className="text-red-500 fill-red-500/20" /> Share Live Trip</DialogTitle>
                     <DialogDescription className="text-zinc-400">Share this link. Friends can watch your location in real-time.</DialogDescription>
                 </DialogHeader>
-                
                 {currentTripId && (
                     <div className="flex flex-col items-center gap-4 py-4">
-                        <div className="bg-white p-2 rounded-lg">
-                            <QRCodeSVG value={`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`} size={150} />
-                        </div>
-                        
+                        <div className="bg-white p-2 rounded-lg"><QRCodeSVG value={`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`} size={150} /></div>
                         <div className="flex w-full gap-2">
-                            <div className="bg-zinc-800 p-3 rounded-lg flex-1 truncate text-xs font-mono text-zinc-400 border border-zinc-700">
-                                {`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`}
-                            </div>
-                            <Button onClick={() => {
-                                navigator.clipboard.writeText(`${window.location.origin}/track/${currentTripId}`);
-                                toast({ title: "Copied!" });
-                            }}>
-                                <Copy className="h-4 w-4" />
-                            </Button>
+                            <div className="bg-zinc-800 p-3 rounded-lg flex-1 truncate text-xs font-mono text-zinc-400 border border-zinc-700">{`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`}</div>
+                            <Button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/track/${currentTripId}`); toast({ title: "Copied!" }); }}><Copy className="h-4 w-4" /></Button>
                         </div>
-
-                        <Button variant="destructive" className="w-full" onClick={stopSafetyMode}>
-                            <StopCircle className="mr-2 h-4 w-4" /> Stop Sharing
-                        </Button>
+                        <Button variant="destructive" className="w-full" onClick={stopSafetyMode}><StopCircle className="mr-2 h-4 w-4" /> Stop Sharing</Button>
                     </div>
                 )}
             </DialogContent>
@@ -1664,69 +1042,29 @@ export default function MapExplorerPage() {
               <div className="space-y-6 pb-2">
                 <SheetHeader className="text-left space-y-1">
                    <div className="flex items-center gap-3 mb-2">
-                       <div className="h-10 w-10 rounded-full bg-indigo-500/20 flex items-center justify-center">
-                           <MapPin className="h-5 w-5 text-indigo-400" />
-                       </div>
+                       <div className="h-10 w-10 rounded-full bg-indigo-500/20 flex items-center justify-center"><MapPin className="h-5 w-5 text-indigo-400" /></div>
                        <div className="flex-1 min-w-0">
-                           <SheetTitle asChild className="text-xl font-bold line-clamp-1 text-white">
-                                <div role="heading" aria-level={2}>
-                                    {isFetchingAddress ? <Skeleton className="h-6 w-32 bg-zinc-800" /> : (addressDetails?.name || addressDetails?.address_line1 || "ទីតាំងដែលបានជ្រើសរើស")}
-                                </div>
-                           </SheetTitle>
-                           <SheetDescription asChild className="text-zinc-400 text-xs line-clamp-1">
-                                <div>
-                                    {isFetchingAddress ? <Skeleton className="h-4 w-48 bg-zinc-800 mt-1" /> : (addressDetails?.formatted || "")}
-                                </div>
-                           </SheetDescription>
+                           <SheetTitle asChild className="text-xl font-bold line-clamp-1 text-white"><div role="heading" aria-level={2}>{isFetchingAddress ? <Skeleton className="h-6 w-32 bg-zinc-800" /> : (addressDetails?.name || addressDetails?.address_line1 || "ទីតាំងដែលបានជ្រើសរើស")}</div></SheetTitle>
+                           <SheetDescription asChild className="text-zinc-400 text-xs line-clamp-1"><div>{isFetchingAddress ? <Skeleton className="h-4 w-48 bg-zinc-800 mt-1" /> : (addressDetails?.formatted || "")}</div></SheetDescription>
                        </div>
                    </div>
                 </SheetHeader>
-
                 <div className="mt-2 grid grid-cols-2 gap-3">
                     <div className="col-span-2">
                         <p className="text-[10px] text-zinc-500 font-bold uppercase mb-2 tracking-wider">Ride Hailing</p>
                         <div className="grid grid-cols-3 gap-2">
-                            <Button onClick={openGrab} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#00B14F]/20 hover:border-[#00B14F] hover:text-[#00B14F] transition-all flex flex-col gap-0.5">
-                                <CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">Grab</span>
-                            </Button>
-                            <Button onClick={openPassApp} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#1D8F48]/20 hover:border-[#1D8F48] hover:text-[#1D8F48] transition-all flex flex-col gap-0.5">
-                                <CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">PassApp</span>
-                            </Button>
-                             <Button onClick={openGoogleMaps} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-blue-500/20 hover:border-blue-500 hover:text-blue-500 transition-all flex flex-col gap-0.5">
-                                <ExternalLink className="h-4 w-4" /> <span className="text-[10px] font-bold">Google</span>
-                            </Button>
+                            <Button onClick={openGrab} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#00B14F]/20 hover:border-[#00B14F] hover:text-[#00B14F] transition-all flex flex-col gap-0.5"><CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">Grab</span></Button>
+                            <Button onClick={openPassApp} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#1D8F48]/20 hover:border-[#1D8F48] hover:text-[#1D8F48] transition-all flex flex-col gap-0.5"><CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">PassApp</span></Button>
+                             <Button onClick={openGoogleMaps} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-blue-500/20 hover:border-blue-500 hover:text-blue-500 transition-all flex flex-col gap-0.5"><ExternalLink className="h-4 w-4" /> <span className="text-[10px] font-bold">Google</span></Button>
                         </div>
                     </div>
-
-                    {richPlaceDetails?.contact?.phone && (
-                        <a href={`tel:${richPlaceDetails.contact.phone}`} className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50">
-                            <div className="h-8 w-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400"><Phone className="h-4 w-4" /></div>
-                            <div className="flex flex-col overflow-hidden"><span className="text-[10px] text-zinc-400 font-bold uppercase">Phone</span><span className="text-xs text-zinc-200 truncate font-mono">{richPlaceDetails.contact.phone}</span></div>
-                        </a>
-                    )}
-                    {richPlaceDetails?.contact?.website && (
-                        <a href={richPlaceDetails.contact.website} target="_blank" rel="noreferrer" className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50">
-                            <div className="h-8 w-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400"><Globe className="h-4 w-4" /></div>
-                            <div className="flex flex-col overflow-hidden"><span className="text-[10px] text-zinc-400 font-bold uppercase">Website</span><span className="text-xs text-zinc-200 truncate">Visit Site</span></div>
-                        </a>
-                    )}
-                    {(richPlaceDetails?.opening_hours || isFetchingRichDetails) && (
-                        <div className="col-span-2 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl border border-zinc-700/50">
-                             <div className="h-8 w-8 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-400"><Clock className="h-4 w-4" /></div>
-                            <div className="flex flex-col min-w-0"><span className="text-[10px] text-zinc-400 font-bold uppercase">Hours</span>{isFetchingRichDetails ? <Skeleton className="h-3 w-24 bg-zinc-700 mt-1" /> : <span className="text-xs text-zinc-200 truncate">{richPlaceDetails.opening_hours || "Opening hours not available"}</span>}</div>
-                        </div>
-                    )}
+                    {richPlaceDetails?.contact?.phone && (<a href={`tel:${richPlaceDetails.contact.phone}`} className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50"><div className="h-8 w-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400"><Phone className="h-4 w-4" /></div><div className="flex flex-col overflow-hidden"><span className="text-[10px] text-zinc-400 font-bold uppercase">Phone</span><span className="text-xs text-zinc-200 truncate font-mono">{richPlaceDetails.contact.phone}</span></div></a>)}
+                    {richPlaceDetails?.contact?.website && (<a href={richPlaceDetails.contact.website} target="_blank" rel="noreferrer" className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50"><div className="h-8 w-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400"><Globe className="h-4 w-4" /></div><div className="flex flex-col overflow-hidden"><span className="text-[10px] text-zinc-400 font-bold uppercase">Website</span><span className="text-xs text-zinc-200 truncate">Visit Site</span></div></a>)}
+                    {(richPlaceDetails?.opening_hours || isFetchingRichDetails) && (<div className="col-span-2 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl border border-zinc-700/50"><div className="h-8 w-8 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-400"><Clock className="h-4 w-4" /></div><div className="flex flex-col min-w-0"><span className="text-[10px] text-zinc-400 font-bold uppercase">Hours</span>{isFetchingRichDetails ? <Skeleton className="h-3 w-24 bg-zinc-700 mt-1" /> : <span className="text-xs text-zinc-200 truncate">{richPlaceDetails.opening_hours || "Opening hours not available"}</span>}</div></div>)}
                 </div>
-
                 <SheetFooter className="flex flex-col sm:flex-col sm:space-x-0 gap-2 mt-4">
-                  <Button className="w-full gap-2 bg-zinc-800 hover:bg-zinc-700 text-white h-12 text-base font-semibold border border-zinc-700 rounded-xl" onClick={toggleAR} >
-                    <Camera className="h-5 w-5" /> Live View (AR)
-                  </Button>
-                  <Button className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" onClick={handleStartNavigation} disabled={isFetchingAddress || !userLocation.current || isRouting} >
-                    {isRouting ? <><Loader2 className="h-5 w-5 animate-spin" /> កំពុងគណនាផ្លូវ...</>
-                    : userLocation.current ? <><Navigation className="h-5 w-5" /> ចាប់ផ្តើមនាំផ្លូវ</>
-                    : <><Loader2 className="h-5 w-5 animate-spin" /> កំពុងស្វែងរក GPS</>}
-                  </Button>
+                  <Button className="w-full gap-2 bg-zinc-800 hover:bg-zinc-700 text-white h-12 text-base font-semibold border border-zinc-700 rounded-xl" onClick={toggleAR} ><Camera className="h-5 w-5" /> Live View (AR)</Button>
+                  <Button className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" onClick={handleStartNavigation} disabled={isFetchingAddress || !userLocation.current || isRouting} >{isRouting ? <><Loader2 className="h-5 w-5 animate-spin" /> កំពុងគណនាផ្លូវ...</> : userLocation.current ? <><Navigation className="h-5 w-5" /> ចាប់ផ្តើមនាំផ្លូវ</> : <><Loader2 className="h-5 w-5 animate-spin" /> កំពុងស្វែងរក GPS</>}</Button>
                 </SheetFooter>
               </div>
             )}
@@ -1745,11 +1083,7 @@ const WeatherWidget = memo(({ weather, isNavigating }: { weather: WeatherData | 
     return (
         <div className="absolute top-4 left-4 z-20 pointer-events-none">
             <div className="bg-[#18181b]/80 backdrop-blur-xl border border-white/10 rounded-full px-3 py-1.5 flex items-center gap-2 shadow-2xl animate-in fade-in zoom-in-95">
-                {getWeatherIcon(weather.condition)}
-                <div className="flex flex-col">
-                    <span className="text-sm font-bold text-white leading-none">{weather.temp}°</span>
-                    <span className="text-[10px] text-zinc-400 capitalize">{weather.description}</span>
-                </div>
+                {getWeatherIcon(weather.condition)}<div className="flex flex-col"><span className="text-sm font-bold text-white leading-none">{weather.temp}°</span><span className="text-[10px] text-zinc-400 capitalize">{weather.description}</span></div>
             </div>
         </div>
     );
@@ -1762,42 +1096,18 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
         <div className="absolute top-0 left-0 right-0 z-30 pt-2 px-2 pointer-events-none pb-[safe-area-inset-top]">
             <div className="w-full max-w-md mx-auto shadow-2xl bg-[#18181b] border-b-4 border-emerald-500 rounded-xl overflow-hidden pointer-events-auto ring-1 ring-white/10">
                 <div className="flex items-center p-4 gap-4">
-                    <div className="bg-emerald-600 h-14 w-14 rounded-lg flex items-center justify-center shadow-lg shrink-0">
-                        <ManeuverIcon instruction={routeDetails.instruction} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                        <div className="text-2xl font-bold leading-tight break-words text-white">{routeDetails.instruction}</div>
-                    </div>
-                    <Button variant="ghost" size="icon" onClick={() => setIsMuted(!isMuted)} className="h-10 w-10 rounded-full bg-zinc-800/50 hover:bg-zinc-700">
-                        {isMuted ? <VolumeX className="h-5 w-5 text-zinc-400" /> : <Volume2 className="h-5 w-5 text-emerald-400" />}
-                    </Button>
+                    <div className="bg-emerald-600 h-14 w-14 rounded-lg flex items-center justify-center shadow-lg shrink-0"><ManeuverIcon instruction={routeDetails.instruction} /></div>
+                    <div className="flex-1 min-w-0"><div className="text-2xl font-bold leading-tight break-words text-white">{routeDetails.instruction}</div></div>
+                    <Button variant="ghost" size="icon" onClick={() => setIsMuted(!isMuted)} className="h-10 w-10 rounded-full bg-zinc-800/50 hover:bg-zinc-700">{isMuted ? <VolumeX className="h-5 w-5 text-zinc-400" /> : <Volume2 className="h-5 w-5 text-emerald-400" />}</Button>
                 </div>
             </div>
         </div>
-
         <div className="absolute bottom-0 left-0 right-0 z-30 pb-[safe-area-inset-bottom]">
             <div className="bg-[#18181b]/95 backdrop-blur-xl border-t border-zinc-800 p-5 flex items-center justify-between shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
-                <div className="flex flex-col gap-1">
-                    <div className="flex items-baseline gap-2">
-                        <span className="text-4xl font-bold text-emerald-400 leading-none tracking-tight">{formatDuration(routeDetails.duration)}</span>
-                        <span className="text-sm text-zinc-400 font-medium">remaining</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-zinc-400 text-sm font-medium">
-                        <span className="text-white">{formatDistance(routeDetails.distance)}</span>
-                        <span className="w-1 h-1 rounded-full bg-zinc-600"></span>
-                        <span>{routeDetails.arrivalTime}</span>
-                    </div>
-                </div>
-
+                <div className="flex flex-col gap-1"><div className="flex items-baseline gap-2"><span className="text-4xl font-bold text-emerald-400 leading-none tracking-tight">{formatDuration(routeDetails.duration)}</span><span className="text-sm text-zinc-400 font-medium">remaining</span></div><div className="flex items-center gap-2 text-zinc-400 text-sm font-medium"><span className="text-white">{formatDistance(routeDetails.distance)}</span><span className="w-1 h-1 rounded-full bg-zinc-600"></span><span>{routeDetails.arrivalTime}</span></div></div>
                 <div className="flex items-center gap-4">
-                    <div className="flex flex-col items-center justify-center bg-zinc-900 h-14 w-14 rounded-full border-2 border-zinc-700 ring-2 ring-black/50 shadow-inner relative">
-                        <span className="text-xl font-bold text-white leading-none z-10">{currentSpeed}</span>
-                        <span className="text-[8px] text-zinc-500 font-bold uppercase z-10 mt-0.5">km/h</span>
-                        <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none"><circle cx="28" cy="28" r="26" fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="163" strokeDashoffset={163 - (Math.min(currentSpeed, 120)/120)*163} className="transition-all duration-500" /></svg>
-                    </div>
-                    <Button size="icon" onClick={onClearRoute} className="h-12 w-12 rounded-full bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 shadow-lg">
-                        <X className="h-6 w-6" />
-                    </Button>
+                    <div className="flex flex-col items-center justify-center bg-zinc-900 h-14 w-14 rounded-full border-2 border-zinc-700 ring-2 ring-black/50 shadow-inner relative"><span className="text-xl font-bold text-white leading-none z-10">{currentSpeed}</span><span className="text-[8px] text-zinc-500 font-bold uppercase z-10 mt-0.5">km/h</span><svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none"><circle cx="28" cy="28" r="26" fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="163" strokeDashoffset={163 - (Math.min(currentSpeed, 120)/120)*163} className="transition-all duration-500" /></svg></div>
+                    <Button size="icon" onClick={onClearRoute} className="h-12 w-12 rounded-full bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 shadow-lg"><X className="h-6 w-6" /></Button>
                 </div>
             </div>
         </div>
@@ -1821,94 +1131,22 @@ const BottomControls = memo(({
     const [isListening, setIsListening] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
 
-    useEffect(() => {
-        try {
-            const saved = localStorage.getItem('map_history');
-            if (saved) setHistory(JSON.parse(saved));
-        } catch (e) { localStorage.removeItem('map_history'); }
-    }, []);
-
-    const updateHistory = (newHistory: SearchResult[]) => {
-        setHistory(newHistory);
-        localStorage.setItem('map_history', JSON.stringify(newHistory));
-    };
-
-    const removeFromHistory = (e: React.MouseEvent, itemToRemove: SearchResult) => {
-        e.stopPropagation();
-        const newHistory = history.filter(item => item.name !== itemToRemove.name);
-        updateHistory(newHistory);
-    };
-
-    useEffect(() => {
-        const controller = new AbortController();
-        if (query.trim().length <= 1) {
-            setSuggestions([]); setIsSearching(false); return;
-        }
-        const timeoutId = setTimeout(async () => {
-            setIsSearching(true);
-            const results = await handleAutocomplete(query, controller.signal);
-            if (!controller.signal.aborted) {
-                setSuggestions(results); setIsSearching(false);
-            }
-        }, 400);
-        return () => { clearTimeout(timeoutId); controller.abort(); };
-    }, [query, handleAutocomplete]);
-
-    const handleSelect = (s: SearchResult) => {
-        setQuery(""); setSuggestions([]); setIsInputActive(false);
-        const newHistory = [s, ...history.filter(h => h.name !== s.name)].slice(0, 5);
-        updateHistory(newHistory);
-        onSelectLocation(s);
-        inputRef.current?.blur();
-    }
-
-    const handleClearInput = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        setQuery("");
-        inputRef.current?.focus();
-    }
-    
-    // Voice Search Handler
+    useEffect(() => { try { const saved = localStorage.getItem('map_history'); if (saved) setHistory(JSON.parse(saved)); } catch (e) { localStorage.removeItem('map_history'); } }, []);
+    const updateHistory = (newHistory: SearchResult[]) => { setHistory(newHistory); localStorage.setItem('map_history', JSON.stringify(newHistory)); };
+    const removeFromHistory = (e: React.MouseEvent, itemToRemove: SearchResult) => { e.stopPropagation(); const newHistory = history.filter(item => item.name !== itemToRemove.name); updateHistory(newHistory); };
+    useEffect(() => { const controller = new AbortController(); if (query.trim().length <= 1) { setSuggestions([]); setIsSearching(false); return; } const timeoutId = setTimeout(async () => { setIsSearching(true); const results = await handleAutocomplete(query, controller.signal); if (!controller.signal.aborted) { setSuggestions(results); setIsSearching(false); } }, 400); return () => { clearTimeout(timeoutId); controller.abort(); }; }, [query, handleAutocomplete]);
+    const handleSelect = (s: SearchResult) => { setQuery(""); setSuggestions([]); setIsInputActive(false); const newHistory = [s, ...history.filter(h => h.name !== s.name)].slice(0, 5); updateHistory(newHistory); onSelectLocation(s); inputRef.current?.blur(); }
+    const handleClearInput = (e: React.MouseEvent) => { e.stopPropagation(); setQuery(""); inputRef.current?.focus(); }
     const handleVoiceSearch = () => {
-        const win = window as unknown as IWindow;
-        const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
-
-        if (!SpeechRecognition) {
-            alert("Your browser does not support voice search.");
-            return;
-        }
-
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'km-KH'; // Default to Khmer, can switch to en-US
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
-
-        setIsListening(true);
-        recognition.start();
-
-        recognition.onresult = (event: any) => {
-            const transcript = event.results[0][0].transcript;
-            setQuery(transcript);
-            setIsInputActive(true);
-            setIsListening(false);
-        };
-
-        recognition.onspeechend = () => {
-            recognition.stop();
-            setIsListening(false);
-        };
-
-        recognition.onerror = (event: any) => {
-            console.error(event.error);
-            setIsListening(false);
-        };
+        const win = window as unknown as IWindow; const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
+        if (!SpeechRecognition) { alert("Your browser does not support voice search."); return; }
+        const recognition = new SpeechRecognition(); recognition.lang = 'km-KH'; recognition.interimResults = false; recognition.maxAlternatives = 1;
+        setIsListening(true); recognition.start();
+        recognition.onresult = (event: any) => { const transcript = event.results[0][0].transcript; setQuery(transcript); setIsInputActive(true); setIsListening(false); };
+        recognition.onspeechend = () => { recognition.stop(); setIsListening(false); };
+        recognition.onerror = (event: any) => { console.error(event.error); setIsListening(false); };
     };
-
-    const calcDist = (lat: number, lng: number) => {
-        if(!userLocation) return null;
-        return formatDistance(getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], lat, lng));
-    }
-
+    const calcDist = (lat: number, lng: number) => { if(!userLocation) return null; return formatDistance(getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], lat, lng)); }
     const showCard = isInputActive && ((query.length === 0 && history.length > 0) || suggestions.length > 0);
 
     return (
@@ -1982,16 +1220,10 @@ const BottomControls = memo(({
                 <div className="relative shadow-2xl transition-all duration-300 ease-out active:scale-[0.99]">
                     <Search className={`absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 transition-colors ${isSearching ? 'text-indigo-400' : 'text-zinc-400'}`} />
                     <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)} onFocus={() => setIsInputActive(true)} placeholder="ស្វែងរកទីតាំង, ហាង..." inputMode="search" className="w-full h-14 pl-12 pr-24 rounded-full bg-[#18181b]/90 backdrop-blur-md border border-white/10 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]" />
-                    
                     <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                        {isSearching ? <Loader2 className="h-5 w-5 text-indigo-500 animate-spin mr-2" />
-                        : query.length > 0 && <button onClick={handleClearInput} className="p-1.5 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors text-zinc-400 hover:text-white"><X className="h-3.5 w-3.5" /></button>}
-                        
+                        {isSearching ? <Loader2 className="h-5 w-5 text-indigo-500 animate-spin mr-2" /> : query.length > 0 && <button onClick={handleClearInput} className="p-1.5 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors text-zinc-400 hover:text-white"><X className="h-3.5 w-3.5" /></button>}
                         <div className="h-8 w-[1px] bg-zinc-700 mx-1"></div>
-                        
-                        <button onClick={handleVoiceSearch} className={`p-2 rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'hover:bg-zinc-700 text-zinc-400'}`}>
-                            <Mic className="h-5 w-5" />
-                        </button>
+                        <button onClick={handleVoiceSearch} className={`p-2 rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'hover:bg-zinc-700 text-zinc-400'}`}><Mic className="h-5 w-5" /></button>
                     </div>
                 </div>
             </div>
