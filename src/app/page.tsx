@@ -3,7 +3,7 @@
 // ==========================================
 // 1. IMPORTS
 // ==========================================
-import React, { useRef, useEffect, useState, useCallback, memo } from 'react';
+import React, { useRef, useEffect, useState, useCallback, memo, useMemo } from 'react';
 import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap, GeoJSONSource, MapMouseEvent } from 'mapbox-gl';
 import { Kantumruy_Pro } from 'next/font/google';
 import 'mapbox-gl/dist/mapbox-gl.css';
@@ -22,7 +22,7 @@ import {
 import {
   X, MapPin, Navigation, LocateFixed,
   Volume2, VolumeX, Compass, Loader2, AlertTriangle,
-  Fuel, Utensils, Coffee, Search, Mic, // Added Mic
+  Fuel, Utensils, Coffee, Search, Mic,
   Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind,
   ArrowRight, Clock, History, Navigation as NavIcon,
@@ -30,19 +30,17 @@ import {
   ChevronDown, ChevronUp, Trash2, ChevronLeft, ChevronRight,
   Phone, Globe, Satellite, Map as MapIcon,
   CarFront, ExternalLink, Camera, ScanEye, Lock,
-  Mountain // Added Mountain
+  Mountain
 } from 'lucide-react';
 
 // ==========================================
 // 2. CONFIG & HELPERS
 // ==========================================
 
-// iOS Sensor Types Interface
 interface DeviceOrientationEventiOS extends DeviceOrientationEvent {
     requestPermission?: () => Promise<'granted' | 'denied'>;
 }
 
-// Window interface for Speech Recognition
 interface IWindow extends Window {
     webkitSpeechRecognition: any;
     SpeechRecognition: any;
@@ -220,24 +218,25 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
-// 3. AR COMPONENT (3D 360° UPGRADE)
+// 3. AR COMPONENT (3D PATH TRACKING)
 // ==========================================
 interface ArLastMileViewProps {
     userLocation: [number, number];
     destination: [number, number];
+    routePath?: number[][]; // Added Route Path
     onClose: () => void;
     hasParentPermission: boolean;
     setParentPermission: (val: boolean) => void;
 }
 
-const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
+const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const requestRef = useRef<number>(0);
     const [permissionError, setPermissionError] = useState<string | null>(null);
     const [isSecure, setIsSecure] = useState(true);
     const [sensorsActive, setSensorsActive] = useState(false);
     const [showManualCalibrate, setShowManualCalibrate] = useState(false);
-    const [targetInSight, setTargetInSight] = useState(false); // New feature
+    const [targetInSight, setTargetInSight] = useState(false);
     const streamRef = useRef<MediaStream | null>(null);
     const hasFiredOnce = useRef(false);
 
@@ -245,9 +244,40 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const worldRef = useRef<HTMLDivElement>(null);
     const distanceTextRef = useRef<HTMLDivElement>(null);
     const bearingTextRef = useRef<HTMLSpanElement>(null);
+    const pathContainerRef = useRef<HTMLDivElement>(null);
     
     const sensorData = useRef({ heading: 0, rawHeading: 0 });
     const lastRenderedState = useRef({ distanceText: "" });
+
+    // Filter relevant path points (performance optimization)
+    const visiblePathSegments = useMemo(() => {
+        if (!routePath || routePath.length === 0) return [];
+        
+        // Take every 3rd point to reduce DOM elements, but only within 150m range
+        const segments: {x: number, z: number, dist: number}[] = [];
+        let count = 0;
+        
+        for(let i=0; i<routePath.length; i+=1) { // Analyze precision vs perf
+            const pt = routePath[i];
+            const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]);
+            
+            // Only render points ahead within 150m
+            if (dist < 150 && count < 30) {
+                 const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]);
+                 // Convert to Cartesian relative to user (North = -Z)
+                 // x = dist * sin(bearing)
+                 // z = -dist * cos(bearing)
+                 const rad = bearing * (Math.PI / 180);
+                 segments.push({
+                     x: dist * Math.sin(rad),
+                     z: -(dist * Math.cos(rad)),
+                     dist: dist
+                 });
+                 count++;
+            }
+        }
+        return segments.sort((a,b) => b.dist - a.dist); // Draw far points first
+    }, [routePath, userLocation]);
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
         if (!hasFiredOnce.current) {
@@ -264,11 +294,10 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         sensorData.current.rawHeading = heading;
     }, []);
 
-    // Initial Camera & Permission Check
     useEffect(() => {
         if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
             setIsSecure(false);
-            setPermissionError("AR requires HTTPS. Please use a secure connection.");
+            setPermissionError("AR requires HTTPS.");
             return;
         }
 
@@ -282,7 +311,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 try {
                     streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                 } catch (e) {
-                    setPermissionError("Camera access denied or used by another app.");
+                    setPermissionError("Camera access denied.");
                     return;
                 }
             }
@@ -295,7 +324,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
             const isIOS = typeof (DeviceOrientationEvent as unknown as DeviceOrientationEventiOS).requestPermission === 'function';
             if (!isIOS) {
                 setParentPermission(true);
-                // For Android/Desktop, we assume sensors work or are active
                 setTimeout(() => { if(!hasFiredOnce.current) setSensorsActive(true); }, 1000); 
             } else if (hasParentPermission) {
                 setTimeout(() => {
@@ -313,7 +341,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         };
     }, [hasParentPermission, setParentPermission]);
 
-    // Attach Listeners
     useEffect(() => {
         if (hasParentPermission) {
             window.addEventListener('deviceorientation', handleOrientation);
@@ -338,12 +365,8 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                     setParentPermission(true);
                     localStorage.setItem(AR_PERMISSION_KEY, 'true');
                     setShowManualCalibrate(false);
-                } else {
-                    setPermissionError("Compass Permission denied.");
                 }
-            } catch (e) {
-                setPermissionError("Error requesting permission.");
-            }
+            } catch (e) { setPermissionError("Error requesting permission."); }
         } else {
             setParentPermission(true);
             localStorage.setItem(AR_PERMISSION_KEY, 'true');
@@ -357,7 +380,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         const updateLoop = () => {
             const currentObj = sensorData.current;
             const diff = getShortestAngleDistance(currentObj.rawHeading, currentObj.heading);
-            currentObj.heading += diff * 0.1; // Smooth dampening
+            currentObj.heading += diff * 0.15; // Slightly faster tracking for road lines
 
             const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
             const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
@@ -370,13 +393,13 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 lastRenderedState.current.distanceText = formattedDist;
             }
 
-            // Calculate Field of View logic for Target Locked
             const angleDiff = Math.abs(getShortestAngleDistance(bearing, currentObj.heading));
-            setTargetInSight(angleDiff < 15); // If within 15 degrees, show lock
+            setTargetInSight(angleDiff < 15);
 
+            // ROTATE THE WORLD based on Heading. 
+            // -Heading makes the world North align with Real North.
             if (worldRef.current) {
-                const rotY = -(currentObj.heading - bearing); 
-                worldRef.current.style.transform = `translateZ(0) rotateY(${rotY}deg)`;
+                worldRef.current.style.transform = `translateZ(0) rotateY(${-currentObj.heading}deg)`;
             }
 
             requestRef.current = requestAnimationFrame(updateLoop);
@@ -386,13 +409,20 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         return () => cancelAnimationFrame(requestRef.current);
     }, [userLocation, destination, hasParentPermission, sensorsActive]);
 
+    // Destination Pin Calculation (North-Relative)
+    const destBearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
+    const destDist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
+    const destRad = destBearing * (Math.PI / 180);
+    const destX = destDist * Math.sin(destRad);
+    const destZ = -(destDist * Math.cos(destRad));
+
     const showPermissionButton = !hasParentPermission && !permissionError && isSecure && !showManualCalibrate;
 
     return (
         <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
             <style jsx>{`
                 .perspective-container {
-                    perspective: 800px;
+                    perspective: 600px;
                     perspective-origin: 50% 50%;
                 }
                 .world-3d {
@@ -403,20 +433,31 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                     height: 0;
                     transform-style: preserve-3d;
                 }
+                .path-segment {
+                    position: absolute;
+                    width: 100px; 
+                    height: 100px;
+                    background: radial-gradient(circle, rgba(16, 185, 129, 0.8) 0%, rgba(16, 185, 129, 0) 70%);
+                    transform-origin: center center;
+                    transform: rotateX(90deg) translate(-50%, -50%);
+                    box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+                    border-radius: 50%;
+                    pointer-events: none;
+                }
+                /* Connectors */
+                .path-line {
+                     position: absolute;
+                     height: 20px;
+                     background: linear-gradient(90deg, rgba(16,185,129,0) 0%, rgba(16,185,129,0.5) 50%, rgba(16,185,129,0) 100%);
+                     transform-origin: 0 50%;
+                     transform: rotateX(90deg);
+                     pointer-events: none;
+                }
                 .destination-marker {
                     position: absolute;
                     left: 0;
                     top: 0;
                     transform-style: preserve-3d;
-                    transform: translateZ(-600px) translateY(-100px); 
-                }
-                .radar-pulse {
-                    position: absolute;
-                    top: 50%; left: 50%;
-                    transform: translate(-50%, -50%);
-                    width: 200px; height: 200px;
-                    border: 2px dashed rgba(255,255,255,0.3);
-                    border-radius: 50%;
                 }
             `}</style>
 
@@ -446,12 +487,39 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                     </div>
                  </div>
             )}
-            {/* ... Error States ... */}
 
             {hasParentPermission && sensorsActive && (
                 <>
                     <div ref={worldRef} className="world-3d">
-                        <div className="destination-marker flex flex-col items-center justify-center">
+                        {/* 1. Render Road Segments (The Path) */}
+                        <div ref={pathContainerRef}>
+                            {visiblePathSegments.map((seg, i) => {
+                                // Scale down based on distance to add perspective/fade
+                                const scale = Math.max(0.5, 1 - (seg.dist / 150)); 
+                                // Translate calculates pixel position in 3D world (1m approx 50px-100px in CSS pixels depending on scaling)
+                                // We use a multiplier to map meters to CSS pixels. 
+                                // In a perspective: 600px view, 1 meter approx 20-40px depending on Z.
+                                const PIXEL_PER_METER = 40; 
+                                return (
+                                    <div 
+                                        key={i} 
+                                        className="path-segment"
+                                        style={{
+                                            transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(120px) translateZ(${seg.z * PIXEL_PER_METER}px) rotateX(90deg) scale(${scale})`,
+                                            opacity: scale
+                                        }}
+                                    />
+                                )
+                            })}
+                        </div>
+
+                        {/* 2. Destination Marker */}
+                        <div 
+                            className="destination-marker flex flex-col items-center justify-center"
+                            style={{
+                                transform: `translateX(${destX * 40}px) translateY(-50px) translateZ(${destZ * 40}px)`
+                            }}
+                        >
                             <div className="relative animate-bounce-slow">
                                 <div ref={distanceTextRef} className="bg-indigo-600 text-white px-3 py-1 rounded-full text-lg font-bold shadow-lg border-2 border-white mb-2 whitespace-nowrap">0m</div>
                                 <div className="w-16 h-16 bg-red-600 rounded-full border-4 border-white shadow-xl flex items-center justify-center">
@@ -688,7 +756,6 @@ export default function MapExplorerPage() {
           }, labelLayerId);
       }
       
-      // Terrain & Sky (Feature Upgrade)
       if(!instance.getLayer('sky')) {
            instance.addLayer({
                 'id': 'sky', 'type': 'sky',
@@ -899,7 +966,6 @@ export default function MapExplorerPage() {
       );
       const angleDelta = Math.abs(getShortestAngleDistance(targetHeading.current, currentHeading.current));
       
-      // If stopped, snap to position to avoid jitter
       if (distDelta < 0.1 && angleDelta < 1) {
           currentPuckPos.current = targetPuckPos.current;
           currentHeading.current = targetHeading.current;
@@ -909,7 +975,6 @@ export default function MapExplorerPage() {
           return;
       }
 
-      // Smooth Lerp
       currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
       currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.12);
@@ -917,18 +982,17 @@ export default function MapExplorerPage() {
       puckMarker.current.setLngLat(currentPuckPos.current);
       puckMarker.current.setRotation(currentHeading.current);
 
-      // Smart Camera (Auto-Pitch based on Speed)
       if (map.current && isNavigatingRef.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           const speed = currentSpeedRef.current;
-          const targetPitch = speed > 30 ? 60 : 40; // High pitch for high speed
-          const targetZoom = speed > 50 ? 16 : 18; // Zoom out for high speed
+          const targetPitch = speed > 30 ? 60 : 40; 
+          const targetZoom = speed > 50 ? 16 : 18; 
 
           map.current.easeTo({
               center: currentPuckPos.current,
               bearing: currentHeading.current,
               pitch: targetPitch,
               zoom: targetZoom,
-              duration: 500, // Smooth ease
+              duration: 500,
               padding: { top: 0, bottom: 200, left: 0, right: 0 }
           });
       }
@@ -942,7 +1006,6 @@ export default function MapExplorerPage() {
 
     map.current.once('style.load', () => {
         if (map.current) {
-             // Re-add 3D Terrain on style change
              map.current.addSource('mapbox-dem', {
                 'type': 'raster-dem',
                 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1',
@@ -1457,6 +1520,7 @@ export default function MapExplorerPage() {
             <ArLastMileView
                 userLocation={currentUserLocationForAR}
                 destination={[locationDetails.lng, locationDetails.lat]}
+                routePath={routeGeoJSON.current} // Pass full path to AR
                 onClose={() => setShowAR(false)}
                 hasParentPermission={hasArPermission}
                 setParentPermission={setHasArPermission}
