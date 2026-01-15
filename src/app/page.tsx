@@ -36,6 +36,11 @@ import {
 // 2. CONFIG & HELPERS
 // ==========================================
 
+// iOS Sensor Types
+interface DeviceOrientationEventiOS extends DeviceOrientationEvent {
+    requestPermission?: () => Promise<'granted' | 'denied'>;
+}
+
 const kantumruy = Kantumruy_Pro({
   subsets: ['khmer', 'latin'],
   weight: ['400', '500', '600', '700'],
@@ -113,19 +118,14 @@ function lerpAngle(current: number, target: number, factor: number) {
   return current + dist * factor;
 }
 
-// Optimized: Check only a subset of points on the route for performance.
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) {
     if (!routeCoords.length) return Infinity;
-
     let minDistance = Infinity;
-    // Check up to 50 points along the route to find the closest distance.
     const step = Math.max(1, Math.ceil(routeCoords.length / 50));
-
     for (let i = 0; i < routeCoords.length; i += step) {
         const coord = routeCoords[i];
         const dist = getDistanceFromLatLonInMeters(userLat, userLng, coord[1], coord[0]);
         if (dist < minDistance) minDistance = dist;
-        // Early exit if we're very close, saves computation.
         if (minDistance < 10) return minDistance;
     }
     return minDistance;
@@ -147,6 +147,7 @@ const simplifyGeometry = (coordinates: number[][]) => {
     return `line_string:${str}`;
 };
 
+// --- FIX 1: FIXED SYNTAX ERROR IN HIGHLIGHTMATCH ---
 const HighlightMatch = ({ text, match }: { text: string, match: string }) => {
     if (!match || !text) return <span>{text}</span>;
     const escapedMatch = match.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -154,7 +155,8 @@ const HighlightMatch = ({ text, match }: { text: string, match: string }) => {
     return (
         <span>
             {parts.map((part, i) =>
-                part.toLowerCase() === match.toLowerCase() ? <span key={i} className="text-indigo-400 font-bold">{part}</span> : part
+                part.toLowerCase() === match.toLowerCase() ? 
+                <span key={i} className="text-indigo-400 font-bold">{part}</span> : part
             )}
         </span>
     );
@@ -211,7 +213,7 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
-// 3. AR COMPONENT (FIXED FOR SAFARI & HTTPS)
+// 3. AR COMPONENT (FIXED SENSORS & SYNTAX)
 // ==========================================
 interface ArLastMileViewProps {
     userLocation: [number, number];
@@ -227,10 +229,11 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const [permissionError, setPermissionError] = useState<string | null>(null);
     const [isSecure, setIsSecure] = useState(true);
     const [sensorsActive, setSensorsActive] = useState(false);
+    const [showManualCalibrate, setShowManualCalibrate] = useState(false);
     const streamRef = useRef<MediaStream | null>(null);
     const hasFiredOnce = useRef(false);
 
-    // Direct DOM refs for high-frequency updates to avoid React re-renders.
+    // DOM refs
     const pinRef = useRef<HTMLDivElement>(null);
     const arrowLeftRef = useRef<HTMLDivElement>(null);
     const arrowRightRef = useRef<HTMLDivElement>(null);
@@ -239,20 +242,19 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const targetStatusRef = useRef<HTMLDivElement>(null);
 
     const sensorData = useRef({ heading: 0, rawHeading: 0 });
-    // Cache last rendered state to prevent unnecessary DOM writes.
     const lastRenderedState = useRef({ statusHTML: "", distanceText: "" });
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
         if (!hasFiredOnce.current) {
             setSensorsActive(true);
             hasFiredOnce.current = true;
+            setShowManualCalibrate(false);
         }
         let heading = 0;
-        // Prefer WebKit's stabilized compass heading on iOS.
         if (e.webkitCompassHeading) {
             heading = e.webkitCompassHeading;
         } else if (e.alpha !== null) {
-            heading = 360 - e.alpha; // Fallback for other devices
+            heading = 360 - e.alpha;
         }
         sensorData.current.rawHeading = (heading + 360) % 360;
     }, []);
@@ -267,14 +269,12 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
 
         const startCamera = async () => {
             try {
-                // Prefer rear camera strictly
                 streamRef.current = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: { exact: "environment" } },
                     audio: false
                 });
             } catch (err) {
                 try {
-                    // Fallback if exact mode fails
                     streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                 } catch (e) {
                     setPermissionError("Camera access denied or used by another app.");
@@ -287,9 +287,16 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         };
 
         const checkSavedPermission = () => {
-             // For devices without the permission API (non-iOS), assume permission is granted.
-            if (typeof (DeviceOrientationEvent as any).requestPermission !== 'function') {
+            // Check if this is a device that requires explicit permission (iOS 13+)
+            const isIOS = typeof (DeviceOrientationEvent as unknown as DeviceOrientationEventiOS).requestPermission === 'function';
+            if (!isIOS) {
                 setParentPermission(true);
+            } else if (hasParentPermission) {
+                // Already granted in parent state, just wait for events
+                // If events don't arrive in 3s, show manual button
+                setTimeout(() => {
+                    if (!hasFiredOnce.current) setShowManualCalibrate(true);
+                }, 3000);
             }
         };
 
@@ -300,13 +307,12 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
             if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
             cancelAnimationFrame(requestRef.current);
         };
-    }, [setParentPermission]);
+    }, [hasParentPermission, setParentPermission]);
 
-    // Attach Orientation Listeners
+    // Attach Listeners
     useEffect(() => {
         if (hasParentPermission) {
             window.addEventListener('deviceorientation', handleOrientation);
-            // 'deviceorientationabsolute' provides un-calibrated data, useful on some Androids
             if ('ondeviceorientationabsolute' in window) {
                  window.addEventListener('deviceorientationabsolute', handleOrientation as any);
             }
@@ -319,52 +325,50 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         }
     }, [hasParentPermission, handleOrientation]);
 
-    // iOS-specific permission request handler.
+    // iOS Request Permission Handler
     const requestAccess = async () => {
-        if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+        const deviceMotionEvent = DeviceOrientationEvent as unknown as DeviceOrientationEventiOS;
+        if (typeof deviceMotionEvent.requestPermission === 'function') {
             try {
-                const perm = await (DeviceOrientationEvent as any).requestPermission();
+                const perm = await deviceMotionEvent.requestPermission();
                 if (perm === 'granted') {
                     setParentPermission(true);
                     localStorage.setItem(AR_PERMISSION_KEY, 'true');
+                    setShowManualCalibrate(false);
                 } else {
                     setPermissionError("Compass Permission denied.");
                 }
             } catch (e) {
                 console.error(e);
-                setPermissionError("Error requesting permission.");
+                setPermissionError("Error requesting permission. Ensure you are on HTTPS.");
             }
         } else {
-            // Non-iOS devices.
             setParentPermission(true);
             localStorage.setItem(AR_PERMISSION_KEY, 'true');
         }
     };
 
-    // Main AR Animation Loop
+    // Animation Loop
     useEffect(() => {
         if (!hasParentPermission || !sensorsActive) return;
 
         const updateLoop = () => {
-            // Smooth (lerp) the heading for fluid rotation.
             sensorData.current.heading = lerpAngle(sensorData.current.heading, sensorData.current.rawHeading, 0.08);
             
             const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
             const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
             const diff = getShortestAngleDistance(bearing, sensorData.current.heading);
             
-            const fov = 60; // Estimated field of view
+            const fov = 60; 
             const screenWidth = window.innerWidth;
             const pxPerDegree = screenWidth / fov;
             const xOffset = diff * pxPerDegree;
             const isVisible = Math.abs(diff) < (fov / 2 + 10);
             const formattedDist = formatDistance(distance);
 
-            // Dynamic scaling for the pin to give a sense of depth.
             const clampedDistance = Math.max(5, Math.min(200, distance));
             const scale = 1.2 - ((clampedDistance - 5) / (195)) * 0.7;
 
-            // Direct DOM manipulation for performance.
             if (pinRef.current) {
                 pinRef.current.style.transform = `translate3d(calc(-50% + ${xOffset}px), -50%, 0) scale(${scale})`;
                 pinRef.current.style.opacity = isVisible ? '1' : '0';
@@ -377,8 +381,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
             if (arrowLeftRef.current) arrowLeftRef.current.style.opacity = !isVisible && xOffset < 0 ? '1' : '0';
             if (arrowRightRef.current) arrowRightRef.current.style.opacity = !isVisible && xOffset > 0 ? '1' : '0';
             
-            // NOTE: Using innerHTML here is a deliberate optimization. In a 60fps loop,
-            // this avoids React's reconciliation overhead for simple text changes.
             let newStatusHTML = "";
             if (isVisible) {
                 newStatusHTML = `<div class="text-emerald-400 font-bold text-sm">DESTINATION AHEAD</div><div class="text-white text-xs">${formattedDist}</div>`;
@@ -401,8 +403,8 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         return () => cancelAnimationFrame(requestRef.current);
     }, [userLocation, destination, hasParentPermission, sensorsActive]);
 
-    const showPermissionButton = !hasParentPermission && !permissionError && isSecure;
-    const showCalibratingMessage = hasParentPermission && !sensorsActive && !permissionError && isSecure;
+    const showPermissionButton = !hasParentPermission && !permissionError && isSecure && !showManualCalibrate;
+    const showCalibratingMessage = hasParentPermission && !sensorsActive && !permissionError && isSecure && !showManualCalibrate;
 
     return (
         <div className="fixed inset-0 z-[60] bg-black">
@@ -422,12 +424,26 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                  </div>
             )}
 
+            {showManualCalibrate && (
+                 <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
+                    <div className="text-center p-6 max-w-sm">
+                        <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4 animate-bounce"/>
+                        <h3 className="text-white text-xl font-bold mb-2">Sensors Not Detected</h3>
+                        <p className="text-zinc-400 mb-6 text-sm">We can't detect movement. Please tap below to re-request permission.</p>
+                        <Button onClick={requestAccess} className="bg-yellow-600 hover:bg-yellow-700 text-white w-full rounded-xl h-12">
+                            Retry Access
+                        </Button>
+                        <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400 hover:text-white w-full">Cancel</Button>
+                    </div>
+                 </div>
+            )}
+
             {showCalibratingMessage && (
                 <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
                     <div className="text-center p-6 max-w-sm">
                         <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-spin"/>
                         <h3 className="text-white text-xl font-bold mb-2">Calibrating Sensors</h3>
-                        <p className="text-zinc-400 text-sm">Waiting for sensor data... Please move your device around.</p>
+                        <p className="text-zinc-400 text-sm">Waiting for sensor data... Please move your device.</p>
                     </div>
                 </div>
             )}
@@ -453,7 +469,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                 </div>
             )}
 
-            {/* Main AR UI - Only show if sensors are actually ACTIVE */}
             {hasParentPermission && sensorsActive && (
                 <>
                     <div
@@ -548,11 +563,9 @@ export default function MapExplorerPage() {
   const lastWeatherFetchTime = useRef<number>(0);
   const addressAbortController = useRef<AbortController | null>(null);
   const lastRerouteTime = useRef<number>(0);
-  // Use refs for state read inside animation loop to avoid dependency changes
   const isNavigatingRef = useRef(false);
   const currentSpeedRef = useRef(0);
 
-  // --- HYBRID LOCATION SYSTEM REFS (for smooth puck animation) ---
   const currentPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const currentHeading = useRef<number>(0);
@@ -562,7 +575,6 @@ export default function MapExplorerPage() {
   const animationFrameId = useRef<number>(0);
 
   const { toast } = useToast();
-  // --- STATE MANAGEMENT ---
   const [isNavigating, setIsNavigating] = useState(false);
   const [isSecureContext, setIsSecureContext] = useState(true);
 
@@ -578,15 +590,12 @@ export default function MapExplorerPage() {
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
 
-  // Layer States
   const [isTrafficVisible, setIsTrafficVisible] = useState(true);
   const [isRainMode, setIsRainMode] = useState(false);
   const [isWindMode, setIsWindMode] = useState(false);
 
-  // AR & Permission States
   const [showAR, setShowAR] = useState(false);
   const [hasArPermission, setHasArPermission] = useState(false);
-  // State to pass real-time location to AR view, ensuring it re-renders
   const [currentUserLocationForAR, setCurrentUserLocationForAR] = useState<[number, number] | null>(null);
 
   const [weather, setWeather] = useState<WeatherData | null>(null);
@@ -594,19 +603,16 @@ export default function MapExplorerPage() {
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [currentStyle, setCurrentStyle] = useState(STYLES.DARK);
 
-  // Sync state to refs for use in callbacks without triggering re-renders
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
   useEffect(() => { isNavigatingRef.current = isNavigating; }, [isNavigating]);
   useEffect(() => { currentSpeedRef.current = currentSpeed; }, [currentSpeed]);
 
-  // Early HTTPS context check
   useEffect(() => {
     if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
       setIsSecureContext(false);
     }
   }, []);
 
-  // Restore AR permission from localStorage on load
   useEffect(() => {
     if (typeof window !== 'undefined') {
         const saved = localStorage.getItem(AR_PERMISSION_KEY);
@@ -614,7 +620,6 @@ export default function MapExplorerPage() {
     }
   }, []);
 
-  // Load available speech synthesis voices
   useEffect(() => {
     const updateVoices = () => {
         if (typeof window !== 'undefined' && window.speechSynthesis) {
@@ -635,7 +640,6 @@ export default function MapExplorerPage() {
     window.speechSynthesis.cancel();
 
     utteranceRef.current = new SpeechSynthesisUtterance(text);
-    // Prefer Khmer voice, then high-quality English voices
     const preferredVoice = availableVoices.find(v => v.lang.includes('km')) ||
                            availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')) ||
                            availableVoices.find(v => v.name.includes('Samantha'));
@@ -675,7 +679,7 @@ export default function MapExplorerPage() {
                   description: data.weather[0].description
               });
           }
-      } catch (err) { /* silent fail for non-critical feature */ }
+      } catch (err) { /* silent fail */ }
   }, [weather]);
 
   const searchPlaces = async (query: string, center: [number, number], bboxOnly: boolean = false, signal?: AbortSignal) => {
@@ -684,7 +688,6 @@ export default function MapExplorerPage() {
     let searchQuery = query.trim();
     const lowerQuery = query.toLowerCase();
 
-    // Handle coordinate search
     if (isCoordinate(searchQuery)) {
         const [lat, lng] = searchQuery.split(',').map(n => parseFloat(n.trim()));
         const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${MAPBOX_TOKEN}&language=km,en`;
@@ -696,7 +699,6 @@ export default function MapExplorerPage() {
         } catch (e) { return []; }
     }
 
-    // Use Khmer aliases for common searches
     if (KHMER_SEARCH_ALIASES[searchQuery]) {
         searchQuery = KHMER_SEARCH_ALIASES[searchQuery];
     } else if (lowerQuery.match(/gas|fuel|station|បូមសាំង/i)) searchQuery = "gas station";
@@ -725,14 +727,12 @@ export default function MapExplorerPage() {
     }
   };
 
-  // Helper to restore all custom layers after a map style change.
   const restoreMapLayers = useCallback((instance: MapboxMap, currentTraffic: boolean, currentRain: boolean, currentWind: boolean) => {
       if(!instance || !instance.getStyle()) return;
 
       const layers = instance.getStyle().layers;
       const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
 
-      // 1. 3D Buildings
       if (!instance.getLayer('3d-buildings')) {
           instance.addLayer({
               'id': '3d-buildings', 'source': 'composite', 'source-layer': 'building',
@@ -746,7 +746,6 @@ export default function MapExplorerPage() {
           }, labelLayerId);
       }
 
-      // 2. Traffic Layer
       if (currentTraffic) {
           if (!instance.getSource('mapbox-traffic')) {
               instance.addSource('mapbox-traffic', { type: 'vector', url: 'mapbox://mapbox.mapbox-traffic-v1' });
@@ -771,7 +770,6 @@ export default function MapExplorerPage() {
           }
       }
 
-      // 3. Rain Layer
       if (currentRain && WEATHER_API_KEY) {
            if (!instance.getSource('rain-source')) {
                 instance.addSource('rain-source', {
@@ -791,7 +789,6 @@ export default function MapExplorerPage() {
            }
       }
 
-      // 4. Wind Layer
       if (currentWind && WEATHER_API_KEY) {
            if (!instance.getSource('wind-source')) {
                 instance.addSource('wind-source', {
@@ -811,7 +808,6 @@ export default function MapExplorerPage() {
            }
       }
 
-      // 5. Navigation Route (if it exists)
       if (routeGeoJSON.current) {
           if (!instance.getSource('custom-route-source')) {
              instance.addSource('custom-route-source', {
@@ -874,7 +870,6 @@ export default function MapExplorerPage() {
     if (!instance) return;
     const source = instance.getSource('custom-route-source') as GeoJSONSource;
     if (source) {
-        // Clearing data is more efficient than removing and re-adding the source/layers.
         source.setData({ type: 'FeatureCollection', features: [] });
     }
   }, []);
@@ -905,7 +900,6 @@ export default function MapExplorerPage() {
           }
 
           const leg = route.legs[0];
-          // Provide the next major step if the first step is very short.
           const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1])
             ? leg.steps[1].maneuver.instruction
             : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
@@ -939,35 +933,35 @@ export default function MapExplorerPage() {
     finally { setIsFetchingRichDetails(false); }
   };
 
-  // Performance-critical animation loop for the user location puck.
-  // Uses `requestAnimationFrame` and direct marker manipulation to avoid React re-renders.
   const animatePuck = useCallback(() => {
-      if (!puckMarker.current || !isMounted.current || !map.current) return;
+      if (!puckMarker.current || !isMounted.current) {
+        animationFrameId.current = 0;
+        return;
+      }
+
+      const distDelta = getDistanceFromLatLonInMeters(
+          currentPuckPos.current[1], currentPuckPos.current[0],
+          targetPuckPos.current[1], targetPuckPos.current[0]
+      );
+      const angleDelta = Math.abs(getShortestAngleDistance(targetHeading.current, currentHeading.current));
       
-      // Smoothly interpolate position for a fluid feel.
-      const newLng = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
-      const newLat = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
-
-      // Use GPS heading when moving, otherwise use the more responsive compass heading.
-      const isMoving = currentSpeedRef.current > 5;
-      targetHeading.current = isMoving ? gpsHeading.current : compassHeading.current;
-
-      // Smoothly interpolate the heading angle.
-      currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.12);
-
-      // Teleport puck if it's too far from the target (e.g., after GPS jump).
-      if (Math.abs(targetPuckPos.current[0] - currentPuckPos.current[0]) > 0.01) {
+      if (distDelta < 0.1 && angleDelta < 1) {
           currentPuckPos.current = targetPuckPos.current;
           currentHeading.current = targetHeading.current;
-      } else {
-          currentPuckPos.current = [newLng, newLat];
+          puckMarker.current.setLngLat(currentPuckPos.current);
+          puckMarker.current.setRotation(currentHeading.current);
+          animationFrameId.current = 0;
+          return;
       }
+
+      currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
+      currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
+      currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.12);
 
       puckMarker.current.setLngLat(currentPuckPos.current);
       puckMarker.current.setRotation(currentHeading.current);
 
-      // If navigating and the user isn't interacting, keep the puck centered and oriented.
-      if (isNavigatingRef.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
+      if (map.current && isNavigatingRef.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           map.current.easeTo({
               center: currentPuckPos.current,
               bearing: currentHeading.current,
@@ -975,6 +969,7 @@ export default function MapExplorerPage() {
               padding: { top: 0, bottom: 200, left: 0, right: 0 }
           });
       }
+      
       animationFrameId.current = requestAnimationFrame(animatePuck);
   }, []);
 
@@ -984,7 +979,6 @@ export default function MapExplorerPage() {
 
     map.current.once('style.load', () => {
         if (map.current) {
-            // Restore layers on the new style.
             restoreMapLayers(map.current, isTrafficVisible, isRainMode, isWindMode);
         }
     });
@@ -1050,7 +1044,6 @@ export default function MapExplorerPage() {
     const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER);
     clearSearchMarkers();
 
-    // If navigating, use Geoapify's powerful "search along route" feature.
     if (isNavigating && routeGeoJSON.current && geoKey) {
         let category = "commercial";
         if (query === "gas station") category = "service.vehicle.fuel";
@@ -1079,13 +1072,11 @@ export default function MapExplorerPage() {
             plotSearchResults(fallbackResults, query);
         }
     } else {
-        // Standard proximity search if not navigating.
         const results = await searchPlaces(query, center, true);
         plotSearchResults(results, query);
     }
   }, [clearSearchMarkers, plotSearchResults, toast, isNavigating]);
 
-  // --- MAP INITIALIZATION ---
   useEffect(() => {
     isMounted.current = true;
     if (!MAPBOX_TOKEN || !mapContainer.current || map.current) return;
@@ -1143,7 +1134,10 @@ export default function MapExplorerPage() {
         geolocate.trigger();
 
         restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode);
-        animatePuck();
+        
+        if (!animationFrameId.current) {
+            animationFrameId.current = requestAnimationFrame(animatePuck);
+        }
 
         if ('geolocation' in navigator) {
             watchId.current = navigator.geolocation.watchPosition(
@@ -1155,19 +1149,25 @@ export default function MapExplorerPage() {
                     const speedKmh = speed ? Math.round(speed * 3.6) : 0;
                     setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev));
                     userLocation.current = [longitude, latitude];
-                    setCurrentUserLocationForAR([longitude, latitude]); // Update state for AR view
+                    setCurrentUserLocationForAR([longitude, latitude]); 
                     targetPuckPos.current = [longitude, latitude];
                     if (heading !== null && !isNaN(heading)) gpsHeading.current = heading;
+                    
+                    const isMoving = speedKmh > 5;
+                    targetHeading.current = isMoving && heading !== null ? heading : compassHeading.current;
+
+                    if (!animationFrameId.current) {
+                        animationFrameId.current = requestAnimationFrame(animatePuck);
+                    }
+
                     fetchWeather(latitude, longitude);
 
                     if (isNavigatingRef.current && routeGeoJSON.current && activeDestination.current) {
                         const remainingDist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]);
                         setRouteDetails(prev => prev ? { ...prev, distance: remainingDist, duration: (remainingDist / 1000) / (Math.max(20, speedKmh) / 60) * 60 } : null);
 
-                        // Off-route detection and rerouting logic.
                         if (!isRecalculating.current && (Date.now() - lastRerouteTime.current > 5000)) {
                             const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current);
-
                             if (distanceToPath > REROUTE_THRESHOLD_METERS) {
                                 isRecalculating.current = true;
                                 lastRerouteTime.current = Date.now();
@@ -1200,11 +1200,7 @@ export default function MapExplorerPage() {
     const handleMapClick = (e: MapMouseEvent) => {
         if (!isNavigatingRef.current) handleMapSelection(e.lngLat);
     };
-
-    // BUG FIX & MEMORY LEAK PREVENTION
-    // The Mapbox .on() method only accepts two arguments (type, listener).
-    // The third argument `{ passive: true }` was invalid and caused the TypeScript error.
-    // This has been removed. All listeners are now also properly removed on unmount.
+    
     mapInstance.on('touchstart', handleInteractionStart);
     mapInstance.on('dragstart', handleInteractionStart);
     mapInstance.on('pitchstart', handleInteractionStart);
@@ -1214,7 +1210,9 @@ export default function MapExplorerPage() {
 
     return () => {
       isMounted.current = false;
-      cancelAnimationFrame(animationFrameId.current);
+      if (animationFrameId.current) {
+          cancelAnimationFrame(animationFrameId.current);
+      }
       if (typeof window !== 'undefined') {
           window.removeEventListener('deviceorientation', handleOrientation);
           document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -1241,7 +1239,6 @@ export default function MapExplorerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Animate wind layer opacity for a subtle effect
   useEffect(() => {
     let frameId: number;
     const animateWindLayer = () => {
@@ -1256,7 +1253,6 @@ export default function MapExplorerPage() {
     return () => cancelAnimationFrame(frameId);
   }, [isWindMode]);
 
-  // Speak new navigation instructions when they change
   useEffect(() => {
     if (routeDetails?.instruction && isNavigating && lastSpokenInstruction.current !== routeDetails.instruction) {
         speak(routeDetails.instruction);
@@ -1264,14 +1260,12 @@ export default function MapExplorerPage() {
     }
   }, [routeDetails, speak, isNavigating]);
 
-  // Fetch address details when a location is selected
   useEffect(() => {
     if (locationDetails) {
       if (addressAbortController.current) addressAbortController.current.abort();
       const controller = new AbortController();
       addressAbortController.current = controller;
 
-      // FIX: Set loading state immediately to prevent a 600ms delay in UI feedback.
       setIsFetchingAddress(true);
       setAddressDetails(null);
 
@@ -1294,7 +1288,7 @@ export default function MapExplorerPage() {
           } finally {
             if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false);
           }
-      }, 600); // Debounce to prevent spamming API on rapid clicks
+      }, 600); 
 
       return () => clearTimeout(timeoutId);
     }
@@ -1321,9 +1315,15 @@ export default function MapExplorerPage() {
         if (!isMuted) speak("ចាប់ផ្តើមការនាំផ្លូវ");
         setIsDrawerOpen(false);
 
-        if(map.current) {
+        if(map.current && routeGeoJSON.current?.length > 1) {
+            const initialRouteBearing = getBearing(
+                routeGeoJSON.current[0][1],
+                routeGeoJSON.current[0][0],
+                routeGeoJSON.current[1][1],
+                routeGeoJSON.current[1][0]
+            );
             map.current.flyTo({
-                center: userLocation.current, zoom: 19, pitch: 70, bearing: map.current.getBearing(),
+                center: userLocation.current, zoom: 19, pitch: 70, bearing: initialRouteBearing,
                 padding: { top: 0, bottom: 200, left: 0, right: 0 },
                 essential: true, duration: 2000
             });
@@ -1430,7 +1430,6 @@ export default function MapExplorerPage() {
     if(map.current) map.current.easeTo({ bearing: 0, pitch: 45, duration: 800 });
   }, []);
 
-  // Deep-link helpers
   const openGrab = () => {
       if(!locationDetails) return;
       const url = `grab://open?screenType=GRABRIDE&dropOffLatitude=${locationDetails.lat}&dropOffLongitude=${locationDetails.lng}`;
@@ -1726,7 +1725,6 @@ const BottomControls = memo(({
     const handleClearInput = (e: React.MouseEvent) => {
         e.stopPropagation();
         setQuery("");
-        // UX Improvement: Refocus input after clearing for faster searching.
         inputRef.current?.focus();
     }
 
