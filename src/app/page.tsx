@@ -36,7 +36,7 @@ import {
 // 2. CONFIG & HELPERS
 // ==========================================
 
-// iOS Sensor Types
+// iOS Sensor Types Interface
 interface DeviceOrientationEventiOS extends DeviceOrientationEvent {
     requestPermission?: () => Promise<'granted' | 'denied'>;
 }
@@ -147,7 +147,7 @@ const simplifyGeometry = (coordinates: number[][]) => {
     return `line_string:${str}`;
 };
 
-// --- FIX 1: FIXED SYNTAX ERROR IN HIGHLIGHTMATCH ---
+// --- FIX: Syntax error resolved here ---
 const HighlightMatch = ({ text, match }: { text: string, match: string }) => {
     if (!match || !text) return <span>{text}</span>;
     const escapedMatch = match.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -213,7 +213,7 @@ type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 
 // ==========================================
-// 3. AR COMPONENT (FIXED SENSORS & SYNTAX)
+// 3. AR COMPONENT (3D 360° UPGRADE)
 // ==========================================
 interface ArLastMileViewProps {
     userLocation: [number, number];
@@ -233,16 +233,13 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     const streamRef = useRef<MediaStream | null>(null);
     const hasFiredOnce = useRef(false);
 
-    // DOM refs
-    const pinRef = useRef<HTMLDivElement>(null);
-    const arrowLeftRef = useRef<HTMLDivElement>(null);
-    const arrowRightRef = useRef<HTMLDivElement>(null);
+    // 3D World Refs
+    const worldRef = useRef<HTMLDivElement>(null);
     const distanceTextRef = useRef<HTMLDivElement>(null);
     const bearingTextRef = useRef<HTMLSpanElement>(null);
-    const targetStatusRef = useRef<HTMLDivElement>(null);
-
+    
     const sensorData = useRef({ heading: 0, rawHeading: 0 });
-    const lastRenderedState = useRef({ statusHTML: "", distanceText: "" });
+    const lastRenderedState = useRef({ distanceText: "" });
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => {
         if (!hasFiredOnce.current) {
@@ -256,7 +253,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         } else if (e.alpha !== null) {
             heading = 360 - e.alpha;
         }
-        sensorData.current.rawHeading = (heading + 360) % 360;
+        sensorData.current.rawHeading = heading;
     }, []);
 
     // Initial Camera & Permission Check
@@ -287,13 +284,10 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         };
 
         const checkSavedPermission = () => {
-            // Check if this is a device that requires explicit permission (iOS 13+)
             const isIOS = typeof (DeviceOrientationEvent as unknown as DeviceOrientationEventiOS).requestPermission === 'function';
             if (!isIOS) {
                 setParentPermission(true);
             } else if (hasParentPermission) {
-                // Already granted in parent state, just wait for events
-                // If events don't arrive in 3s, show manual button
                 setTimeout(() => {
                     if (!hasFiredOnce.current) setShowManualCalibrate(true);
                 }, 3000);
@@ -325,7 +319,6 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         }
     }, [hasParentPermission, handleOrientation]);
 
-    // iOS Request Permission Handler
     const requestAccess = async () => {
         const deviceMotionEvent = DeviceOrientationEvent as unknown as DeviceOrientationEventiOS;
         if (typeof deviceMotionEvent.requestPermission === 'function') {
@@ -339,8 +332,7 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
                     setPermissionError("Compass Permission denied.");
                 }
             } catch (e) {
-                console.error(e);
-                setPermissionError("Error requesting permission. Ensure you are on HTTPS.");
+                setPermissionError("Error requesting permission.");
             }
         } else {
             setParentPermission(true);
@@ -348,54 +340,34 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
         }
     };
 
-    // Animation Loop
+    // 3D Animation Loop
     useEffect(() => {
         if (!hasParentPermission || !sensorsActive) return;
 
         const updateLoop = () => {
-            sensorData.current.heading = lerpAngle(sensorData.current.heading, sensorData.current.rawHeading, 0.08);
-            
+            const currentObj = sensorData.current;
+            const diff = getShortestAngleDistance(currentObj.rawHeading, currentObj.heading);
+            currentObj.heading += diff * 0.1;
+
             const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
             const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
-            const diff = getShortestAngleDistance(bearing, sensorData.current.heading);
-            
-            const fov = 60; 
-            const screenWidth = window.innerWidth;
-            const pxPerDegree = screenWidth / fov;
-            const xOffset = diff * pxPerDegree;
-            const isVisible = Math.abs(diff) < (fov / 2 + 10);
             const formattedDist = formatDistance(distance);
 
-            const clampedDistance = Math.max(5, Math.min(200, distance));
-            const scale = 1.2 - ((clampedDistance - 5) / (195)) * 0.7;
-
-            if (pinRef.current) {
-                pinRef.current.style.transform = `translate3d(calc(-50% + ${xOffset}px), -50%, 0) scale(${scale})`;
-                pinRef.current.style.opacity = isVisible ? '1' : '0';
-            }
+            if (bearingTextRef.current) bearingTextRef.current.innerText = `${Math.round(bearing)}°`;
+            
             if (distanceTextRef.current && lastRenderedState.current.distanceText !== formattedDist) {
                 distanceTextRef.current.innerText = formattedDist;
                 lastRenderedState.current.distanceText = formattedDist;
             }
-            if (bearingTextRef.current) bearingTextRef.current.innerText = `${Math.round(bearing)}°`;
-            if (arrowLeftRef.current) arrowLeftRef.current.style.opacity = !isVisible && xOffset < 0 ? '1' : '0';
-            if (arrowRightRef.current) arrowRightRef.current.style.opacity = !isVisible && xOffset > 0 ? '1' : '0';
-            
-            let newStatusHTML = "";
-            if (isVisible) {
-                newStatusHTML = `<div class="text-emerald-400 font-bold text-sm">DESTINATION AHEAD</div><div class="text-white text-xs">${formattedDist}</div>`;
-            } else {
-                const dir = xOffset < 0 ? "Left" : "Right";
-                newStatusHTML = `<div class="text-white font-bold text-sm">Turn ${dir}</div><div class="text-zinc-400 text-xs">Target is off-screen</div>`;
+
+            if (worldRef.current) {
+                // Determine relative bearing: where the object is relative to user's heading
+                // If heading is 0 (North) and Bearing is 0 (North), rotation is 0.
+                // If heading is 90 (East) and Bearing is 0 (North), world must rotate -90 (Left) to show North.
+                const rotY = -(currentObj.heading - bearing); 
+                worldRef.current.style.transform = `translateZ(0) rotateY(${rotY}deg)`;
             }
 
-            if (targetStatusRef.current && lastRenderedState.current.statusHTML !== newStatusHTML) {
-                targetStatusRef.current.innerHTML = newStatusHTML;
-                const parentEl = targetStatusRef.current.parentElement!;
-                parentEl.className = `inline-flex items-center gap-3 px-4 py-2 rounded-full border backdrop-blur-xl shadow-2xl transition-colors duration-500 ${isVisible ? 'bg-emerald-500/20 border-emerald-500/50' : 'bg-black/60 border-white/10'}`;
-                lastRenderedState.current.statusHTML = newStatusHTML;
-            }
-            
             requestRef.current = requestAnimationFrame(updateLoop);
         };
 
@@ -404,130 +376,112 @@ const ArLastMileView = ({ userLocation, destination, onClose, hasParentPermissio
     }, [userLocation, destination, hasParentPermission, sensorsActive]);
 
     const showPermissionButton = !hasParentPermission && !permissionError && isSecure && !showManualCalibrate;
-    const showCalibratingMessage = hasParentPermission && !sensorsActive && !permissionError && isSecure && !showManualCalibrate;
 
     return (
-        <div className="fixed inset-0 z-[60] bg-black">
+        <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
+            <style jsx>{`
+                .perspective-container {
+                    perspective: 800px;
+                    perspective-origin: 50% 50%;
+                }
+                .world-3d {
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    width: 0;
+                    height: 0;
+                    transform-style: preserve-3d;
+                }
+                .floor-path {
+                    position: absolute;
+                    top: 0;
+                    left: -100px;
+                    width: 200px;
+                    height: 800px;
+                    background: repeating-linear-gradient(
+                        0deg,
+                        rgba(59, 130, 246, 0.0) 0px,
+                        rgba(59, 130, 246, 0.0) 40px,
+                        rgba(59, 130, 246, 0.6) 40px,
+                        rgba(59, 130, 246, 0.8) 80px
+                    );
+                    clip-path: polygon(0% 0%, 50% 20%, 100% 0%, 100% 80%, 50% 100%, 0% 80%);
+                    transform-origin: 50% 100%;
+                    transform: rotateX(90deg) translateY(-800px); 
+                    animation: flow 1s linear infinite;
+                }
+                @keyframes flow {
+                    from { background-position: 0 0; }
+                    to { background-position: 0 80px; }
+                }
+                .destination-marker {
+                    position: absolute;
+                    left: 0;
+                    top: 0;
+                    transform-style: preserve-3d;
+                    transform: translateZ(-600px) translateY(-100px); 
+                }
+            `}</style>
+
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
 
             {showPermissionButton && (
                  <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
                     <div className="text-center p-6 max-w-sm">
                         <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/>
-                        <h3 className="text-white text-xl font-bold mb-2">Enable Compass</h3>
-                        <p className="text-zinc-400 mb-6 text-sm">AR navigation requires access to your device orientation sensors.</p>
-                        <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">
-                            Allow Access
-                        </Button>
-                        <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400 hover:text-white w-full">Cancel</Button>
+                        <h3 className="text-white text-xl font-bold mb-2">Enable AR</h3>
+                        <p className="text-zinc-400 mb-6 text-sm">Allow access to compass sensors.</p>
+                        <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">Allow Access</Button>
+                        <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400">Cancel</Button>
                     </div>
                  </div>
             )}
-
             {showManualCalibrate && (
                  <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
                     <div className="text-center p-6 max-w-sm">
-                        <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4 animate-bounce"/>
-                        <h3 className="text-white text-xl font-bold mb-2">Sensors Not Detected</h3>
-                        <p className="text-zinc-400 mb-6 text-sm">We can't detect movement. Please tap below to re-request permission.</p>
-                        <Button onClick={requestAccess} className="bg-yellow-600 hover:bg-yellow-700 text-white w-full rounded-xl h-12">
-                            Retry Access
-                        </Button>
-                        <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400 hover:text-white w-full">Cancel</Button>
+                        <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4"/>
+                        <h3 className="text-white text-xl font-bold mb-2">Sensors Inactive</h3>
+                        <p className="text-zinc-400 mb-4 text-sm">We aren't receiving motion data.</p>
+                        <Button onClick={requestAccess} className="bg-yellow-600 hover:bg-yellow-700 text-white w-full rounded-xl h-12">Retry Permission</Button>
+                        <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400">Close</Button>
                     </div>
                  </div>
             )}
-
-            {showCalibratingMessage && (
-                <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80">
-                    <div className="text-center p-6 max-w-sm">
-                        <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-spin"/>
-                        <h3 className="text-white text-xl font-bold mb-2">Calibrating Sensors</h3>
-                        <p className="text-zinc-400 text-sm">Waiting for sensor data... Please move your device.</p>
-                    </div>
-                </div>
-            )}
-
             {!isSecure && (
                 <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/90 text-white p-6 text-center">
-                    <div>
-                        <Lock className="h-12 w-12 text-red-500 mx-auto mb-4"/>
-                        <h3 className="text-xl font-bold mb-2">HTTPS Required</h3>
-                        <p className="mb-4 text-zinc-400">iOS requires a secure connection (HTTPS) to access motion sensors.</p>
-                        <Button onClick={onClose} variant="secondary">Close</Button>
-                    </div>
-                </div>
-            )}
-
-            {permissionError && (
-                <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/90 text-white p-6 text-center">
-                    <div>
-                        <AlertTriangle className="h-10 w-10 text-red-500 mx-auto mb-2"/>
-                        <p className="mb-4">{permissionError}</p>
-                        <Button onClick={onClose} variant="secondary">Close AR</Button>
-                    </div>
+                    <Lock className="h-12 w-12 text-red-500 mx-auto mb-4"/><p>HTTPS Required for AR</p><Button onClick={onClose} variant="secondary" className="mt-4">Close</Button>
                 </div>
             )}
 
             {hasParentPermission && sensorsActive && (
                 <>
-                    <div
-                        ref={pinRef}
-                        className="absolute top-1/2 left-1/2 flex flex-col items-center pointer-events-none will-change-transform transition-opacity duration-200"
-                        style={{ opacity: 0 }}
-                    >
-                        <div className="relative animate-bounce-slow">
-                            <div ref={distanceTextRef} className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 bg-black/70 text-white px-3 py-1.5 rounded-full text-sm font-bold shadow-lg whitespace-nowrap border border-white/20">
-                                0m
-                            </div>
-                            <div className="relative">
-                                <div className="w-20 h-20 bg-red-600 rounded-full border-[6px] border-white shadow-2xl flex items-center justify-center">
-                                    <div className="w-8 h-8 bg-white rounded-full"></div>
+                    <div ref={worldRef} className="world-3d">
+                        <div className="floor-path" />
+                        <div className="destination-marker flex flex-col items-center justify-center">
+                            <div className="relative animate-bounce-slow">
+                                <div ref={distanceTextRef} className="bg-indigo-600 text-white px-3 py-1 rounded-full text-lg font-bold shadow-lg border-2 border-white mb-2 whitespace-nowrap">0m</div>
+                                <div className="w-16 h-16 bg-red-600 rounded-full border-4 border-white shadow-xl flex items-center justify-center">
+                                    <MapPin className="h-8 w-8 text-white" />
                                 </div>
-                                <div
-                                    className="absolute top-[85%] left-1/2 -translate-x-1/2 w-0 h-0"
-                                    style={{
-                                        borderLeft: '15px solid transparent',
-                                        borderRight: '15px solid transparent',
-                                        borderTop: '25px solid #dc2626',
-                                    }}
-                                />
-                            </div>
-                        </div>
-                        <div className="w-16 h-4 bg-black/40 rounded-full blur-md mt-2"></div>
-                    </div>
-
-                    <div className="absolute top-1/2 left-0 right-0 -translate-y-1/2 flex items-center justify-between px-2 pointer-events-none">
-                        <div ref={arrowLeftRef} className="transition-opacity duration-300 opacity-0">
-                            <div className="bg-black/60 backdrop-blur p-3 rounded-full border border-white/20 animate-pulse">
-                                <ChevronLeft className="h-10 w-10 text-white" />
-                            </div>
-                        </div>
-                        <div ref={arrowRightRef} className="transition-opacity duration-300 opacity-0">
-                            <div className="bg-black/60 backdrop-blur p-3 rounded-full border border-white/20 animate-pulse">
-                                <ChevronRight className="h-10 w-10 text-white" />
+                                <div className="w-4 h-20 bg-white/50 mx-auto rounded-full mt-[-10px] blur-[2px]"></div>
                             </div>
                         </div>
                     </div>
 
                     <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-[65]">
                         <div className="bg-black/60 backdrop-blur text-white px-4 py-2 rounded-xl border border-white/10">
-                            <p className="text-xs text-gray-300 font-bold uppercase tracking-wider">Target</p>
+                            <p className="text-xs text-gray-300 font-bold uppercase tracking-wider">Bearing</p>
                             <p className="text-lg font-bold font-mono"><span ref={bearingTextRef}>0°</span></p>
                         </div>
-                        <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20 hover:bg-red-500/80 transition-colors">
+                        <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20">
                             <X className="h-5 w-5" />
                         </Button>
                     </div>
-
-                    <div className="absolute bottom-10 left-0 right-0 text-center px-6 z-[65]">
-                         <div className="inline-flex items-center gap-3 px-4 py-2 rounded-full border backdrop-blur-xl shadow-2xl transition-colors duration-500 bg-black/60 border-white/10">
-                            <Crosshair className="h-6 w-6 text-white"/>
-                            <div className="text-left" ref={targetStatusRef}>
-                                <div className="text-white font-bold text-sm">Searching...</div>
-                                <div className="text-zinc-400 text-xs">Calibrating sensors</div>
-                            </div>
-                         </div>
+                    
+                    <div className="absolute bottom-10 w-full text-center pointer-events-none">
+                        <div className="inline-block bg-black/50 backdrop-blur px-4 py-2 rounded-full text-white text-xs font-bold uppercase tracking-widest border border-white/10">
+                            Follow the path
+                        </div>
                     </div>
                 </>
             )}
