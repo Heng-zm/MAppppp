@@ -6,6 +6,8 @@
 import React, { useRef, useEffect, useState, useCallback, memo, useMemo } from 'react';
 import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap, GeoJSONSource, MapMouseEvent } from 'mapbox-gl';
 import { Kantumruy_Pro } from 'next/font/google';
+import { createClient } from '@supabase/supabase-js'; // Backend for Safety Mode
+import { QRCodeSVG } from 'qrcode.react'; // QR for Safety Mode
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 // UI Components
@@ -14,6 +16,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFo
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
@@ -30,7 +33,7 @@ import {
   ChevronDown, ChevronUp, Trash2, ChevronLeft, ChevronRight,
   Phone, Globe, Satellite, Map as MapIcon,
   CarFront, ExternalLink, Camera, ScanEye, Lock,
-  Mountain
+  Mountain, Shield, Share2, StopCircle, Copy // Added Safety Icons
 } from 'lucide-react';
 
 // ==========================================
@@ -55,8 +58,16 @@ const kantumruy = Kantumruy_Pro({
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const WEATHER_API_KEY = process.env.NEXT_PUBLIC_OPENWEATHER_API_KEY;
 const GEOAPIFY_API_KEY = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY;
+// Supabase Config
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
+
+// Initialize Supabase only if keys exist
+const supabase = (SUPABASE_URL && SUPABASE_KEY) 
+    ? createClient(SUPABASE_URL, SUPABASE_KEY) 
+    : null;
 
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
@@ -576,6 +587,12 @@ export default function MapExplorerPage() {
   const isNavigatingRef = useRef(false);
   const currentSpeedRef = useRef(0);
 
+  // Safety Mode Refs & State
+  const lastSafetyUpdate = useRef<number>(0);
+  const [isSafetyModeActive, setIsSafetyModeActive] = useState(false);
+  const [currentTripId, setCurrentTripId] = useState<string | null>(null);
+  const [showShareDialog, setShowShareDialog] = useState(false);
+
   const currentPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const currentHeading = useRef<number>(0);
@@ -658,6 +675,30 @@ export default function MapExplorerPage() {
 
     window.speechSynthesis.speak(utteranceRef.current);
   }, [isMuted, availableVoices]);
+
+  // --- SAFETY MODE FUNCTIONS ---
+  const startSafetyMode = async () => {
+      if (!supabase) { toast({ title: "Error", description: "Backend not configured." }); return; }
+      if (!userLocation.current) { toast({ title: "No GPS", description: "Wait for location signal." }); return; }
+      try {
+          const { data, error } = await supabase.from('active_trips').insert({
+              current_lat: userLocation.current[1], current_lng: userLocation.current[0], status: 'active'
+          }).select().single();
+          if (error) throw error;
+          setCurrentTripId(data.id);
+          setIsSafetyModeActive(true);
+          setShowShareDialog(true);
+          toast({ title: "Safety Mode On", description: "Trip created successfully." });
+      } catch (e) { console.error(e); toast({ title: "Error", description: "Could not start safety mode." }); }
+  };
+
+  const stopSafetyMode = async () => {
+      if (currentTripId && supabase) await supabase.from('active_trips').update({ status: 'ended' }).eq('id', currentTripId);
+      setIsSafetyModeActive(false);
+      setCurrentTripId(null);
+      setShowShareDialog(false);
+      toast({ title: "Safety Mode Off", description: "Tracking link ended." });
+  };
 
   const requestWakeLock = async () => {
     try {
@@ -1205,6 +1246,22 @@ export default function MapExplorerPage() {
 
                     fetchWeather(latitude, longitude);
 
+                    // --- SAFETY MODE UPDATE ---
+                    if (isSafetyModeActive && currentTripId && supabase) {
+                        const now = Date.now();
+                        if (now - lastSafetyUpdate.current > 5000) {
+                            supabase.from('active_trips').update({
+                                current_lat: latitude,
+                                current_lng: longitude,
+                                heading: heading || 0,
+                                speed: speed || 0,
+                                last_updated: new Date().toISOString()
+                            }).eq('id', currentTripId).then(() => {});
+                            lastSafetyUpdate.current = now;
+                        }
+                    }
+                    // ---------------------------
+
                     if (isNavigatingRef.current && routeGeoJSON.current && activeDestination.current) {
                         const remainingDist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]);
                         setRouteDetails(prev => prev ? { ...prev, distance: remainingDist, duration: (remainingDist / 1000) / (Math.max(20, speedKmh) / 60) * 60 } : null);
@@ -1543,6 +1600,9 @@ export default function MapExplorerPage() {
               toggleRainMode={() => toggleLayer('rain')}
               isWindMode={isWindMode}
               toggleWindMode={() => toggleLayer('wind')}
+              isSafetyModeActive={isSafetyModeActive}
+              startSafetyMode={startSafetyMode}
+              showShareDialog={() => setShowShareDialog(true)}
               resetCompass={resetCompass}
               handleCategorySearch={handleCategorySearch}
               handleAutocomplete={handleAutocomplete}
@@ -1563,6 +1623,40 @@ export default function MapExplorerPage() {
                 </Button>
              </div>
         )}
+
+        {/* Share Trip Dialog */}
+        <Dialog open={showShareDialog} onOpenChange={setShowShareDialog}>
+            <DialogContent className="bg-zinc-900 border-zinc-800 text-white w-[90%] max-w-sm rounded-2xl">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2"><Shield className="text-red-500 fill-red-500/20" /> Share Live Trip</DialogTitle>
+                    <DialogDescription className="text-zinc-400">Share this link. Friends can watch your location in real-time.</DialogDescription>
+                </DialogHeader>
+                
+                {currentTripId && (
+                    <div className="flex flex-col items-center gap-4 py-4">
+                        <div className="bg-white p-2 rounded-lg">
+                            <QRCodeSVG value={`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`} size={150} />
+                        </div>
+                        
+                        <div className="flex w-full gap-2">
+                            <div className="bg-zinc-800 p-3 rounded-lg flex-1 truncate text-xs font-mono text-zinc-400 border border-zinc-700">
+                                {`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`}
+                            </div>
+                            <Button onClick={() => {
+                                navigator.clipboard.writeText(`${window.location.origin}/track/${currentTripId}`);
+                                toast({ title: "Copied!" });
+                            }}>
+                                <Copy className="h-4 w-4" />
+                            </Button>
+                        </div>
+
+                        <Button variant="destructive" className="w-full" onClick={stopSafetyMode}>
+                            <StopCircle className="mr-2 h-4 w-4" /> Stop Sharing
+                        </Button>
+                    </div>
+                )}
+            </DialogContent>
+        </Dialog>
 
         <Sheet open={isDrawerOpen} onOpenChange={(open) => !open && !isNavigating && setIsDrawerOpen(false)}>
           <SheetContent side="bottom" className={`rounded-t-3xl p-6 border-t border-zinc-800 bg-[#18181b]/95 backdrop-blur-xl text-white ring-1 ring-white/10 z-50 pb-[safe-area-inset-bottom] ${kantumruy.className}`}>
@@ -1713,8 +1807,9 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
 NavigationHUD.displayName = "NavigationHUD";
 
 const BottomControls = memo(({
-    isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, isWindMode, toggleWindMode, resetCompass,
-    handleCategorySearch, handleAutocomplete, onSelectLocation, userLocation, handleUserLocationClick,
+    isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, isWindMode, toggleWindMode,
+    isSafetyModeActive, startSafetyMode, showShareDialog,
+    resetCompass, handleCategorySearch, handleAutocomplete, onSelectLocation, userLocation, handleUserLocationClick,
     handleStyleChange, currentStyle, canShowAR, toggleAR
 }: any) => {
     const [query, setQuery] = useState("");
@@ -1832,6 +1927,10 @@ const BottomControls = memo(({
                 <Button size="icon" onClick={toggleTraffic} aria-label="Toggle Traffic" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}><Zap className="h-5 w-5" /></Button>
                 <Button size="icon" onClick={toggleRainMode} aria-label="Toggle Rain" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isRainMode ? 'bg-blue-600 border-blue-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}><CloudRain className="h-5 w-5" /></Button>
                 <Button size="icon" onClick={toggleWindMode} aria-label="Toggle Wind" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isWindMode ? 'bg-cyan-600 border-cyan-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}><Wind className={`h-5 w-5 ${isWindMode ? 'wind-active' : ''}`} /></Button>
+                
+                {/* SAFETY BUTTON */}
+                <Button size="icon" onClick={() => isSafetyModeActive ? showShareDialog() : startSafetyMode()} aria-label="Safety Share" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isSafetyModeActive ? 'bg-red-600 border-red-500 text-white animate-pulse' : 'bg-zinc-900/80 border-zinc-700 text-zinc-300'}`}><Shield className="h-5 w-5" /></Button>
+
                 {canShowAR && <Button size="icon" onClick={toggleAR} aria-label="Open AR" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800"><Camera className="h-5 w-5" /></Button>}
                 <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass} aria-label="Reset Compass"><Compass className="h-5 w-5" /></Button>
             </div>
