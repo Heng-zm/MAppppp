@@ -349,6 +349,41 @@ export default function MapExplorerPage() {
   const handleRecenter = () => { if(!userLocation.current || !map.current) return; userIsInteracting.current = false; setShowRecenterBtn(false); showRecenterBtnRef.current = false; map.current.flyTo({ center: userLocation.current, zoom: 19, pitch: 70, bearing: targetHeading.current, padding: { top: 0, bottom: 200, left: 0, right: 0 }, duration: 1200 }); }
   const handleUserLocationClick = useCallback(() => { if(!userLocation.current || !map.current) { geolocateControl.current?.trigger(); toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 }); return; } map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 }); }, [toast]);
   const clearRoute = useCallback(() => { setIsNavigating(false); activeDestination.current = null; routeGeoJSON.current = null; releaseWakeLock(); if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel(); if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; } if(map.current) removeRouteLayers(map.current); clearSearchMarkers(); setRouteDetails(null); setLocationDetails(null); setIsDrawerOpen(false); setShowRecenterBtn(false); if(map.current && userLocation.current) map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, duration: 1500 }); }, [clearSearchMarkers, removeRouteLayers]);
+  
+  // FIXED: Implemented missing navigation start handler
+  const handleStartNavigation = async () => {
+    if (!userLocation.current || !locationDetails) {
+        toast({ title: "Location Error", description: "Waiting for GPS or destination.", variant: "destructive" });
+        return;
+    }
+    setIsRouting(true);
+    const start = userLocation.current;
+    const end: [number, number] = [locationDetails.lng, locationDetails.lat];
+
+    const success = await fetchRoute(start, end);
+
+    if (success) {
+        setIsNavigating(true);
+        activeDestination.current = end;
+        setIsDrawerOpen(false); // Close the sheet
+        setShowRecenterBtn(false);
+        requestWakeLock();
+        
+        // Transition camera to navigation view
+        if (map.current) {
+            map.current.flyTo({
+                center: start,
+                zoom: 18,
+                pitch: 60,
+                bearing: targetHeading.current,
+                duration: 2000,
+                padding: { top: 0, bottom: 200, left: 0, right: 0 }
+            });
+        }
+    }
+    setIsRouting(false);
+  };
+
   const toggleLayer = useCallback((layerName: 'rain' | 'wind' | 'traffic') => { if (!map.current) return; let isActive: boolean, setIsActive: Function, layerId: string; switch(layerName) { case 'traffic': isActive = isTrafficVisible; setIsActive = setIsTrafficVisible; layerId = 'traffic'; break; case 'rain': isActive = isRainMode; setIsActive = setIsRainMode; layerId = 'rain-layer'; break; case 'wind': isActive = isWindMode; setIsActive = setIsWindMode; layerId = 'wind-layer'; break; } const newState = !isActive; setIsActive(newState); if (map.current.getLayer(layerId)) map.current.setLayoutProperty(layerId, 'visibility', newState ? 'visible' : 'none'); else if (newState) restoreMapLayers(map.current, layerName === 'traffic' ? true : isTrafficVisible, layerName === 'rain' ? true : isRainMode, layerName === 'wind' ? true : isWindMode); }, [isTrafficVisible, isRainMode, isWindMode, restoreMapLayers]);
   const toggleAR = useCallback(() => { if (!userLocation.current || !locationDetails) { toast({ title: "Cannot start AR", description: "Set a destination first", variant: "destructive" }); return; } setShowAR(prev => !prev); }, [locationDetails, toast]);
   const handleAutocomplete = useCallback(async (query: string, signal: AbortSignal) => { if (!query.trim()) return []; const center = map.current ? map.current.getCenter().toArray() as [number, number] : (userLocation.current || DEFAULT_CENTER); return await searchPlaces(query, center, false, signal); }, []);
@@ -424,6 +459,8 @@ export default function MapExplorerPage() {
               currentStyle={currentStyle}
               canShowAR={!!locationDetails}
               toggleAR={toggleAR}
+              // Added to hide controls when drawer is actively open for better UX
+              isDrawerOpen={isDrawerOpen}
            />
         )}
 
@@ -537,7 +574,7 @@ const BottomControls = memo(({
     isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, isWindMode, toggleWindMode,
     isSafetyModeActive, startSafetyMode, showShareDialog,
     resetCompass, handleCategorySearch, handleAutocomplete, onSelectLocation, userLocation, handleUserLocationClick,
-    handleStyleChange, currentStyle, canShowAR, toggleAR
+    handleStyleChange, currentStyle, canShowAR, toggleAR, isDrawerOpen
 }: any) => {
     const [query, setQuery] = useState("");
     const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
@@ -637,6 +674,11 @@ const BottomControls = memo(({
     }
 
     const showCard = isInputActive && ((query.length === 0 && history.length > 0) || suggestions.length > 0);
+
+    // If the Drawer is open, we can hide the bottom controls to prevent visual clutter
+    if (isDrawerOpen && !isInputActive) {
+        return null; 
+    }
 
     return (
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
