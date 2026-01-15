@@ -7,7 +7,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
   Loader2, ShieldCheck, Navigation, AlertTriangle, 
   Clock, Phone, Share2, Star, 
-  CarFront, LocateFixed, Signal, MapPin, ChevronRight 
+  CarFront, LocateFixed, Signal, MapPin 
 } from 'lucide-react';
 
 // --- CONFIGURATION ---
@@ -47,7 +47,7 @@ const getBearing = (startLat: number, startLng: number, destLat: number, destLng
 const DRIVER_INFO = {
     name: "Sokha",
     rating: 4.98,
-    car: "Tesla Model 3 (White)",
+    car: "Toyota Prius (White)",
     plate: "2B-9981",
     trips: 1250
 };
@@ -162,19 +162,21 @@ export default function RealTimeTracking({ params }: { params: Promise<{ id: str
             // 3D Buildings
             const layers = map.current.getStyle().layers;
             const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
-            map.current.addLayer({
-                'id': '3d-buildings',
-                'source': 'composite',
-                'source-layer': 'building',
-                'filter': ['==', 'extrude', 'true'],
-                'type': 'fill-extrusion',
-                'minzoom': 14,
-                'paint': {
-                    'fill-extrusion-color': '#27272a',
-                    'fill-extrusion-height': ['get', 'height'],
-                    'fill-extrusion-opacity': 0.8
-                }
-            }, labelLayerId);
+            if (!map.current.getLayer('3d-buildings')) {
+                map.current.addLayer({
+                    'id': '3d-buildings',
+                    'source': 'composite',
+                    'source-layer': 'building',
+                    'filter': ['==', 'extrude', 'true'],
+                    'type': 'fill-extrusion',
+                    'minzoom': 14,
+                    'paint': {
+                        'fill-extrusion-color': '#27272a',
+                        'fill-extrusion-height': ['get', 'height'],
+                        'fill-extrusion-opacity': 0.8
+                    }
+                }, labelLayerId);
+            }
 
             // Glowing Trail Line
             map.current.addSource('route', {
