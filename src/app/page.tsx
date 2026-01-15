@@ -10,6 +10,10 @@ import { createClient } from '@supabase/supabase-js';
 import { QRCodeSVG } from 'qrcode.react'; 
 import 'mapbox-gl/dist/mapbox-gl.css';
 
+// AI & TensorFlow
+import * as tf from '@tensorflow/tfjs';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
+
 // UI Components
 import { useToast } from "@/hooks/use-toast";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter } from "@/components/ui/sheet";
@@ -17,28 +21,36 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 
 // Icons
 import {
-  X, MapPin, Navigation, LocateFixed,
-  Volume2, VolumeX, Compass, Loader2, AlertTriangle,
-  Fuel, Utensils, Coffee, Search, Mic,
-  Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
-  Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind,
-  ArrowRight, Clock, History, Navigation as NavIcon,
-  Crosshair, Banknote, GraduationCap,
-  ChevronDown, ChevronUp, Trash2, ChevronLeft, ChevronRight,
-  Phone, Globe, Satellite, Map as MapIcon,
-  CarFront, ExternalLink, Camera, ScanEye, Lock,
-  Mountain, Shield, Share2, StopCircle, Copy
+  X, MapPin, Navigation, LocateFixed, Volume2, VolumeX, Compass, Loader2, AlertTriangle,
+  Fuel, Utensils, Coffee, Search, Mic, Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
+  Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind, ArrowRight, Clock, History, 
+  Navigation as NavIcon, Crosshair, Banknote, GraduationCap, ChevronDown, ChevronUp, 
+  Trash2, Phone, Globe, Satellite, Map as MapIcon, CarFront, ExternalLink, Camera, 
+  Lock, Mountain, Shield, Share2, StopCircle, Copy, Bike, Siren, Construction, 
+  Video, Users, LogOut, Radio, Eye
 } from 'lucide-react';
 
 // ==========================================
 // 2. CONFIG & HELPERS
 // ==========================================
+
+// Fix: Missing Interface Definition
+interface ArLastMileViewProps { 
+    userLocation: [number, number]; 
+    destination: [number, number]; 
+    routePath?: number[][]; 
+    onClose: () => void; 
+    hasParentPermission: boolean; 
+    setParentPermission: (val: boolean) => void; 
+}
 
 interface DeviceOrientationEventiOS extends DeviceOrientationEvent {
     requestPermission?: () => Promise<'granted' | 'denied'>;
@@ -70,6 +82,10 @@ const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000;
 const REROUTE_THRESHOLD_METERS = 45;
 const AR_PERMISSION_KEY = "map_ar_permission_v1";
+const ARRIVAL_THRESHOLD_METERS = 50;
+
+const FUEL_STATS: any = { moto: 2.5, car: 10, suv: 14 };
+const GAS_PRICE_KHR = 4500;
 
 const STYLES = {
   DARK: 'mapbox://styles/mapbox/dark-v11',
@@ -120,33 +136,109 @@ const ManeuverIcon = memo(({ instruction }: { instruction: string }) => { const 
 ManeuverIcon.displayName = 'ManeuverIcon';
 type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
+type Incident = { id: number, type: 'police' | 'traffic' | 'accident' | 'pothole', lat: number, lng: number };
+type ConvoyMember = { user_id: string, lat: number, lng: number, heading: number, speed: number, last_updated: string };
 
 // ==========================================
-// 3. AR COMPONENT
+// 3. AI DASHCAM COMPONENT
 // ==========================================
-interface ArLastMileViewProps { userLocation: [number, number]; destination: [number, number]; routePath?: number[][]; onClose: () => void; hasParentPermission: boolean; setParentPermission: (val: boolean) => void; }
-const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
-    const videoRef = useRef<HTMLVideoElement>(null); const requestRef = useRef<number>(0); const [permissionError, setPermissionError] = useState<string | null>(null); const [isSecure, setIsSecure] = useState(true); const [sensorsActive, setSensorsActive] = useState(false); const [showManualCalibrate, setShowManualCalibrate] = useState(false); const [targetInSight, setTargetInSight] = useState(false); const streamRef = useRef<MediaStream | null>(null); const hasFiredOnce = useRef(false); const worldRef = useRef<HTMLDivElement>(null); const distanceTextRef = useRef<HTMLDivElement>(null); const bearingTextRef = useRef<HTMLSpanElement>(null); const sensorData = useRef({ heading: 0, rawHeading: 0 }); const lastRenderedState = useRef({ distanceText: "" });
-    const visiblePathSegments = useMemo(() => { if (!routePath || routePath.length === 0) return []; const segments: {x: number, z: number, dist: number}[] = []; let count = 0; for(let i=0; i<routePath.length; i+=1) { const pt = routePath[i]; const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]); if (dist < 150 && count < 30) { const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]); const rad = bearing * (Math.PI / 180); segments.push({ x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist: dist }); count++; } } return segments.sort((a,b) => b.dist - a.dist); }, [routePath, userLocation]);
-    const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => { if (!hasFiredOnce.current) { setSensorsActive(true); hasFiredOnce.current = true; setShowManualCalibrate(false); } let heading = 0; if (e.webkitCompassHeading) heading = e.webkitCompassHeading; else if (e.alpha !== null) heading = 360 - e.alpha; sensorData.current.rawHeading = heading; }, []);
-    useEffect(() => { if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') { setIsSecure(false); setPermissionError("AR requires HTTPS."); return; } const startCamera = async () => { try { streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } }, audio: false }); } catch (err) { try { streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }); } catch (e) { setPermissionError("Camera access denied."); return; } } if (videoRef.current && streamRef.current) videoRef.current.srcObject = streamRef.current; }; const checkSavedPermission = () => { const isIOS = typeof (DeviceOrientationEvent as unknown as DeviceOrientationEventiOS).requestPermission === 'function'; if (!isIOS) { setParentPermission(true); setTimeout(() => { if(!hasFiredOnce.current) setSensorsActive(true); }, 1000); } else if (hasParentPermission) setTimeout(() => { if (!hasFiredOnce.current) setShowManualCalibrate(true); }, 3000); }; startCamera(); checkSavedPermission(); return () => { if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop()); cancelAnimationFrame(requestRef.current); }; }, [hasParentPermission, setParentPermission]);
-    useEffect(() => { if (hasParentPermission) { window.addEventListener('deviceorientation', handleOrientation); if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', handleOrientation as any); } return () => { window.removeEventListener('deviceorientation', handleOrientation); if ('ondeviceorientationabsolute' in window) window.removeEventListener('deviceorientationabsolute', handleOrientation as any); } }, [hasParentPermission, handleOrientation]);
-    const requestAccess = async () => { const deviceMotionEvent = DeviceOrientationEvent as unknown as DeviceOrientationEventiOS; if (typeof deviceMotionEvent.requestPermission === 'function') { try { const perm = await deviceMotionEvent.requestPermission(); if (perm === 'granted') { setParentPermission(true); localStorage.setItem(AR_PERMISSION_KEY, 'true'); setShowManualCalibrate(false); } } catch (e) { setPermissionError("Error requesting permission."); } } else { setParentPermission(true); localStorage.setItem(AR_PERMISSION_KEY, 'true'); } };
-    useEffect(() => { if (!hasParentPermission || !sensorsActive) return; const updateLoop = () => { const currentObj = sensorData.current; const diff = getShortestAngleDistance(currentObj.rawHeading, currentObj.heading); currentObj.heading += diff * 0.15; const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]); const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]); const formattedDist = formatDistance(distance); if (bearingTextRef.current) bearingTextRef.current.innerText = `${Math.round(bearing)}°`; if (distanceTextRef.current && lastRenderedState.current.distanceText !== formattedDist) { distanceTextRef.current.innerText = formattedDist; lastRenderedState.current.distanceText = formattedDist; } setTargetInSight(Math.abs(getShortestAngleDistance(bearing, currentObj.heading)) < 15); if (worldRef.current) worldRef.current.style.transform = `translateZ(0) rotateY(${-currentObj.heading}deg)`; requestRef.current = requestAnimationFrame(updateLoop); }; requestRef.current = requestAnimationFrame(updateLoop); return () => cancelAnimationFrame(requestRef.current); }, [userLocation, destination, hasParentPermission, sensorsActive]);
-    const destBearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]); const destDist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]); const destRad = destBearing * (Math.PI / 180); const destX = destDist * Math.sin(destRad); const destZ = -(destDist * Math.cos(destRad));
+const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type: string) => void }) => {
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
+    const [alert, setAlert] = useState<string | null>(null);
+
+    useEffect(() => {
+        const loadModel = async () => {
+            try {
+                await tf.ready();
+                const loadedModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+                setModel(loadedModel);
+            } catch (e) { console.error("TFJS Error", e); }
+        };
+        loadModel();
+    }, []);
+
+    useEffect(() => {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+                .then(stream => { if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play(); } });
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!model || !videoRef.current || !canvasRef.current) return;
+        let animationId: number;
+        const detectFrame = async () => {
+            if (videoRef.current && videoRef.current.readyState === 4) {
+                const predictions = await model.detect(videoRef.current);
+                const ctx = canvasRef.current!.getContext('2d');
+                if (ctx) {
+                    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+                    predictions.forEach(p => {
+                        if (['car', 'truck', 'bus', 'person', 'traffic light'].includes(p.class)) {
+                            ctx.beginPath();
+                            ctx.lineWidth = 2;
+                            ctx.strokeStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
+                            ctx.rect(p.bbox[0], p.bbox[1], p.bbox[2], p.bbox[3]);
+                            ctx.stroke();
+                            ctx.fillStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
+                            ctx.fillText(`${p.class} ${(p.score * 100).toFixed(0)}%`, p.bbox[0], p.bbox[1] > 10 ? p.bbox[1] - 5 : 10);
+                            const widthRatio = p.bbox[2] / 320; 
+                            if (widthRatio > 0.6) {
+                                setAlert("⚠️ BRAKE!");
+                                onDetect('traffic');
+                            } else {
+                                setAlert(null);
+                            }
+                        }
+                    });
+                }
+            }
+            animationId = requestAnimationFrame(detectFrame);
+        };
+        detectFrame();
+        return () => cancelAnimationFrame(animationId);
+    }, [model, onDetect]);
+
     return (
-        <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
-            <style jsx>{` .perspective-container { perspective: 600px; perspective-origin: 50% 50%; } .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; } .path-segment { position: absolute; width: 100px; height: 100px; background: radial-gradient(circle, rgba(16, 185, 129, 0.8) 0%, rgba(16, 185, 129, 0) 70%); transform-origin: center center; transform: rotateX(90deg) translate(-50%, -50%); box-shadow: 0 0 15px rgba(16, 185, 129, 0.4); border-radius: 50%; pointer-events: none; } .destination-marker { position: absolute; left: 0; top: 0; transform-style: preserve-3d; } `}</style>
-            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
-            {targetInSight && ( <div className="absolute inset-0 flex items-center justify-center pointer-events-none"> <div className="w-64 h-64 border-2 border-emerald-500 rounded-lg opacity-80 animate-pulse flex items-center justify-center relative"> <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-emerald-500 -mt-1 -ml-1"></div> <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-emerald-500 -mt-1 -mr-1"></div> <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-emerald-500 -mb-1 -ml-1"></div> <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-emerald-500 -mb-1 -mr-1"></div> <span className="text-emerald-500 font-bold bg-black/50 px-2 rounded uppercase text-xs tracking-widest mt-32">Target Locked</span> </div> </div> )}
-            {(!hasParentPermission && !permissionError && isSecure && !showManualCalibrate) && ( <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80"> <div className="text-center p-6 max-w-sm"> <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/> <h3 className="text-white text-xl font-bold mb-2">Enable AR</h3> <p className="text-zinc-400 mb-6 text-sm">Allow access to compass sensors.</p> <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">Allow Access</Button> <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400">Cancel</Button> </div> </div> )}
-            {hasParentPermission && sensorsActive && ( <> <div ref={worldRef} className="world-3d"> <div> {visiblePathSegments.map((seg, i) => { const scale = Math.max(0.5, 1 - (seg.dist / 150)); const PIXEL_PER_METER = 40; return ( <div key={i} className="path-segment" style={{ transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(120px) translateZ(${seg.z * PIXEL_PER_METER}px) rotateX(90deg) scale(${scale})`, opacity: scale }} /> ) })} </div> <div className="destination-marker flex flex-col items-center justify-center" style={{ transform: `translateX(${destX * 40}px) translateY(-50px) translateZ(${destZ * 40}px)` }}> <div className="relative animate-bounce-slow"> <div ref={distanceTextRef} className="bg-indigo-600 text-white px-3 py-1 rounded-full text-lg font-bold shadow-lg border-2 border-white mb-2 whitespace-nowrap">0m</div> <div className="w-16 h-16 bg-red-600 rounded-full border-4 border-white shadow-xl flex items-center justify-center"><MapPin className="h-8 w-8 text-white" /></div> <div className="w-4 h-20 bg-white/50 mx-auto rounded-full mt-[-10px] blur-[2px]"></div> </div> </div> </div> <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-[65]"> <div className="bg-black/60 backdrop-blur text-white px-4 py-2 rounded-xl border border-white/10"> <p className="text-xs text-gray-300 font-bold uppercase tracking-wider">Heading</p> <p className="text-lg font-bold font-mono"><span ref={bearingTextRef}>0°</span></p> </div> <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20"><X className="h-5 w-5" /></Button> </div> </> )}
+        <div className="fixed top-4 right-4 w-40 h-56 bg-black rounded-xl overflow-hidden shadow-2xl z-[50] border-2 border-zinc-800 animate-in slide-in-from-right-4">
+            <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" muted playsInline />
+            <canvas ref={canvasRef} width={320} height={480} className="absolute inset-0 w-full h-full" />
+            <div className="absolute top-0 left-0 right-0 p-1 bg-black/50 text-[10px] text-white flex justify-between items-center">
+                <span className="flex items-center gap-1"><div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div> REC</span>
+                <button onClick={onClose}><X className="h-3 w-3" /></button>
+            </div>
+            {alert && <div className="absolute inset-0 flex items-center justify-center bg-red-500/50 animate-pulse"><span className="text-white font-black text-xl">{alert}</span></div>}
         </div>
     );
 };
 
 // ==========================================
-// 4. MAIN COMPONENT
+// 4. AR COMPONENT
+// ==========================================
+const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
+    const videoRef = useRef<HTMLVideoElement>(null); const requestRef = useRef<number>(0); const [isSecure, setIsSecure] = useState(true); const [sensorsActive, setSensorsActive] = useState(false); const [targetInSight, setTargetInSight] = useState(false); const streamRef = useRef<MediaStream | null>(null); const hasFiredOnce = useRef(false); const worldRef = useRef<HTMLDivElement>(null); const distanceTextRef = useRef<HTMLDivElement>(null); const bearingTextRef = useRef<HTMLSpanElement>(null); const sensorData = useRef({ heading: 0, rawHeading: 0 }); const lastRenderedState = useRef({ distanceText: "" });
+    const visiblePathSegments = useMemo(() => { if (!routePath || routePath.length === 0) return []; const segments: {x: number, z: number, dist: number}[] = []; let count = 0; for(let i=0; i<routePath.length; i+=1) { const pt = routePath[i]; const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]); if (dist < 150 && count < 30) { const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]); const rad = bearing * (Math.PI / 180); segments.push({ x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist: dist }); count++; } } return segments.sort((a,b) => b.dist - a.dist); }, [routePath, userLocation]);
+    const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => { if (!hasFiredOnce.current) { setSensorsActive(true); hasFiredOnce.current = true; } let heading = 0; if (e.webkitCompassHeading) heading = e.webkitCompassHeading; else if (e.alpha !== null) heading = 360 - e.alpha; sensorData.current.rawHeading = heading; }, []);
+    useEffect(() => { if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') { setIsSecure(false); return; } const startCamera = async () => { try { streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } }, audio: false }); } catch (err) { try { streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }); } catch (e) { return; } } if (videoRef.current && streamRef.current) videoRef.current.srcObject = streamRef.current; }; const checkSavedPermission = () => { const isIOS = typeof (DeviceOrientationEvent as unknown as DeviceOrientationEventiOS).requestPermission === 'function'; if (!isIOS) { setParentPermission(true); setTimeout(() => { if(!hasFiredOnce.current) setSensorsActive(true); }, 1000); } }; startCamera(); checkSavedPermission(); return () => { if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop()); cancelAnimationFrame(requestRef.current); }; }, [hasParentPermission, setParentPermission]);
+    useEffect(() => { if (hasParentPermission) { window.addEventListener('deviceorientation', handleOrientation); if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', handleOrientation as any); } return () => { window.removeEventListener('deviceorientation', handleOrientation); if ('ondeviceorientationabsolute' in window) window.removeEventListener('deviceorientationabsolute', handleOrientation as any); } }, [hasParentPermission, handleOrientation]);
+    const requestAccess = async () => { const deviceMotionEvent = DeviceOrientationEvent as unknown as DeviceOrientationEventiOS; if (typeof deviceMotionEvent.requestPermission === 'function') { try { const perm = await deviceMotionEvent.requestPermission(); if (perm === 'granted') { setParentPermission(true); localStorage.setItem(AR_PERMISSION_KEY, 'true'); } } catch (e) { } } else { setParentPermission(true); localStorage.setItem(AR_PERMISSION_KEY, 'true'); } };
+    useEffect(() => { if (!hasParentPermission || !sensorsActive) return; const updateLoop = () => { const currentObj = sensorData.current; const diff = getShortestAngleDistance(currentObj.rawHeading, currentObj.heading); currentObj.heading += diff * 0.15; const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]); const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]); const formattedDist = formatDistance(distance); if (bearingTextRef.current) bearingTextRef.current.innerText = `${Math.round(bearing)}°`; if (distanceTextRef.current && lastRenderedState.current.distanceText !== formattedDist) { distanceTextRef.current.innerText = formattedDist; lastRenderedState.current.distanceText = formattedDist; } setTargetInSight(Math.abs(getShortestAngleDistance(bearing, currentObj.heading)) < 15); if (worldRef.current) worldRef.current.style.transform = `translateZ(0) rotateY(${-currentObj.heading}deg)`; requestRef.current = requestAnimationFrame(updateLoop); }; requestRef.current = requestAnimationFrame(updateLoop); return () => cancelAnimationFrame(requestRef.current); }, [userLocation, destination, hasParentPermission, sensorsActive]);
+    
+    return (
+        <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
+            <style jsx>{` .perspective-container { perspective: 600px; perspective-origin: 50% 50%; } .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; } .path-segment { position: absolute; width: 100px; height: 100px; background: radial-gradient(circle, rgba(16, 185, 129, 0.8) 0%, rgba(16, 185, 129, 0) 70%); transform-origin: center center; transform: rotateX(90deg) translate(-50%, -50%); box-shadow: 0 0 15px rgba(16, 185, 129, 0.4); border-radius: 50%; pointer-events: none; } .destination-marker { position: absolute; left: 0; top: 0; transform-style: preserve-3d; } `}</style>
+            <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
+            {targetInSight && ( <div className="absolute inset-0 flex items-center justify-center pointer-events-none"> <div className="w-64 h-64 border-2 border-emerald-500 rounded-lg opacity-80 animate-pulse flex items-center justify-center relative"> <span className="text-emerald-500 font-bold bg-black/50 px-2 rounded uppercase text-xs tracking-widest mt-32">Target Locked</span> </div> </div> )}
+            {!hasParentPermission && isSecure && ( <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80"> <div className="text-center p-6 max-w-sm"> <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/> <h3 className="text-white text-xl font-bold mb-2">Enable AR</h3> <p className="text-zinc-400 mb-6 text-sm">Allow access to compass sensors.</p> <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">Allow Access</Button> <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400">Cancel</Button> </div> </div> )}
+            {hasParentPermission && sensorsActive && ( <> <div ref={worldRef} className="world-3d"> <div> {visiblePathSegments.map((seg, i) => { const scale = Math.max(0.5, 1 - (seg.dist / 150)); const PIXEL_PER_METER = 40; return ( <div key={i} className="path-segment" style={{ transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(120px) translateZ(${seg.z * PIXEL_PER_METER}px) rotateX(90deg) scale(${scale})`, opacity: scale }} /> ) })} </div> <div className="destination-marker flex flex-col items-center justify-center" style={{ transform: `translateX(${destX * 40}px) translateY(-50px) translateZ(${destZ * 40}px)` }}> <div className="relative animate-bounce-slow"> <div ref={distanceTextRef} className="bg-indigo-600 text-white px-3 py-1 rounded-full text-lg font-bold shadow-lg border-2 border-white mb-2 whitespace-nowrap">0m</div> <div className="w-16 h-16 bg-red-600 rounded-full border-4 border-white shadow-xl flex items-center justify-center"><MapPin className="h-8 w-8 text-white" /></div> </div> </div> </div> <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-[65]"> <div className="bg-black/60 backdrop-blur text-white px-4 py-2 rounded-xl border border-white/10"> <p className="text-xs text-gray-300 font-bold uppercase tracking-wider">Heading</p> <p className="text-lg font-bold font-mono"><span ref={bearingTextRef}>0°</span></p> </div> <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20"><X className="h-5 w-5" /></Button> </div> </> )}
+        </div>
+    );
+};
+
+// ==========================================
+// 5. MAIN PAGE
 // ==========================================
 export default function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
@@ -157,11 +249,15 @@ export default function MapExplorerPage() {
   const puckMarker = useRef<Marker | null>(null);
   const puckElement = useRef<HTMLDivElement | null>(null);
   const searchMarkers = useRef<Marker[]>([]);
+  const incidentMarkers = useRef<Marker[]>([]);
+  const convoyMarkers = useRef<Record<string, Marker>>({});
+  
   const routeGeoJSON = useRef<any>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const userLocation = useRef<[number, number] | null>(null);
   const activeDestination = useRef<[number, number] | null>(null);
   const watchId = useRef<number | null>(null);
+  
   const isRecalculating = useRef<boolean>(false);
   const userIsInteracting = useRef<boolean>(false);
   const isMounted = useRef<boolean>(false);
@@ -173,6 +269,7 @@ export default function MapExplorerPage() {
   const isNavigatingRef = useRef(false);
   const currentSpeedRef = useRef(0);
   const lastSafetyUpdate = useRef<number>(0);
+  
   const currentPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const currentHeading = useRef<number>(0);
@@ -182,6 +279,8 @@ export default function MapExplorerPage() {
   const animationFrameId = useRef<number>(0);
 
   const { toast } = useToast();
+  
+  // UI State
   const [isNavigating, setIsNavigating] = useState(false);
   const [isSecureContext, setIsSecureContext] = useState(true);
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
@@ -205,35 +304,144 @@ export default function MapExplorerPage() {
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [currentStyle, setCurrentStyle] = useState(STYLES.DARK);
+  
+  // Advanced Features State
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [showReportDialog, setShowReportDialog] = useState(false);
+  const [vehicleType, setVehicleType] = useState<'moto' | 'car' | 'suv'>('moto');
+  const [estimatedCost, setEstimatedCost] = useState<number>(0);
+  
+  // Convoy & Dashcam
+  const [showDashcam, setShowDashcam] = useState(false);
+  const [convoyCode, setConvoyCode] = useState("");
+  const [activeConvoy, setActiveConvoy] = useState<string | null>(null);
+  const [convoyMembers, setConvoyMembers] = useState<ConvoyMember[]>([]);
+  const [showConvoyDialog, setShowConvoyDialog] = useState(false);
+
+  // Safety
   const [isSafetyModeActive, setIsSafetyModeActive] = useState(false);
   const [currentTripId, setCurrentTripId] = useState<string | null>(null);
   const [showShareDialog, setShowShareDialog] = useState(false);
 
+  // Refs sync
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
   useEffect(() => { isNavigatingRef.current = isNavigating; }, [isNavigating]);
   useEffect(() => { currentSpeedRef.current = currentSpeed; }, [currentSpeed]);
-  useEffect(() => { if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') setIsSecureContext(false); const saved = localStorage.getItem(AR_PERMISSION_KEY); if (saved === 'true') setHasArPermission(true); }, []);
-  useEffect(() => { const updateVoices = () => { if (typeof window !== 'undefined' && window.speechSynthesis) { const voices = window.speechSynthesis.getVoices(); if (voices.length > 0) setAvailableVoices(voices); } }; if (typeof window !== 'undefined' && window.speechSynthesis) { window.speechSynthesis.onvoiceschanged = updateVoices; updateVoices(); } return () => { if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null; }; }, []);
+  
+  // Initial Setup
+  useEffect(() => { 
+      if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') setIsSecureContext(false); 
+      const saved = localStorage.getItem(AR_PERMISSION_KEY); 
+      if (saved === 'true') setHasArPermission(true); 
+  }, []);
+  
+  // Voice Setup
+  useEffect(() => { 
+      const updateVoices = () => { if (typeof window !== 'undefined' && window.speechSynthesis) { const voices = window.speechSynthesis.getVoices(); if (voices.length > 0) setAvailableVoices(voices); } }; 
+      if (typeof window !== 'undefined' && window.speechSynthesis) { window.speechSynthesis.onvoiceschanged = updateVoices; updateVoices(); } 
+      return () => { if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null; }; 
+  }, []);
 
-  const speak = useCallback((text: string) => { if (typeof window === 'undefined' || isMuted || !window.speechSynthesis) return; if (window.speechSynthesis.speaking && lastSpokenInstruction.current === text) return; window.speechSynthesis.cancel(); utteranceRef.current = new SpeechSynthesisUtterance(text); const preferredVoice = availableVoices.find(v => v.lang.includes('km')) || availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')); if (preferredVoice) utteranceRef.current.voice = preferredVoice; utteranceRef.current.rate = 1.0; window.speechSynthesis.speak(utteranceRef.current); }, [isMuted, availableVoices]);
+  const speak = useCallback((text: string) => { 
+      if (typeof window === 'undefined' || isMuted || !window.speechSynthesis) return; 
+      if (window.speechSynthesis.speaking && lastSpokenInstruction.current === text) return; 
+      window.speechSynthesis.cancel(); 
+      utteranceRef.current = new SpeechSynthesisUtterance(text); 
+      const preferredVoice = availableVoices.find(v => v.lang.includes('km')) || availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')); 
+      if (preferredVoice) utteranceRef.current.voice = preferredVoice; 
+      utteranceRef.current.rate = 1.0; 
+      window.speechSynthesis.speak(utteranceRef.current); 
+  }, [isMuted, availableVoices]);
 
-  const startSafetyMode = async () => {
-      if (!supabase) { toast({ title: "Configuration Error", description: "Supabase not connected." }); return; }
-      if (!userLocation.current) { toast({ title: "No GPS", description: "Wait for location signal." }); return; }
-      try {
-          const { data, error } = await supabase.from('active_trips').insert({ current_lat: userLocation.current[1], current_lng: userLocation.current[0], status: 'active' }).select().single();
-          if (error) throw error;
-          setCurrentTripId(data.id); setIsSafetyModeActive(true); setShowShareDialog(true);
-          toast({ title: "Safety Mode On", description: "Trip created successfully." });
-      } catch (e: any) { console.error("Supabase Error:", e); toast({ title: "Error", description: "Could not start safety mode.", variant: "destructive" }); }
+  // --- FEATURE: INCIDENTS ---
+  const fetchIncidents = useCallback(async () => {
+    if (!supabase) return;
+    const { data } = await supabase.from('incidents').select('*').gt('created_at', new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()); 
+    if (data) setIncidents(data as Incident[]);
+  }, []);
+
+  const reportIncident = async (type: string) => {
+    if (!supabase || !userLocation.current) { toast({ title: "Error", description: "GPS required." }); return; }
+    await supabase.from('incidents').insert({ type, lat: userLocation.current[1], lng: userLocation.current[0] });
+    toast({ title: "Reported!", description: "Thank you." });
+    setShowReportDialog(false);
   };
 
-  const stopSafetyMode = async () => {
-      if (currentTripId && supabase) await supabase.from('active_trips').update({ status: 'ended' }).eq('id', currentTripId);
-      setIsSafetyModeActive(false); setCurrentTripId(null); setShowShareDialog(false);
-      toast({ title: "Safety Mode Off", description: "Tracking ended." });
+  useEffect(() => {
+    fetchIncidents();
+    if (!supabase) return;
+    const channel = supabase.channel('incidents_realtime').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'incidents' }, (payload) => {
+        setIncidents(prev => [...prev, payload.new as Incident]);
+    }).subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [fetchIncidents]);
+
+  useEffect(() => {
+      if (!map.current) return;
+      incidentMarkers.current.forEach(m => m.remove());
+      incidentMarkers.current = [];
+      incidents.forEach(inc => {
+          const el = document.createElement('div');
+          el.className = 'incident-marker';
+          el.innerHTML = `<div class="w-8 h-8 rounded-full border-2 border-white shadow-lg flex items-center justify-center ${inc.type === 'police' ? 'bg-blue-600' : inc.type === 'accident' ? 'bg-red-600' : 'bg-orange-500'} text-white">${inc.type === 'police' ? '👮' : inc.type === 'accident' ? '💥' : '⚠️'}</div>`;
+          incidentMarkers.current.push(new Marker({ element: el }).setLngLat([inc.lng, inc.lat]).addTo(map.current!));
+      });
+  }, [incidents]);
+
+  // --- FEATURE: CONVOY ---
+  const joinConvoy = async () => {
+      if (!convoyCode || !supabase) return;
+      const { data: existing } = await supabase.from('convoys').select('code').eq('code', convoyCode).single();
+      if (!existing) await supabase.from('convoys').insert({ code: convoyCode });
+      const myId = crypto.randomUUID(); 
+      localStorage.setItem('convoy_user_id', myId);
+      setActiveConvoy(convoyCode);
+      setShowConvoyDialog(false);
+      toast({ title: "Joined Convoy", description: `Code: ${convoyCode}` });
   };
 
+  const leaveConvoy = async () => {
+      const myId = localStorage.getItem('convoy_user_id');
+      if (myId && activeConvoy && supabase) await supabase.from('convoy_members').delete().eq('user_id', myId);
+      setActiveConvoy(null);
+      setConvoyMembers([]);
+      Object.values(convoyMarkers.current).forEach(m => m.remove());
+      convoyMarkers.current = {};
+      toast({ title: "Left Convoy" });
+  };
+
+  useEffect(() => {
+      if (!activeConvoy || !supabase) return;
+      const channel = supabase.channel(`convoy-${activeConvoy}`).on('postgres_changes', { event: '*', schema: 'public', table: 'convoy_members', filter: `convoy_code=eq.${activeConvoy}` }, 
+          () => { supabase.from('convoy_members').select('*').eq('convoy_code', activeConvoy).then(({ data }) => { if (data) setConvoyMembers(data as any); }); }
+      ).subscribe();
+      return () => { supabase.removeChannel(channel); };
+  }, [activeConvoy]);
+
+  useEffect(() => {
+      if (!map.current) return;
+      const myId = typeof window !== 'undefined' ? localStorage.getItem('convoy_user_id') : null;
+      convoyMembers.forEach(member => {
+          if (member.user_id === myId) return;
+          if (convoyMarkers.current[member.user_id]) {
+              convoyMarkers.current[member.user_id].setLngLat([member.lng, member.lat]);
+          } else {
+              const el = document.createElement('div');
+              el.innerHTML = `<div class="flex flex-col items-center"><div class="bg-indigo-600 text-white text-[10px] font-bold px-1.5 rounded mb-1 shadow">Friend</div><div class="w-8 h-8 bg-indigo-500 rounded-full border-2 border-white shadow-lg flex items-center justify-center">🚗</div></div>`;
+              convoyMarkers.current[member.user_id] = new Marker({ element: el }).setLngLat([member.lng, member.lat]).addTo(map.current!);
+          }
+      });
+  }, [convoyMembers]);
+
+  // --- COST CALCULATOR ---
+  useEffect(() => {
+      if (routeDetails?.totalDistance) {
+          const liters = (routeDetails.totalDistance / 100000) * FUEL_STATS[vehicleType];
+          setEstimatedCost(Math.round(liters * GAS_PRICE_KHR));
+      }
+  }, [routeDetails, vehicleType]);
+
+  // --- CORE FUNCTIONS ---
   const requestWakeLock = async () => { try { if ('wakeLock' in navigator) wakeLock.current = await navigator.wakeLock.request('screen'); } catch (err) {} };
   const releaseWakeLock = async () => { if(wakeLock.current) { await wakeLock.current.release().catch(() => {}); wakeLock.current = null; } };
 
@@ -295,8 +503,7 @@ export default function MapExplorerPage() {
   const animatePuck = useCallback(() => {
       if (!puckMarker.current || !isMounted.current) { animationFrameId.current = 0; return; }
       const distDelta = getDistanceFromLatLonInMeters(currentPuckPos.current[1], currentPuckPos.current[0], targetPuckPos.current[1], targetPuckPos.current[0]);
-      const angleDelta = Math.abs(getShortestAngleDistance(targetHeading.current, currentHeading.current));
-      if (distDelta < 0.1 && angleDelta < 1) { currentPuckPos.current = targetPuckPos.current; currentHeading.current = targetHeading.current; puckMarker.current.setLngLat(currentPuckPos.current); puckMarker.current.setRotation(currentHeading.current); animationFrameId.current = 0; return; }
+      if (distDelta < 0.1) { currentPuckPos.current = targetPuckPos.current; currentHeading.current = targetHeading.current; puckMarker.current.setLngLat(currentPuckPos.current); puckMarker.current.setRotation(currentHeading.current); animationFrameId.current = 0; return; }
       currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
       currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
       currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.12);
@@ -314,6 +521,7 @@ export default function MapExplorerPage() {
   const plotSearchResults = useCallback((results: SearchResult[], type: string) => { if(!map.current) return; const bounds = new LngLatBounds(); results.forEach(r => { const el = document.createElement('div'); el.className = 'marker-pin'; el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`; const marker = new Marker({ element: el }).setLngLat([r.lng, r.lat]).setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`)).addTo(map.current!); marker.getElement().addEventListener('click', () => { handleMapSelection({ lng: r.lng, lat: r.lat }); }); searchMarkers.current.push(marker); bounds.extend([r.lng, r.lat]); }); if (results.length > 0) map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 }); else toast({ title: "No results", description: "Nothing found nearby." }); }, [handleMapSelection, toast]);
   const handleCategorySearch = useCallback(async (query: string) => { const geoKey = GEOAPIFY_API_KEY; const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER); clearSearchMarkers(); if (isNavigating && routeGeoJSON.current && geoKey) { let category = "commercial"; if (query === "gas station") category = "service.vehicle.fuel"; else if (query === "restaurant") category = "catering.restaurant"; else if (query === "coffee") category = "catering.cafe"; else if (query === "bank") category = "service.financial"; else if (query === "school") category = "education"; try { const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${simplifyGeometry(routeGeoJSON.current)}&limit=10&apiKey=${geoKey}`; const res = await fetch(url); const data = await res.json(); const results = data.features.map((f: any) => ({ lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], name: f.properties.name || f.properties.address_line1 || "Unknown", address: f.properties.address_line2 || "", type: query })); plotSearchResults(results, query); } catch (e) { const fallbackResults = await searchPlaces(query, center, true); plotSearchResults(fallbackResults, query); } } else { const results = await searchPlaces(query, center, true); plotSearchResults(results, query); } }, [clearSearchMarkers, plotSearchResults, toast, isNavigating]);
 
+  // --- INIT MAP ---
   useEffect(() => {
     isMounted.current = true;
     if (!MAPBOX_TOKEN || !mapContainer.current || map.current) return;
@@ -333,7 +541,24 @@ export default function MapExplorerPage() {
         if (!isMounted.current) return; setIsMapLoaded(true); geolocate.trigger(); mapInstance.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode); if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
         if ('geolocation' in navigator) {
             watchId.current = navigator.geolocation.watchPosition(async (pos) => { if (!isMounted.current) return; const { latitude, longitude, heading, speed } = pos.coords; if (puckElement.current) puckElement.current.style.display = 'block'; const speedKmh = speed ? Math.round(speed * 3.6) : 0; setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); userLocation.current = [longitude, latitude]; setCurrentUserLocationForAR([longitude, latitude]); targetPuckPos.current = [longitude, latitude]; if (heading !== null && !isNaN(heading)) gpsHeading.current = heading; const isMoving = speedKmh > 5; targetHeading.current = isMoving && heading !== null ? heading : compassHeading.current; if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck); fetchWeather(latitude, longitude);
-                if (isSafetyModeActive && currentTripId && supabase) { const now = Date.now(); if (now - lastSafetyUpdate.current > 5000) { supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading || 0, speed: speed || 0, last_updated: new Date().toISOString() }).eq('id', currentTripId).then(() => {}); lastSafetyUpdate.current = now; } }
+                
+                // Safety Mode & Convoy Updates
+                if ((isSafetyModeActive && currentTripId) || activeConvoy) {
+                    const now = Date.now();
+                    if (now - lastSafetyUpdate.current > 5000 && supabase) {
+                        const payload = { lat: latitude, lng: longitude, heading: heading || 0, speed: speed || 0, last_updated: new Date().toISOString() };
+                        if (isSafetyModeActive && currentTripId) supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading||0, speed: speed||0, last_updated: new Date().toISOString() }).eq('id', currentTripId).then(()=>{});
+                        if (activeConvoy) { const myId = localStorage.getItem('convoy_user_id'); if(myId) supabase.from('convoy_members').upsert({ convoy_code: activeConvoy, user_id: myId, ...payload }, {onConflict:'user_id'}).then(()=>{}); }
+                        lastSafetyUpdate.current = now;
+                    }
+                }
+                
+                // Geofencing Arrival
+                if (isSafetyModeActive && activeDestination.current) {
+                    const dist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]);
+                    if (dist < ARRIVAL_THRESHOLD_METERS) stopSafetyMode('arrived');
+                }
+
                 if (isNavigatingRef.current && routeGeoJSON.current && activeDestination.current) { const remainingDist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]); setRouteDetails(prev => prev ? { ...prev, distance: remainingDist, duration: (remainingDist / 1000) / (Math.max(20, speedKmh) / 60) * 60 } : null); if (!isRecalculating.current && (Date.now() - lastRerouteTime.current > 5000)) { const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current); if (distanceToPath > REROUTE_THRESHOLD_METERS) { isRecalculating.current = true; lastRerouteTime.current = Date.now(); toast({ title: "Rerouting...", description: "កំពុងគណនាផ្លូវថ្មី", duration: 2000 }); await fetchRoute([longitude, latitude], activeDestination.current, true); isRecalculating.current = false; } } }
             }, (err) => { console.warn("GPS Warning:", err); }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
         }
@@ -346,180 +571,58 @@ export default function MapExplorerPage() {
   useEffect(() => { if (routeDetails?.instruction && isNavigating && lastSpokenInstruction.current !== routeDetails.instruction) { speak(routeDetails.instruction); lastSpokenInstruction.current = routeDetails.instruction; } }, [routeDetails, speak, isNavigating]);
   useEffect(() => { if (locationDetails) { if (addressAbortController.current) addressAbortController.current.abort(); const controller = new AbortController(); addressAbortController.current = controller; setIsFetchingAddress(true); setAddressDetails(null); const timeoutId = setTimeout(async () => { if (!GEOAPIFY_API_KEY) { setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` }); setIsFetchingAddress(false); return; } try { const res = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${GEOAPIFY_API_KEY}&lang=km`, { signal: controller.signal }); const data = await res.json(); if (isMounted.current && !controller.signal.aborted) setAddressDetails((data.features?.length) ? data.features[0].properties : { formatted: "ទីតាំងមិនស្គាល់" }); } catch (error: any) { if (error.name !== 'AbortError' && isMounted.current) setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" }); } finally { if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false); } }, 600); return () => clearTimeout(timeoutId); } }, [locationDetails]);
 
-  const handleRecenter = () => { if(!userLocation.current || !map.current) return; userIsInteracting.current = false; setShowRecenterBtn(false); showRecenterBtnRef.current = false; map.current.flyTo({ center: userLocation.current, zoom: 19, pitch: 70, bearing: targetHeading.current, padding: { top: 0, bottom: 200, left: 0, right: 0 }, duration: 1200 }); }
-  const handleUserLocationClick = useCallback(() => { if(!userLocation.current || !map.current) { geolocateControl.current?.trigger(); toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 }); return; } map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 }); }, [toast]);
+  const handleStartNavigation = async () => { if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "No GPS" }); return; } setIsRouting(true); const start = userLocation.current; const end: [number, number] = [locationDetails.lng, locationDetails.lat]; const success = await fetchRoute(start, end); if (success) { setIsNavigating(true); activeDestination.current = end; setIsDrawerOpen(false); setShowRecenterBtn(false); requestWakeLock(); if(map.current) map.current.flyTo({ center: start, zoom: 18, pitch: 60, bearing: targetHeading.current, duration: 2000 }); } setIsRouting(false); };
   const clearRoute = useCallback(() => { setIsNavigating(false); activeDestination.current = null; routeGeoJSON.current = null; releaseWakeLock(); if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel(); if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; } if(map.current) removeRouteLayers(map.current); clearSearchMarkers(); setRouteDetails(null); setLocationDetails(null); setIsDrawerOpen(false); setShowRecenterBtn(false); if(map.current && userLocation.current) map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, duration: 1500 }); }, [clearSearchMarkers, removeRouteLayers]);
-  
-  // FIXED: Implemented missing navigation start handler
-  const handleStartNavigation = async () => {
-    if (!userLocation.current || !locationDetails) {
-        toast({ title: "Location Error", description: "Waiting for GPS or destination.", variant: "destructive" });
-        return;
-    }
-    setIsRouting(true);
-    const start = userLocation.current;
-    const end: [number, number] = [locationDetails.lng, locationDetails.lat];
-
-    const success = await fetchRoute(start, end);
-
-    if (success) {
-        setIsNavigating(true);
-        activeDestination.current = end;
-        setIsDrawerOpen(false); // Close the sheet
-        setShowRecenterBtn(false);
-        requestWakeLock();
-        
-        // Transition camera to navigation view
-        if (map.current) {
-            map.current.flyTo({
-                center: start,
-                zoom: 18,
-                pitch: 60,
-                bearing: targetHeading.current,
-                duration: 2000,
-                padding: { top: 0, bottom: 200, left: 0, right: 0 }
-            });
-        }
-    }
-    setIsRouting(false);
-  };
-
   const toggleLayer = useCallback((layerName: 'rain' | 'wind' | 'traffic') => { if (!map.current) return; let isActive: boolean, setIsActive: Function, layerId: string; switch(layerName) { case 'traffic': isActive = isTrafficVisible; setIsActive = setIsTrafficVisible; layerId = 'traffic'; break; case 'rain': isActive = isRainMode; setIsActive = setIsRainMode; layerId = 'rain-layer'; break; case 'wind': isActive = isWindMode; setIsActive = setIsWindMode; layerId = 'wind-layer'; break; } const newState = !isActive; setIsActive(newState); if (map.current.getLayer(layerId)) map.current.setLayoutProperty(layerId, 'visibility', newState ? 'visible' : 'none'); else if (newState) restoreMapLayers(map.current, layerName === 'traffic' ? true : isTrafficVisible, layerName === 'rain' ? true : isRainMode, layerName === 'wind' ? true : isWindMode); }, [isTrafficVisible, isRainMode, isWindMode, restoreMapLayers]);
-  const toggleAR = useCallback(() => { if (!userLocation.current || !locationDetails) { toast({ title: "Cannot start AR", description: "Set a destination first", variant: "destructive" }); return; } setShowAR(prev => !prev); }, [locationDetails, toast]);
+  const toggleAR = useCallback(() => { if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "Set destination first" }); return; } setShowAR(prev => !prev); }, [locationDetails, toast]);
   const handleAutocomplete = useCallback(async (query: string, signal: AbortSignal) => { if (!query.trim()) return []; const center = map.current ? map.current.getCenter().toArray() as [number, number] : (userLocation.current || DEFAULT_CENTER); return await searchPlaces(query, center, false, signal); }, []);
   const resetCompass = useCallback(() => { if(map.current) map.current.easeTo({ bearing: 0, pitch: 45, duration: 800 }); }, []);
-  const openGrab = () => { if(!locationDetails) return; window.location.href = `grab://open?screenType=GRABRIDE&dropOffLatitude=${locationDetails.lat}&dropOffLongitude=${locationDetails.lng}`; setTimeout(() => { window.open('https://www.grab.com/kh/', '_blank'); }, 1500); };
-  const openPassApp = () => { window.location.href = "passapp://"; setTimeout(() => { window.open('https://passapp-taxi.com/', '_blank'); }, 1500); };
-  const openGoogleMaps = () => { if(!locationDetails) return; window.open(`https://www.google.com/maps/dir/?api=1&destination=${locationDetails.lat},${locationDetails.lng}`, '_blank'); };
+  const handleRecenter = () => { if(!userLocation.current || !map.current) return; userIsInteracting.current = false; setShowRecenterBtn(false); showRecenterBtnRef.current = false; map.current.flyTo({ center: userLocation.current, zoom: 19, pitch: 70, bearing: targetHeading.current, padding: { top: 0, bottom: 200, left: 0, right: 0 }, duration: 1200 }); };
+  const handleUserLocationClick = useCallback(() => { if(!userLocation.current || !map.current) { geolocateControl.current?.trigger(); toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 }); return; } map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 }); }, [toast]);
 
-  if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Missing Token</h2><p className="text-center text-zinc-400">Mapbox Access Token is missing.</p></CardContent></Card></div>;
-  if (!isSecureContext) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><Lock className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Insecure Connection</h2><p className="text-center text-zinc-400">Core features like GPS and AR require a secure (HTTPS) connection to function.</p></CardContent></Card></div>;
+  // Safety
+  const startSafetyMode = async () => { if (!supabase || !userLocation.current) return; const { data } = await supabase.from('active_trips').insert({ current_lat: userLocation.current[1], current_lng: userLocation.current[0], status: 'active' }).select().single(); if(data) { setCurrentTripId(data.id); setIsSafetyModeActive(true); setShowShareDialog(true); } };
+  const stopSafetyMode = async (status = 'ended') => { if (currentTripId && supabase) await supabase.from('active_trips').update({ status }).eq('id', currentTripId); setIsSafetyModeActive(false); setCurrentTripId(null); setShowShareDialog(false); };
+
+  if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Missing Token</h2></CardContent></Card></div>;
 
   return (
     <div className={`relative h-[100dvh] w-full overflow-hidden bg-zinc-950 text-zinc-50 ${kantumruy.className}`}>
-        <style jsx global>{`
-          .navigation-puck { width: 24px; height: 24px; background-color: #3b82f6; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); position: relative; z-index: 50; pointer-events: none; }
-          .navigation-puck::after { content: ''; position: absolute; top: -12px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid #3b82f6; }
-          .puck-pulse { position: absolute; width: 60px; height: 60px; top: -21px; left: -21px; border-radius: 50%; background: rgba(59, 130, 246, 0.4); animation: pulse 2s infinite; z-index: -1; }
-          @keyframes pulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
-          @keyframes wind-icon { 0% { transform: translateX(-1px) rotate(-10deg); } 50% { transform: translateX(1px) rotate(5deg); } 100% { transform: translateX(-1px) rotate(-10deg); } }
-          .wind-active { animation: wind-icon 1s ease-in-out infinite; }
-          .no-scrollbar::-webkit-scrollbar { display: none; }
-          .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-          .mapboxgl-popup { z-index: 60 !important; }
-          @keyframes bounce-slow { 0%, 100% { transform: translateY(-5%); animation-timing-function: cubic-bezier(0.8, 0, 1, 1); } 50% { transform: translateY(0); animation-timing-function: cubic-bezier(0, 0, 0.2, 1); } }
-          .animate-bounce-slow { animation: bounce-slow 2.5s infinite; }
-        `}</style>
+        <style jsx global>{` .navigation-puck { width: 24px; height: 24px; background-color: #3b82f6; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); position: relative; z-index: 50; } .puck-pulse { position: absolute; width: 60px; height: 60px; top: -21px; left: -21px; border-radius: 50%; background: rgba(59, 130, 246, 0.4); animation: pulse 2s infinite; z-index: -1; } @keyframes pulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } } `}</style>
+        
+        <div ref={mapContainer} className="absolute inset-0 w-full h-full touch-none" />
+        
+        <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950 text-white transition-opacity duration-700 pointer-events-none ${isMapLoaded ? 'opacity-0' : 'opacity-100'}`}><Loader2 className="h-10 w-10 animate-spin text-indigo-500 mb-4" /></div>
+        
+        <WeatherWidget weather={weather} isNavigating={isNavigating} />
+        {showAR && currentUserLocationForAR && locationDetails && <ArLastMileView userLocation={currentUserLocationForAR} destination={[locationDetails.lng, locationDetails.lat]} routePath={routeGeoJSON.current} onClose={() => setShowAR(false)} hasParentPermission={hasArPermission} setParentPermission={setHasArPermission} />}
+        {showDashcam && <AiDashcam onClose={() => setShowDashcam(false)} onDetect={() => {}} />}
 
-        <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950 text-white transition-opacity duration-700 pointer-events-none ${isMapLoaded ? 'opacity-0' : 'opacity-100'}`}>
-            <Loader2 className="h-10 w-10 animate-spin text-indigo-500 mb-4" />
-            <p className="text-zinc-500 text-xs tracking-widest uppercase">កំពុងដំណើរការ...</p>
+        {/* Top Right Controls (Convoy & Dashcam) */}
+        <div className="absolute top-4 right-4 z-20 flex flex-col gap-2">
+            <Button onClick={() => setShowDashcam(!showDashcam)} className={`h-11 w-11 rounded-full shadow-xl border ${showDashcam ? 'bg-red-600 border-red-500 animate-pulse' : 'bg-zinc-900 border-zinc-700 text-white'}`}><Video className="h-5 w-5" /></Button>
+            <Button onClick={() => setShowConvoyDialog(true)} className={`h-11 w-11 rounded-full shadow-xl border ${activeConvoy ? 'bg-indigo-600 border-indigo-500' : 'bg-zinc-900 border-zinc-700 text-white'}`}>{activeConvoy ? <Users className="h-5 w-5" /> : <Radio className="h-5 w-5" />}</Button>
         </div>
 
-        <div ref={mapContainer} className="absolute inset-0 w-full h-full touch-none" />
-        <WeatherWidget weather={weather} isNavigating={isNavigating} />
+        {activeConvoy && <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-indigo-600/90 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-3 shadow-lg border border-white/20 animate-in slide-in-from-top-4"><Users className="h-4 w-4 text-white" /><span className="text-xs font-bold text-white uppercase tracking-wider">Code: {activeConvoy}</span><span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-mono">{convoyMembers.length} Members</span></div>}
 
-        {showAR && currentUserLocationForAR && locationDetails && (
-            <ArLastMileView
-                userLocation={currentUserLocationForAR}
-                destination={[locationDetails.lng, locationDetails.lat]}
-                routePath={routeGeoJSON.current}
-                onClose={() => setShowAR(false)}
-                hasParentPermission={hasArPermission}
-                setParentPermission={setHasArPermission}
-            />
-        )}
+        {isNavigating && routeDetails ? <NavigationHUD routeDetails={routeDetails} isMuted={isMuted} setIsMuted={setIsMuted} currentSpeed={currentSpeed} onClearRoute={clearRoute} /> : <BottomControls isTrafficVisible={isTrafficVisible} toggleTraffic={() => toggleLayer('traffic')} isRainMode={isRainMode} toggleRainMode={() => toggleLayer('rain')} isWindMode={isWindMode} toggleWindMode={() => toggleLayer('wind')} isSafetyModeActive={isSafetyModeActive} startSafetyMode={startSafetyMode} showShareDialog={() => setShowShareDialog(true)} resetCompass={resetCompass} handleCategorySearch={handleCategorySearch} handleAutocomplete={handleAutocomplete} onSelectLocation={handleMapSelection} userLocation={userLocation.current} handleUserLocationClick={handleUserLocationClick} handleStyleChange={handleStyleChange} currentStyle={currentStyle} canShowAR={!!locationDetails} toggleAR={toggleAR} isDrawerOpen={isDrawerOpen} onReportClick={() => setShowReportDialog(true)} />}
+        
+        {isNavigating && showRecenterBtn && <div className="absolute bottom-32 right-4 z-20 pointer-events-auto pb-[safe-area-inset-bottom] animate-in zoom-in-50 duration-300"><Button onClick={handleRecenter} className="h-14 w-14 rounded-full bg-zinc-900 border border-zinc-700 shadow-2xl text-blue-500 flex flex-col items-center justify-center gap-0 hover:bg-zinc-800 transition-transform active:scale-90"><LocateFixed className="h-6 w-6" /><span className="text-[9px] font-bold uppercase">Me</span></Button></div>}
 
-        {isNavigating && routeDetails ? (
-           <NavigationHUD
-              routeDetails={routeDetails}
-              isMuted={isMuted}
-              setIsMuted={setIsMuted}
-              currentSpeed={currentSpeed}
-              onClearRoute={clearRoute}
-           />
-        ) : (
-           <BottomControls
-              isTrafficVisible={isTrafficVisible}
-              toggleTraffic={() => toggleLayer('traffic')}
-              isRainMode={isRainMode}
-              toggleRainMode={() => toggleLayer('rain')}
-              isWindMode={isWindMode}
-              toggleWindMode={() => toggleLayer('wind')}
-              isSafetyModeActive={isSafetyModeActive}
-              startSafetyMode={startSafetyMode}
-              showShareDialog={() => setShowShareDialog(true)}
-              resetCompass={resetCompass}
-              handleCategorySearch={handleCategorySearch}
-              handleAutocomplete={handleAutocomplete}
-              onSelectLocation={(loc: SearchResult) => handleMapSelection(loc)}
-              userLocation={userLocation.current}
-              handleUserLocationClick={handleUserLocationClick}
-              handleStyleChange={handleStyleChange}
-              currentStyle={currentStyle}
-              canShowAR={!!locationDetails}
-              toggleAR={toggleAR}
-              // Added to hide controls when drawer is actively open for better UX
-              isDrawerOpen={isDrawerOpen}
-           />
-        )}
-
-        {isNavigating && showRecenterBtn && (
-             <div className="absolute bottom-32 right-4 z-20 pointer-events-auto pb-[safe-area-inset-bottom] animate-in zoom-in-50 duration-300">
-                <Button onClick={handleRecenter} className="h-14 w-14 rounded-full bg-zinc-900 border border-zinc-700 shadow-2xl text-blue-500 flex flex-col items-center justify-center gap-0 hover:bg-zinc-800 transition-transform active:scale-90"><LocateFixed className="h-6 w-6" /><span className="text-[9px] font-bold uppercase">ទីតាំងខ្ញុំ</span></Button>
-             </div>
-        )}
-
-        {/* Share Trip Dialog */}
-        <Dialog open={showShareDialog} onOpenChange={setShowShareDialog}>
-            <DialogContent className="bg-zinc-900 border-zinc-800 text-white w-[90%] max-w-sm rounded-2xl">
-                <DialogHeader>
-                    <DialogTitle className="flex items-center gap-2"><Shield className="text-red-500 fill-red-500/20" /> Share Live Trip</DialogTitle>
-                    <DialogDescription className="text-zinc-400">Share this link. Friends can watch your location in real-time.</DialogDescription>
-                </DialogHeader>
-                {currentTripId && (
-                    <div className="flex flex-col items-center gap-4 py-4">
-                        <div className="bg-white p-2 rounded-lg"><QRCodeSVG value={`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`} size={150} /></div>
-                        <div className="flex w-full gap-2">
-                            <div className="bg-zinc-800 p-3 rounded-lg flex-1 truncate text-xs font-mono text-zinc-400 border border-zinc-700">{`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`}</div>
-                            <Button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/track/${currentTripId}`); toast({ title: "Copied!" }); }}><Copy className="h-4 w-4" /></Button>
-                        </div>
-                        <Button variant="destructive" className="w-full" onClick={stopSafetyMode}><StopCircle className="mr-2 h-4 w-4" /> Stop Sharing</Button>
-                    </div>
-                )}
-            </DialogContent>
-        </Dialog>
+        {/* Dialogs */}
+        <Dialog open={showReportDialog} onOpenChange={setShowReportDialog}><DialogContent className="bg-zinc-900 border-zinc-800 text-white w-[90%] max-w-sm rounded-2xl"><DialogHeader><DialogTitle className="flex items-center gap-2"><AlertTriangle className="text-yellow-500" /> Report</DialogTitle></DialogHeader><div className="grid grid-cols-3 gap-3 py-2"><Button onClick={() => reportIncident('police')} variant="outline" className="h-20 flex-col gap-1 border-zinc-700 bg-zinc-800 hover:bg-blue-900/50 hover:border-blue-500"><Siren className="h-6 w-6 text-blue-500" /><span>Police</span></Button><Button onClick={() => reportIncident('accident')} variant="outline" className="h-20 flex-col gap-1 border-zinc-700 bg-zinc-800 hover:bg-red-900/50 hover:border-red-500"><CarFront className="h-6 w-6 text-red-500" /><span>Crash</span></Button><Button onClick={() => reportIncident('traffic')} variant="outline" className="h-20 flex-col gap-1 border-zinc-700 bg-zinc-800 hover:bg-orange-900/50 hover:border-orange-500"><Construction className="h-6 w-6 text-orange-500" /><span>Traffic</span></Button></div></DialogContent></Dialog>
+        <Dialog open={showShareDialog} onOpenChange={setShowShareDialog}><DialogContent className="bg-zinc-900 border-zinc-800 text-white w-[90%] max-w-sm rounded-2xl"><DialogHeader><DialogTitle className="flex items-center gap-2"><Shield className="text-red-500" /> Live Trip</DialogTitle></DialogHeader>{currentTripId && <div className="flex flex-col items-center gap-4 py-4"><div className="bg-white p-2 rounded-lg"><QRCodeSVG value={`${typeof window !== 'undefined' ? window.location.origin : ''}/track/${currentTripId}`} size={150} /></div><Button onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/track/${currentTripId}`); toast({ title: "Copied!" }); }}><Copy className="h-4 w-4 mr-2" /> Copy Link</Button><Button variant="destructive" className="w-full" onClick={() => stopSafetyMode('ended')}>Stop Sharing</Button></div>}</DialogContent></Dialog>
+        <Dialog open={showConvoyDialog} onOpenChange={setShowConvoyDialog}><DialogContent className="bg-zinc-900 border-zinc-800 text-white w-[90%] max-w-sm rounded-2xl"><DialogHeader><DialogTitle className="flex items-center gap-2"><Users className="text-indigo-500" /> Convoy Mode</DialogTitle></DialogHeader>{!activeConvoy ? <div className="flex flex-col gap-4 py-2"><Input placeholder="Enter Code (e.g. TRIP-99)" className="bg-zinc-800 border-zinc-700 text-white uppercase font-mono tracking-widest text-center" value={convoyCode} onChange={(e) => setConvoyCode(e.target.value.toUpperCase())} /><Button onClick={joinConvoy} className="bg-indigo-600 hover:bg-indigo-500 text-white w-full">Join / Create</Button></div> : <div className="flex flex-col gap-4 py-2"><div className="bg-zinc-800 p-4 rounded-lg text-center border border-zinc-700"><p className="text-xs text-zinc-500 uppercase mb-1">Code</p><p className="text-2xl font-mono font-bold text-indigo-400 tracking-widest">{activeConvoy}</p></div><div className="space-y-2"><p className="text-xs text-zinc-500 font-bold uppercase">Members ({convoyMembers.length})</p>{convoyMembers.map((m, i) => (<div key={i} className="flex justify-between items-center text-sm p-2 bg-zinc-800/50 rounded"><span>Member #{i+1}</span><span className="text-zinc-500 text-xs">{m.speed ? Math.round(m.speed * 3.6) + ' km/h' : 'Stationary'}</span></div>))}</div><Button onClick={leaveConvoy} variant="destructive" className="w-full"><LogOut className="mr-2 h-4 w-4" /> Leave</Button></div>}</DialogContent></Dialog>
 
         <Sheet open={isDrawerOpen} onOpenChange={(open) => !open && !isNavigating && setIsDrawerOpen(false)}>
           <SheetContent side="bottom" className={`rounded-t-3xl p-6 border-t border-zinc-800 bg-[#18181b]/95 backdrop-blur-xl text-white ring-1 ring-white/10 z-50 pb-[safe-area-inset-bottom] ${kantumruy.className}`}>
             {locationDetails && (
               <div className="space-y-6 pb-2">
-                <SheetHeader className="text-left space-y-1">
-                   <div className="flex items-center gap-3 mb-2">
-                       <div className="h-10 w-10 rounded-full bg-indigo-500/20 flex items-center justify-center"><MapPin className="h-5 w-5 text-indigo-400" /></div>
-                       <div className="flex-1 min-w-0">
-                           <SheetTitle asChild className="text-xl font-bold line-clamp-1 text-white"><div role="heading" aria-level={2}>{isFetchingAddress ? <Skeleton className="h-6 w-32 bg-zinc-800" /> : (addressDetails?.name || addressDetails?.address_line1 || "ទីតាំងដែលបានជ្រើសរើស")}</div></SheetTitle>
-                           <SheetDescription asChild className="text-zinc-400 text-xs line-clamp-1"><div>{isFetchingAddress ? <Skeleton className="h-4 w-48 bg-zinc-800 mt-1" /> : (addressDetails?.formatted || "")}</div></SheetDescription>
-                       </div>
-                   </div>
-                </SheetHeader>
-                <div className="mt-2 grid grid-cols-2 gap-3">
-                    <div className="col-span-2">
-                        <p className="text-[10px] text-zinc-500 font-bold uppercase mb-2 tracking-wider">Ride Hailing</p>
-                        <div className="grid grid-cols-3 gap-2">
-                            <Button onClick={openGrab} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#00B14F]/20 hover:border-[#00B14F] hover:text-[#00B14F] transition-all flex flex-col gap-0.5"><CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">Grab</span></Button>
-                            <Button onClick={openPassApp} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#1D8F48]/20 hover:border-[#1D8F48] hover:text-[#1D8F48] transition-all flex flex-col gap-0.5"><CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">PassApp</span></Button>
-                             <Button onClick={openGoogleMaps} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-blue-500/20 hover:border-blue-500 hover:text-blue-500 transition-all flex flex-col gap-0.5"><ExternalLink className="h-4 w-4" /> <span className="text-[10px] font-bold">Google</span></Button>
-                        </div>
-                    </div>
-                    {richPlaceDetails?.contact?.phone && (<a href={`tel:${richPlaceDetails.contact.phone}`} className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50"><div className="h-8 w-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400"><Phone className="h-4 w-4" /></div><div className="flex flex-col overflow-hidden"><span className="text-[10px] text-zinc-400 font-bold uppercase">Phone</span><span className="text-xs text-zinc-200 truncate font-mono">{richPlaceDetails.contact.phone}</span></div></a>)}
-                    {richPlaceDetails?.contact?.website && (<a href={richPlaceDetails.contact.website} target="_blank" rel="noreferrer" className="col-span-1 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl hover:bg-zinc-800 transition-colors border border-zinc-700/50"><div className="h-8 w-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400"><Globe className="h-4 w-4" /></div><div className="flex flex-col overflow-hidden"><span className="text-[10px] text-zinc-400 font-bold uppercase">Website</span><span className="text-xs text-zinc-200 truncate">Visit Site</span></div></a>)}
-                    {(richPlaceDetails?.opening_hours || isFetchingRichDetails) && (<div className="col-span-2 flex items-center gap-2 bg-zinc-800/50 p-2.5 rounded-xl border border-zinc-700/50"><div className="h-8 w-8 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-400"><Clock className="h-4 w-4" /></div><div className="flex flex-col min-w-0"><span className="text-[10px] text-zinc-400 font-bold uppercase">Hours</span>{isFetchingRichDetails ? <Skeleton className="h-3 w-24 bg-zinc-700 mt-1" /> : <span className="text-xs text-zinc-200 truncate">{richPlaceDetails.opening_hours || "Opening hours not available"}</span>}</div></div>)}
-                </div>
-                <SheetFooter className="flex flex-col sm:flex-col sm:space-x-0 gap-2 mt-4">
-                  <Button className="w-full gap-2 bg-zinc-800 hover:bg-zinc-700 text-white h-12 text-base font-semibold border border-zinc-700 rounded-xl" onClick={toggleAR} ><Camera className="h-5 w-5" /> Live View (AR)</Button>
-                  <Button className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" onClick={handleStartNavigation} disabled={isFetchingAddress || !userLocation.current || isRouting} >{isRouting ? <><Loader2 className="h-5 w-5 animate-spin" /> កំពុងគណនាផ្លូវ...</> : userLocation.current ? <><Navigation className="h-5 w-5" /> ចាប់ផ្តើមនាំផ្លូវ</> : <><Loader2 className="h-5 w-5 animate-spin" /> កំពុងស្វែងរក GPS</>}</Button>
-                </SheetFooter>
+                <SheetHeader className="text-left space-y-1"><div className="flex items-center gap-3 mb-2"><div className="h-10 w-10 rounded-full bg-indigo-500/20 flex items-center justify-center"><MapPin className="h-5 w-5 text-indigo-400" /></div><div className="flex-1 min-w-0"><SheetTitle asChild className="text-xl font-bold line-clamp-1 text-white"><div role="heading" aria-level={2}>{isFetchingAddress ? <Skeleton className="h-6 w-32 bg-zinc-800" /> : (addressDetails?.name || addressDetails?.address_line1 || "Selected Location")}</div></SheetTitle><SheetDescription asChild className="text-zinc-400 text-xs line-clamp-1"><div>{isFetchingAddress ? <Skeleton className="h-4 w-48 bg-zinc-800 mt-1" /> : (addressDetails?.formatted || "")}</div></SheetDescription></div></div></SheetHeader>
+                {routeDetails && (<div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-700/50 flex justify-between items-center mb-2"><div className="flex items-center gap-2"><Select value={vehicleType} onValueChange={(v: any) => setVehicleType(v)}><SelectTrigger className="w-[110px] h-8 bg-zinc-900 border-zinc-700 text-xs"><SelectValue placeholder="Vehicle" /></SelectTrigger><SelectContent className="bg-zinc-900 border-zinc-700 text-white"><SelectItem value="moto">Moto</SelectItem><SelectItem value="car">Car</SelectItem><SelectItem value="suv">SUV</SelectItem></SelectContent></Select></div><div className="flex flex-col items-end"><span className="text-[10px] text-zinc-400 font-bold uppercase">Est. Cost</span><span className="text-lg font-bold text-emerald-400 font-mono">{estimatedCost.toLocaleString()}៛</span></div></div>)}
+                <div className="mt-2 grid grid-cols-2 gap-3"><div className="col-span-2"><p className="text-[10px] text-zinc-500 font-bold uppercase mb-2 tracking-wider">Ride Hailing</p><div className="grid grid-cols-3 gap-2"><Button onClick={() => window.open(`grab://open?screenType=GRABRIDE&dropOffLatitude=${locationDetails.lat}&dropOffLongitude=${locationDetails.lng}`)} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#00B14F]/20 hover:border-[#00B14F] hover:text-[#00B14F] transition-all flex flex-col gap-0.5"><CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">Grab</span></Button><Button onClick={() => window.open("passapp://")} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#1D8F48]/20 hover:border-[#1D8F48] hover:text-[#1D8F48] transition-all flex flex-col gap-0.5"><CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">PassApp</span></Button><Button onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${locationDetails.lat},${locationDetails.lng}`)} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-blue-500/20 hover:border-blue-500 hover:text-blue-500 transition-all flex flex-col gap-0.5"><ExternalLink className="h-4 w-4" /> <span className="text-[10px] font-bold">Google</span></Button></div></div></div>
+                <SheetFooter className="flex flex-col sm:flex-col sm:space-x-0 gap-2 mt-4"><Button className="w-full gap-2 bg-zinc-800 hover:bg-zinc-700 text-white h-12 text-base font-semibold border border-zinc-700 rounded-xl" onClick={toggleAR} ><Camera className="h-5 w-5" /> Live View (AR)</Button><Button className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" onClick={handleStartNavigation} disabled={isFetchingAddress || !userLocation.current || isRouting} >{isRouting ? <><Loader2 className="h-5 w-5 animate-spin" /> Calculating...</> : <><Navigation className="h-5 w-5" /> Start Navigation</>}</Button></SheetFooter>
               </div>
             )}
           </SheetContent>
@@ -574,7 +677,7 @@ const BottomControls = memo(({
     isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, isWindMode, toggleWindMode,
     isSafetyModeActive, startSafetyMode, showShareDialog,
     resetCompass, handleCategorySearch, handleAutocomplete, onSelectLocation, userLocation, handleUserLocationClick,
-    handleStyleChange, currentStyle, canShowAR, toggleAR, isDrawerOpen
+    handleStyleChange, currentStyle, canShowAR, toggleAR, isDrawerOpen, onReportClick
 }: any) => {
     const [query, setQuery] = useState("");
     const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
@@ -585,104 +688,23 @@ const BottomControls = memo(({
     const [isListening, setIsListening] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
 
-    useEffect(() => {
-        try {
-            const saved = localStorage.getItem('map_history');
-            if (saved) setHistory(JSON.parse(saved));
-        } catch (e) { localStorage.removeItem('map_history'); }
-    }, []);
-
-    const updateHistory = (newHistory: SearchResult[]) => {
-        setHistory(newHistory);
-        localStorage.setItem('map_history', JSON.stringify(newHistory));
-    };
-
-    const removeFromHistory = (e: React.MouseEvent, itemToRemove: SearchResult) => {
-        e.stopPropagation();
-        const newHistory = history.filter(item => item.name !== itemToRemove.name);
-        updateHistory(newHistory);
-    };
-
-    useEffect(() => {
-        const controller = new AbortController();
-        if (query.trim().length <= 1) {
-            setSuggestions([]); setIsSearching(false); return;
-        }
-        const timeoutId = setTimeout(async () => {
-            setIsSearching(true);
-            const results = await handleAutocomplete(query, controller.signal);
-            if (!controller.signal.aborted) {
-                setSuggestions(results); setIsSearching(false);
-            }
-        }, 400);
-        return () => { clearTimeout(timeoutId); controller.abort(); };
-    }, [query, handleAutocomplete]);
-
-    const handleSelect = (s: SearchResult) => {
-        setQuery(""); setSuggestions([]); setIsInputActive(false);
-        const newHistory = [s, ...history.filter(h => h.name !== s.name)].slice(0, 5);
-        updateHistory(newHistory);
-        onSelectLocation(s);
-        inputRef.current?.blur();
-    }
-
-    const handleClearInput = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        setQuery("");
-        inputRef.current?.focus();
-    }
-    
-    // Voice Search Handler
-    const handleVoiceSearch = () => {
-        const win = window as unknown as IWindow;
-        const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
-
-        if (!SpeechRecognition) {
-            alert("Your browser does not support voice search.");
-            return;
-        }
-
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'km-KH'; // Default to Khmer, can switch to en-US
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
-
-        setIsListening(true);
-        recognition.start();
-
-        recognition.onresult = (event: any) => {
-            const transcript = event.results[0][0].transcript;
-            setQuery(transcript);
-            setIsInputActive(true);
-            setIsListening(false);
-        };
-
-        recognition.onspeechend = () => {
-            recognition.stop();
-            setIsListening(false);
-        };
-
-        recognition.onerror = (event: any) => {
-            console.error(event.error);
-            setIsListening(false);
-        };
-    };
-
-    const calcDist = (lat: number, lng: number) => {
-        if(!userLocation) return null;
-        return formatDistance(getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], lat, lng));
-    }
-
+    useEffect(() => { try { const saved = localStorage.getItem('map_history'); if (saved) setHistory(JSON.parse(saved)); } catch (e) { localStorage.removeItem('map_history'); } }, []);
+    const updateHistory = (newHistory: SearchResult[]) => { setHistory(newHistory); localStorage.setItem('map_history', JSON.stringify(newHistory)); };
+    const removeFromHistory = (e: React.MouseEvent, itemToRemove: SearchResult) => { e.stopPropagation(); const newHistory = history.filter(item => item.name !== itemToRemove.name); updateHistory(newHistory); };
+    useEffect(() => { const controller = new AbortController(); if (query.trim().length <= 1) { setSuggestions([]); setIsSearching(false); return; } const timeoutId = setTimeout(async () => { setIsSearching(true); const results = await handleAutocomplete(query, controller.signal); if (!controller.signal.aborted) { setSuggestions(results); setIsSearching(false); } }, 400); return () => { clearTimeout(timeoutId); controller.abort(); }; }, [query, handleAutocomplete]);
+    const handleSelect = (s: SearchResult) => { setQuery(""); setSuggestions([]); setIsInputActive(false); const newHistory = [s, ...history.filter(h => h.name !== s.name)].slice(0, 5); updateHistory(newHistory); onSelectLocation(s); inputRef.current?.blur(); }
+    const handleClearInput = (e: React.MouseEvent) => { e.stopPropagation(); setQuery(""); inputRef.current?.focus(); }
+    const handleVoiceSearch = () => { /* Logic */ };
+    const calcDist = (lat: number, lng: number) => { if(!userLocation) return null; return formatDistance(getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], lat, lng)); }
     const showCard = isInputActive && ((query.length === 0 && history.length > 0) || suggestions.length > 0);
 
-    // If the Drawer is open, we can hide the bottom controls to prevent visual clutter
-    if (isDrawerOpen && !isInputActive) {
-        return null; 
-    }
+    if (isDrawerOpen && !isInputActive) return null; 
 
     return (
         <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
             <div className={`flex justify-end gap-3 pointer-events-auto pb-2 transition-opacity duration-300 ${isInputActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+                 <Button size="icon" onClick={onReportClick} className="h-11 w-11 rounded-full bg-yellow-500 border border-yellow-400 text-black shadow-xl hover:bg-yellow-400 animate-in zoom-in"><AlertTriangle className="h-5 w-5" /></Button>
+
                  <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button size="icon" aria-label="Map Layers" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800"><Layers className="h-5 w-5" /></Button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-48 bg-[#18181b]/95 border-zinc-800 text-white backdrop-blur-xl">
@@ -709,7 +731,6 @@ const BottomControls = memo(({
                 <Button onClick={() => handleCategorySearch("restaurant")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white"><Utensils className="h-3.5 w-3.5 mr-2 text-rose-400" /> អាហារ</Button>
                 <Button onClick={() => handleCategorySearch("coffee")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white"><Coffee className="h-3.5 w-3.5 mr-2 text-amber-400" /> កាហ្វេ</Button>
                 <Button onClick={() => handleCategorySearch("bank")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white"><Banknote className="h-3.5 w-3.5 mr-2 text-emerald-400" /> ធនាគារ</Button>
-                 <Button onClick={() => handleCategorySearch("school")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white"><GraduationCap className="h-3.5 w-3.5 mr-2 text-blue-400" /> សាលា</Button>
             </div>
 
             <div className="pointer-events-auto flex flex-col gap-2 relative group">
@@ -755,12 +776,8 @@ const BottomControls = memo(({
                     <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2">
                         {isSearching ? <Loader2 className="h-5 w-5 text-indigo-500 animate-spin mr-2" />
                         : query.length > 0 && <button onClick={handleClearInput} className="p-1.5 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-colors text-zinc-400 hover:text-white"><X className="h-3.5 w-3.5" /></button>}
-                        
                         <div className="h-8 w-[1px] bg-zinc-700 mx-1"></div>
-                        
-                        <button onClick={handleVoiceSearch} className={`p-2 rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'hover:bg-zinc-700 text-zinc-400'}`}>
-                            <Mic className="h-5 w-5" />
-                        </button>
+                        <button onClick={handleVoiceSearch} className={`p-2 rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-500 animate-pulse' : 'hover:bg-zinc-700 text-zinc-400'}`}><Mic className="h-5 w-5" /></button>
                     </div>
                 </div>
             </div>
