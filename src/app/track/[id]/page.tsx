@@ -16,7 +16,6 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
-// Ensure client is singleton-like for the module
 const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
 // --- MATH HELPERS ---
@@ -49,7 +48,8 @@ const DRIVER_INFO = {
     trips: 1250
 };
 
-export default function RealTimeTracking({ params }: { params: Promise<{ id: string }> }) {
+export default function TrackingPage({ params }: { params: Promise<{ id: string }> }) {
+    // Next.js 15: params must be unwrapped with use()
     const { id: tripId } = use(params);
 
     // --- REFS ---
@@ -70,7 +70,6 @@ export default function RealTimeTracking({ params }: { params: Promise<{ id: str
 
     // --- STATE ---
     const [status, setStatus] = useState<'loading' | 'active' | 'ended' | 'error'>('loading');
-    const [lastUpdateText, setLastUpdateText] = useState<string>('Connecting...');
     const [showRecenterBtn, setShowRecenterBtn] = useState(false);
     const [trailCoordinates, setTrailCoordinates] = useState<number[][]>([]);
     const [currentSpeed, setCurrentSpeed] = useState(0);
@@ -79,12 +78,12 @@ export default function RealTimeTracking({ params }: { params: Promise<{ id: str
     // --- 1. ANIMATION LOOP ---
     const animate = useCallback(() => {
         if (!map.current || !marker.current) {
+            // Keep requesting frame until map/marker is ready or component unmounts
             animationFrameId.current = requestAnimationFrame(animate);
             return;
         }
 
         // 1. Interpolate Position (Smooth Slide)
-        // 0.08 factor allows the car to "catch up" smoothly
         const lng = lerp(currentPos.current[0], targetPos.current[0], 0.08);
         const lat = lerp(currentPos.current[1], targetPos.current[1], 0.08);
         
@@ -120,7 +119,6 @@ export default function RealTimeTracking({ params }: { params: Promise<{ id: str
     // --- 2. DATA PACKET HANDLER ---
     const handleNewLocationPacket = useCallback((lng: number, lat: number, heading?: number, speed?: number) => {
         // Visual Feedback
-        setLastUpdateText('Live');
         setIsPulsing(true);
         setTimeout(() => setIsPulsing(false), 1000);
 
@@ -244,6 +242,7 @@ export default function RealTimeTracking({ params }: { params: Promise<{ id: str
         // --- FETCH & SUBSCRIBE ---
         const fetchInitial = async () => {
             const { data, error } = await supabase.from('active_trips').select('*').eq('id', tripId).single();
+            
             if (error || !data) { setStatus('error'); return; }
             if (data.status === 'ended') { setStatus('ended'); return; }
             
@@ -287,7 +286,6 @@ export default function RealTimeTracking({ params }: { params: Promise<{ id: str
             if(map.current) map.current.remove();
         };
     }, [tripId, handleNewLocationPacket, animate]); 
-    // ^ Critical Fix: Dependencies added so subscription logic works with tripId
 
     // --- TRAIL UPDATES ---
     useEffect(() => {
