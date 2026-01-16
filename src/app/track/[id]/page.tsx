@@ -17,8 +17,10 @@ const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
-// Create Supabase client
-const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+// Safe Client Initialization
+const supabase = (SUPABASE_URL && SUPABASE_KEY) 
+    ? createClient(SUPABASE_URL, SUPABASE_KEY) 
+    : null;
 
 // --- MATH HELPERS ---
 const lerp = (start: number, end: number, t: number) => start * (1 - t) + end * t;
@@ -62,7 +64,7 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
     const isMapLoaded = useRef(false);
     
     // Animation Refs
-    const currentPos = useRef<[number, number]>([104.9282, 11.5564]); // Default to PP
+    const currentPos = useRef<[number, number]>([104.9282, 11.5564]); 
     const targetPos = useRef<[number, number]>([104.9282, 11.5564]);
     const currentBearing = useRef<number>(0);
     const targetBearing = useRef<number>(0);
@@ -79,8 +81,12 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
 
     // --- 1. ANIMATION LOOP ---
     const animate = useCallback(() => {
+        // Stop animation if map/marker destroyed or component unmounted
         if (!map.current || !marker.current) {
-            animationFrameId.current = requestAnimationFrame(animate);
+            // Only request next frame if map is expected to be loaded
+            if (status === 'active' || status === 'loading') {
+                 animationFrameId.current = requestAnimationFrame(animate);
+            }
             return;
         }
 
@@ -101,7 +107,7 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
             markerEl.current.style.transform = `rotate(${newBearing}deg)`;
         }
 
-        // Camera Follow (only if user isn't panning)
+        // Camera Follow
         if (!isUserInteractingRef.current) {
             map.current.easeTo({
                 center: [lng, lat],
@@ -113,12 +119,10 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
         }
 
         animationFrameId.current = requestAnimationFrame(animate);
-    }, []);
+    }, [status]);
 
     // --- 2. DATA HANDLER ---
     const handleNewLocationPacket = useCallback((lng: number, lat: number, heading?: number, speed?: number) => {
-        console.log("📍 New Packet:", lng, lat, heading); // Debug log
-        
         setIsPulsing(true);
         setTimeout(() => setIsPulsing(false), 1000);
 
@@ -142,90 +146,86 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
 
     // --- 3. INITIALIZATION & CONNECTION ---
     useEffect(() => {
+        // CRITICAL CHECK: Env vars
         if (!supabase) {
-            console.error("Supabase client not initialized. Check ENV variables.");
+            console.error("❌ Supabase client missing. Check NEXT_PUBLIC_SUPABASE_URL and KEY.");
             setStatus('error');
-            setErrorMsg("Database Config Missing");
+            setErrorMsg("Service Unavailable (Config Error)");
             return;
         }
 
         // 1. Setup Map
         if (!map.current && mapContainer.current) {
-            map.current = new mapboxgl.Map({
-                container: mapContainer.current,
-                style: 'mapbox://styles/mapbox/navigation-night-v1', 
-                center: currentPos.current,
-                zoom: 15,
-                pitch: 50,
-                attributionControl: false,
-                logoPosition: 'top-left',
-                cooperativeGestures: true
-            });
+            try {
+                map.current = new mapboxgl.Map({
+                    container: mapContainer.current,
+                    style: 'mapbox://styles/mapbox/navigation-night-v1', 
+                    center: currentPos.current,
+                    zoom: 15,
+                    pitch: 50,
+                    attributionControl: false,
+                    logoPosition: 'top-left',
+                    cooperativeGestures: true
+                });
 
-            // Interaction Listeners
-            const startInteraction = () => { isUserInteractingRef.current = true; setShowRecenterBtn(true); };
-            map.current.on('mousedown', startInteraction);
-            map.current.on('touchstart', startInteraction);
-            map.current.on('dragstart', startInteraction);
+                // Interaction Listeners
+                const startInteraction = () => { isUserInteractingRef.current = true; setShowRecenterBtn(true); };
+                map.current.on('mousedown', startInteraction);
+                map.current.on('touchstart', startInteraction);
+                map.current.on('dragstart', startInteraction);
 
-            map.current.on('load', () => {
-                if (!map.current) return;
-                isMapLoaded.current = true;
+                map.current.on('load', () => {
+                    if (!map.current) return;
+                    isMapLoaded.current = true;
 
-                // 3D Buildings Layer
-                const layers = map.current.getStyle().layers;
-                const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
-                if (!map.current.getLayer('3d-buildings')) {
-                    map.current.addLayer({
-                        'id': '3d-buildings',
-                        'source': 'composite',
-                        'source-layer': 'building',
-                        'filter': ['==', 'extrude', 'true'],
-                        'type': 'fill-extrusion',
-                        'minzoom': 14,
-                        'paint': {
-                            'fill-extrusion-color': '#27272a',
-                            'fill-extrusion-height': ['get', 'height'],
-                            'fill-extrusion-base': ['get', 'min_height'],
-                            'fill-extrusion-opacity': 0.8
-                        }
-                    }, labelLayerId);
-                }
-
-                // Trail Layer
-                map.current.addSource('route', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }, lineMetrics: true });
-                map.current.addLayer({
-                    id: 'route',
-                    type: 'line',
-                    source: 'route',
-                    layout: { 'line-join': 'round', 'line-cap': 'round' },
-                    paint: {
-                        'line-color': '#6366f1',
-                        'line-width': 6,
-                        'line-opacity': 0.8,
-                        'line-gradient': [ 'interpolate', ['linear'], ['line-progress'], 0, "rgba(99, 102, 241, 0)", 0.2, "#818cf8", 1, "#ffffff" ]
+                    // 3D Buildings Layer
+                    const layers = map.current.getStyle().layers;
+                    const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
+                    if (!map.current.getLayer('3d-buildings')) {
+                        map.current.addLayer({
+                            'id': '3d-buildings',
+                            'source': 'composite',
+                            'source-layer': 'building',
+                            'filter': ['==', 'extrude', 'true'],
+                            'type': 'fill-extrusion',
+                            'minzoom': 14,
+                            'paint': {
+                                'fill-extrusion-color': '#27272a',
+                                'fill-extrusion-height': ['get', 'height'],
+                                'fill-extrusion-base': ['get', 'min_height'],
+                                'fill-extrusion-opacity': 0.8
+                            }
+                        }, labelLayerId);
                     }
-                }, '3d-buildings');
-            });
 
-            // Car Marker
-            const el = document.createElement('div');
-            el.className = 'car-marker-container';
-            el.innerHTML = `
-                <div id="car-rotator" style="transition: transform 0.1s linear; will-change: transform;">
-                    <div class="relative">
-                        <div class="absolute inset-0 bg-indigo-500/40 blur-xl rounded-full"></div>
-                        <div class="relative w-12 h-12 bg-zinc-100 rounded-full border-2 border-indigo-600 shadow-2xl flex items-center justify-center z-10">
-                            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" /><circle cx="7" cy="17" r="2" /><circle cx="17" cy="17" r="2" /></svg>
-                        </div>
-                        <div class="absolute -top-3 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[8px] border-b-indigo-500"></div>
-                    </div>
-                </div>`;
-            markerEl.current = el.querySelector('#car-rotator');
-            marker.current = new mapboxgl.Marker({ element: el }).setLngLat(currentPos.current).addTo(map.current);
+                    // Trail Layer
+                    map.current.addSource('route', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }, lineMetrics: true });
+                    map.current.addLayer({
+                        id: 'route',
+                        type: 'line',
+                        source: 'route',
+                        layout: { 'line-join': 'round', 'line-cap': 'round' },
+                        paint: {
+                            'line-color': '#6366f1',
+                            'line-width': 6,
+                            'line-opacity': 0.8,
+                            'line-gradient': [ 'interpolate', ['linear'], ['line-progress'], 0, "rgba(99, 102, 241, 0)", 0.2, "#818cf8", 1, "#ffffff" ]
+                        }
+                    }, '3d-buildings');
+                });
 
-            // Start Animation
-            animationFrameId.current = requestAnimationFrame(animate);
+                // Car Marker
+                const el = document.createElement('div');
+                el.className = 'car-marker-container';
+                el.innerHTML = `<div id="car-rotator" style="transition: transform 0.1s linear; will-change: transform;"><div class="relative"><div class="absolute inset-0 bg-indigo-500/40 blur-xl rounded-full"></div><div class="relative w-12 h-12 bg-zinc-100 rounded-full border-2 border-indigo-600 shadow-2xl flex items-center justify-center z-10"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" /><circle cx="7" cy="17" r="2" /><circle cx="17" cy="17" r="2" /></svg></div><div class="absolute -top-3 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[8px] border-b-indigo-500"></div></div></div>`;
+                markerEl.current = el.querySelector('#car-rotator');
+                marker.current = new mapboxgl.Marker({ element: el }).setLngLat(currentPos.current).addTo(map.current);
+
+                // Start Animation
+                animationFrameId.current = requestAnimationFrame(animate);
+            } catch (e) {
+                console.error("Mapbox Init Error:", e);
+            }
         }
 
         // 2. Fetch Initial Data
@@ -242,7 +242,9 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
             if (error) {
                 console.error("Supabase Error:", error);
                 setStatus('error');
-                setErrorMsg("Trip Not Found or Access Denied (Check RLS)");
+                if (error.code === 'PGRST116') setErrorMsg("Trip not found");
+                else if (error.code === '401') setErrorMsg("Unauthorized Access");
+                else setErrorMsg(error.message);
                 return;
             }
 
@@ -273,7 +275,6 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
                     destEl.innerHTML = `<div class="w-8 h-8 bg-red-500 rounded-full border-2 border-white shadow-lg flex items-center justify-center animate-bounce"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>`;
                     destinationMarker.current = new mapboxgl.Marker({ element: destEl }).setLngLat([data.dest_lng, data.dest_lat]).addTo(map.current);
                 }
-                // Only fit bounds on first load
                 const bounds = new mapboxgl.LngLatBounds().extend([data.current_lng, data.current_lat]).extend([data.dest_lng, data.dest_lat]);
                 map.current.fitBounds(bounds, { padding: 100, animate: false });
             } else if (map.current) {
@@ -281,25 +282,17 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
             }
 
             // 3. Subscribe to Realtime
-            console.log("📡 Subscribing to Realtime...");
             const channel = supabase.channel(`tracking-${tripId}`)
                 .on('postgres_changes', 
                     { event: 'UPDATE', schema: 'public', table: 'active_trips', filter: `id=eq.${tripId}` }, 
                     (payload) => {
-                        console.log("⚡ Realtime Update:", payload);
                         const trip = payload.new as any;
                         if (trip.status === 'ended') setStatus('ended');
                         else handleNewLocationPacket(trip.current_lng, trip.current_lat, trip.heading, trip.speed);
                     }
                 )
-                .subscribe((status) => {
-                    console.log("Subscription Status:", status);
-                    if (status !== 'SUBSCRIBED') {
-                        // Optional: Retry logic or error toast
-                    }
-                });
+                .subscribe();
 
-            // Cleanup subscription
             return () => {
                 supabase.removeChannel(channel);
             };
