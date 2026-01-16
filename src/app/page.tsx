@@ -20,7 +20,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFo
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -32,17 +32,16 @@ import {
   X, MapPin, Navigation, LocateFixed, Volume2, VolumeX, Compass, Loader2, AlertTriangle,
   Fuel, Utensils, Coffee, Search, Mic, Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind, ArrowRight, Clock, History, 
-  Navigation as NavIcon, Crosshair, Banknote, GraduationCap, ChevronDown, ChevronUp, 
-  Trash2, Phone, Globe, Satellite, Map as MapIcon, CarFront, ExternalLink, Camera, 
-  Lock, Mountain, Shield, Share2, StopCircle, Copy, Bike, Siren, Construction, 
-  Video, Users, LogOut, Radio, Eye
+  Navigation as NavIcon, Crosshair, Banknote, ChevronDown, ChevronUp, 
+  Trash2, Map as MapIcon, CarFront, ExternalLink, Camera, 
+  Mountain, Shield, Copy, Siren, Construction, 
+  Video, Users, LogOut, Radio, Satellite
 } from 'lucide-react';
 
 // ==========================================
 // 2. CONFIG & HELPERS
 // ==========================================
 
-// Fix: Missing Interface Definition
 interface ArLastMileViewProps { 
     userLocation: [number, number]; 
     destination: [number, number]; 
@@ -54,11 +53,6 @@ interface ArLastMileViewProps {
 
 interface DeviceOrientationEventiOS extends DeviceOrientationEvent {
     requestPermission?: () => Promise<'granted' | 'denied'>;
-}
-
-interface IWindow extends Window {
-    webkitSpeechRecognition: any;
-    SpeechRecognition: any;
 }
 
 const kantumruy = Kantumruy_Pro({
@@ -121,7 +115,25 @@ function getBearing(startLat: number, startLng: number, destLat: number, destLng
   const brng = Math.atan2(y, x); return ((brng * 180 / Math.PI) + 360) % 360;
 }
 function getShortestAngleDistance(target: number, current: number) { let delta = target - current; while (delta < -180) delta += 360; while (delta > 180) delta -= 360; return delta; }
-function lerpAngle(current: number, target: number, factor: number) { const dist = getShortestAngleDistance(target, current); return current + dist * factor; }
+
+// Improved Smooth Angle Interpolation
+function lerpAngle(start: number, end: number, amount: number) {
+    let difference = Math.abs(end - start);
+    if (difference > 180) {
+        if (end > start) start += 360; else end += 360;
+    }
+    const value = (start + ((end - start) * amount));
+    return ((value % 360) + 360) % 360;
+}
+
+// AR Helper: Smooth Angle Interpolation
+function smoothAngle(current: number, target: number, factor: number) {
+    let delta = target - current;
+    while (delta <= -180) delta += 360;
+    while (delta > 180) delta -= 360;
+    return current + delta * factor;
+}
+
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) { if (!routeCoords.length) return Infinity; let minDistance = Infinity; const step = Math.max(1, Math.ceil(routeCoords.length / 50)); for (let i = 0; i < routeCoords.length; i += step) { const dist = getDistanceFromLatLonInMeters(userLat, userLng, routeCoords[i][1], routeCoords[i][0]); if (dist < minDistance) minDistance = dist; if (minDistance < 10) return minDistance; } return minDistance; }
 const lerp = (start: number, end: number, amt: number) => (1 - amt) * start + amt * end;
 const formatDistance = (d: number) => d > 1000 ? `${(d / 1000).toFixed(1)} គ.ម` : `${d.toFixed(0)} ម៉ែត្រ`;
@@ -134,6 +146,7 @@ const mapFeaturesToResults = (features: any[]): SearchResult[] => features.map((
 const getWeatherIcon = (condition: string) => { const c = condition.toLowerCase(); if (c.includes('rain') || c.includes('drizzle')) return <CloudRain className="h-5 w-5 text-blue-400" />; if (c.includes('thunder')) return <CloudLightning className="h-5 w-5 text-yellow-400" />; if (c.includes('snow')) return <Snowflake className="h-5 w-5 text-white" />; if (c.includes('cloud')) return <Cloud className="h-5 w-5 text-gray-400" />; if (c.includes('clear') || c.includes('sun')) return <Sun className="h-5 w-5 text-orange-400" />; return <Wind className="h-5 w-5 text-zinc-400" />; };
 const ManeuverIcon = memo(({ instruction }: { instruction: string }) => { const text = instruction.toLowerCase(); const iconClass = "h-8 w-8 text-white"; if (text.includes('left')) return <CornerUpLeft className={iconClass} />; if (text.includes('right')) return <CornerUpRight className={iconClass} />; if (text.includes('straight') || text.includes('continue')) return <ArrowUp className={iconClass} />; if (text.includes('uturn')) return <Zap className={iconClass} />; return <NavIcon className={iconClass} />; });
 ManeuverIcon.displayName = 'ManeuverIcon';
+
 type WeatherData = { temp: number; condition: string; description: string };
 type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
 type Incident = { id: number, type: 'police' | 'traffic' | 'accident' | 'pothole', lat: number, lng: number };
@@ -150,11 +163,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 
     useEffect(() => {
         const loadModel = async () => {
-            try {
-                await tf.ready();
-                const loadedModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
-                setModel(loadedModel);
-            } catch (e) { console.error("TFJS Error", e); }
+            try { await tf.ready(); const loadedModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' }); setModel(loadedModel); } catch (e) { console.error("TFJS Error", e); }
         };
         loadModel();
     }, []);
@@ -177,20 +186,12 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
                     predictions.forEach(p => {
                         if (['car', 'truck', 'bus', 'person', 'traffic light'].includes(p.class)) {
-                            ctx.beginPath();
-                            ctx.lineWidth = 2;
-                            ctx.strokeStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
-                            ctx.rect(p.bbox[0], p.bbox[1], p.bbox[2], p.bbox[3]);
-                            ctx.stroke();
+                            ctx.beginPath(); ctx.lineWidth = 2; ctx.strokeStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
+                            ctx.rect(p.bbox[0], p.bbox[1], p.bbox[2], p.bbox[3]); ctx.stroke();
                             ctx.fillStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
                             ctx.fillText(`${p.class} ${(p.score * 100).toFixed(0)}%`, p.bbox[0], p.bbox[1] > 10 ? p.bbox[1] - 5 : 10);
                             const widthRatio = p.bbox[2] / 320; 
-                            if (widthRatio > 0.6) {
-                                setAlert("⚠️ BRAKE!");
-                                onDetect('traffic');
-                            } else {
-                                setAlert(null);
-                            }
+                            if (widthRatio > 0.6) { setAlert("⚠️ BRAKE!"); onDetect('traffic'); } else { setAlert(null); }
                         }
                     });
                 }
@@ -202,7 +203,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
     }, [model, onDetect]);
 
     return (
-        <div className="fixed top-4 right-4 w-40 h-56 bg-black rounded-xl overflow-hidden shadow-2xl z-[50] border-2 border-zinc-800 animate-in slide-in-from-right-4">
+        <div className="fixed top-4 right-4 w-40 h-56 bg-black rounded-xl overflow-hidden shadow-2xl z-[50] border-2 border-zinc-800 animate-in slide-in-from-right-4" style={{ top: 'max(1rem, env(safe-area-inset-top))' }}>
             <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" muted playsInline />
             <canvas ref={canvasRef} width={320} height={480} className="absolute inset-0 w-full h-full" />
             <div className="absolute top-0 left-0 right-0 p-1 bg-black/50 text-[10px] text-white flex justify-between items-center">
@@ -215,24 +216,214 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 };
 
 // ==========================================
-// 4. AR COMPONENT
+// 4. AR COMPONENT (UPDATED: Gates & Radar)
 // ==========================================
 const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
-    const videoRef = useRef<HTMLVideoElement>(null); const requestRef = useRef<number>(0); const [isSecure, setIsSecure] = useState(true); const [sensorsActive, setSensorsActive] = useState(false); const [targetInSight, setTargetInSight] = useState(false); const streamRef = useRef<MediaStream | null>(null); const hasFiredOnce = useRef(false); const worldRef = useRef<HTMLDivElement>(null); const distanceTextRef = useRef<HTMLDivElement>(null); const bearingTextRef = useRef<HTMLSpanElement>(null); const sensorData = useRef({ heading: 0, rawHeading: 0 }); const lastRenderedState = useRef({ distanceText: "" });
-    const visiblePathSegments = useMemo(() => { if (!routePath || routePath.length === 0) return []; const segments: {x: number, z: number, dist: number}[] = []; let count = 0; for(let i=0; i<routePath.length; i+=1) { const pt = routePath[i]; const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]); if (dist < 150 && count < 30) { const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]); const rad = bearing * (Math.PI / 180); segments.push({ x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist: dist }); count++; } } return segments.sort((a,b) => b.dist - a.dist); }, [routePath, userLocation]);
-    const handleOrientation = useCallback((e: DeviceOrientationEvent | any) => { if (!hasFiredOnce.current) { setSensorsActive(true); hasFiredOnce.current = true; } let heading = 0; if (e.webkitCompassHeading) heading = e.webkitCompassHeading; else if (e.alpha !== null) heading = 360 - e.alpha; sensorData.current.rawHeading = heading; }, []);
-    useEffect(() => { if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') { setIsSecure(false); return; } const startCamera = async () => { try { streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } }, audio: false }); } catch (err) { try { streamRef.current = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }); } catch (e) { return; } } if (videoRef.current && streamRef.current) videoRef.current.srcObject = streamRef.current; }; const checkSavedPermission = () => { const isIOS = typeof (DeviceOrientationEvent as unknown as DeviceOrientationEventiOS).requestPermission === 'function'; if (!isIOS) { setParentPermission(true); setTimeout(() => { if(!hasFiredOnce.current) setSensorsActive(true); }, 1000); } }; startCamera(); checkSavedPermission(); return () => { if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop()); cancelAnimationFrame(requestRef.current); }; }, [hasParentPermission, setParentPermission]);
-    useEffect(() => { if (hasParentPermission) { window.addEventListener('deviceorientation', handleOrientation); if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', handleOrientation as any); } return () => { window.removeEventListener('deviceorientation', handleOrientation); if ('ondeviceorientationabsolute' in window) window.removeEventListener('deviceorientationabsolute', handleOrientation as any); } }, [hasParentPermission, handleOrientation]);
-    const requestAccess = async () => { const deviceMotionEvent = DeviceOrientationEvent as unknown as DeviceOrientationEventiOS; if (typeof deviceMotionEvent.requestPermission === 'function') { try { const perm = await deviceMotionEvent.requestPermission(); if (perm === 'granted') { setParentPermission(true); localStorage.setItem(AR_PERMISSION_KEY, 'true'); } } catch (e) { } } else { setParentPermission(true); localStorage.setItem(AR_PERMISSION_KEY, 'true'); } };
-    useEffect(() => { if (!hasParentPermission || !sensorsActive) return; const updateLoop = () => { const currentObj = sensorData.current; const diff = getShortestAngleDistance(currentObj.rawHeading, currentObj.heading); currentObj.heading += diff * 0.15; const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]); const distance = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]); const formattedDist = formatDistance(distance); if (bearingTextRef.current) bearingTextRef.current.innerText = `${Math.round(bearing)}°`; if (distanceTextRef.current && lastRenderedState.current.distanceText !== formattedDist) { distanceTextRef.current.innerText = formattedDist; lastRenderedState.current.distanceText = formattedDist; } setTargetInSight(Math.abs(getShortestAngleDistance(bearing, currentObj.heading)) < 15); if (worldRef.current) worldRef.current.style.transform = `translateZ(0) rotateY(${-currentObj.heading}deg)`; requestRef.current = requestAnimationFrame(updateLoop); }; requestRef.current = requestAnimationFrame(updateLoop); return () => cancelAnimationFrame(requestRef.current); }, [userLocation, destination, hasParentPermission, sensorsActive]);
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const worldRef = useRef<HTMLDivElement>(null);
+    const requestRef = useRef<number>(0);
     
+    // Sensor State
+    const [sensorsActive, setSensorsActive] = useState(false);
+    const [permissionGranted, setPermissionGranted] = useState(hasParentPermission);
+    const [debugMsg, setDebugMsg] = useState("");
+    
+    // Smooth Data Refs (Mutable to avoid re-renders in anim loop)
+    const sensorData = useRef({ alpha: 0, beta: 0, gamma: 0, smoothAlpha: 0, smoothBeta: 90 });
+
+    const visiblePathSegments = useMemo(() => {
+        if (!routePath || routePath.length === 0) return [];
+        const segments: { x: number; z: number; dist: number; index: number }[] = [];
+        const step = 2; // Downsample for performance
+        let count = 0;
+        
+        for (let i = 0; i < routePath.length; i += step) {
+            const pt = routePath[i];
+            const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]);
+            // Show points within 120m
+            if (dist < 120 && count < 25) { 
+                const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]);
+                const rad = bearing * (Math.PI / 180);
+                // Convert Polar to Cartesian (Z is negative forward)
+                segments.push({ x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist: dist, index: i });
+                count++;
+            }
+        }
+        return segments.sort((a, b) => b.dist - a.dist);
+    }, [routePath, userLocation]);
+
+    const destStats = useMemo(() => {
+        const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], destination[1], destination[0]);
+        const bearing = getBearing(userLocation[1], userLocation[0], destination[1], destination[0]);
+        const rad = bearing * (Math.PI / 180);
+        return { x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist, bearing };
+    }, [userLocation, destination]);
+
+    const handleOrientation = useCallback((e: DeviceOrientationEvent) => {
+        let heading = 0;
+        // @ts-ignore - iOS Webkit Support
+        if (e.webkitCompassHeading) { heading = e.webkitCompassHeading; } 
+        // Android Standard
+        else if (e.alpha !== null) { heading = 360 - e.alpha; }
+
+        sensorData.current.alpha = heading;
+        sensorData.current.beta = e.beta || 0; 
+        if (!sensorsActive) setSensorsActive(true);
+    }, [sensorsActive]);
+
+    useEffect(() => {
+        const startCamera = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } }, audio: false });
+                if (videoRef.current) videoRef.current.srcObject = stream;
+            } catch (err) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    if (videoRef.current) videoRef.current.srcObject = stream;
+                } catch (e) { setDebugMsg("Camera access denied."); }
+            }
+        };
+
+        if (permissionGranted) {
+            startCamera();
+            window.addEventListener('deviceorientation', handleOrientation);
+        }
+
+        return () => {
+            window.removeEventListener('deviceorientation', handleOrientation);
+            if (videoRef.current?.srcObject) { (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop()); }
+        };
+    }, [permissionGranted, handleOrientation]);
+
+    useEffect(() => {
+        if (!permissionGranted) return;
+        const updateLoop = () => {
+            const data = sensorData.current;
+            data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.15); // Smoothing factor
+            if (worldRef.current) {
+                // Rotate opposite to heading
+                worldRef.current.style.transform = `translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
+            }
+            requestRef.current = requestAnimationFrame(updateLoop);
+        };
+        requestRef.current = requestAnimationFrame(updateLoop);
+        return () => cancelAnimationFrame(requestRef.current);
+    }, [permissionGranted]);
+
+    const requestAccess = async () => {
+        // @ts-ignore
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            try {
+                // @ts-ignore
+                const perm = await DeviceOrientationEvent.requestPermission();
+                if (perm === 'granted') {
+                    setPermissionGranted(true);
+                    setParentPermission(true);
+                    window.location.reload(); 
+                } else { alert("Permission denied."); }
+            } catch (e) { console.error(e); }
+        } else {
+            setPermissionGranted(true);
+            setParentPermission(true);
+        }
+    };
+
     return (
         <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
-            <style jsx>{` .perspective-container { perspective: 600px; perspective-origin: 50% 50%; } .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; } .path-segment { position: absolute; width: 100px; height: 100px; background: radial-gradient(circle, rgba(16, 185, 129, 0.8) 0%, rgba(16, 185, 129, 0) 70%); transform-origin: center center; transform: rotateX(90deg) translate(-50%, -50%); box-shadow: 0 0 15px rgba(16, 185, 129, 0.4); border-radius: 50%; pointer-events: none; } .destination-marker { position: absolute; left: 0; top: 0; transform-style: preserve-3d; } `}</style>
+            <style jsx>{`
+                .perspective-container { perspective: 800px; perspective-origin: 50% 50%; }
+                .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; }
+                .ar-gate {
+                    position: absolute; width: 120px; height: 80px;
+                    border: 2px solid rgba(16, 185, 129, 0.6); border-bottom: 4px solid rgba(16, 185, 129, 1);
+                    background: linear-gradient(180deg, rgba(16,185,129,0) 0%, rgba(16,185,129,0.2) 100%);
+                    transform-origin: center bottom; transform: translate(-50%, -100%);
+                    display: flex; align-items: center; justify-content: center;
+                    color: #10b981; font-weight: bold; font-family: monospace;
+                    text-shadow: 0 2px 4px black; border-radius: 8px 8px 0 0;
+                    box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
+                }
+                .ar-gate::after {
+                    content: ''; position: absolute; bottom: -10px; left: 50%; transform: translateX(-50%);
+                    width: 6px; height: 6px; background: #fff; border-radius: 50%; box-shadow: 0 0 10px #fff;
+                }
+            `}</style>
+
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
-            {targetInSight && ( <div className="absolute inset-0 flex items-center justify-center pointer-events-none"> <div className="w-64 h-64 border-2 border-emerald-500 rounded-lg opacity-80 animate-pulse flex items-center justify-center relative"> <span className="text-emerald-500 font-bold bg-black/50 px-2 rounded uppercase text-xs tracking-widest mt-32">Target Locked</span> </div> </div> )}
-            {!hasParentPermission && isSecure && ( <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80"> <div className="text-center p-6 max-w-sm"> <Compass className="h-12 w-12 text-white mx-auto mb-4 animate-pulse"/> <h3 className="text-white text-xl font-bold mb-2">Enable AR</h3> <p className="text-zinc-400 mb-6 text-sm">Allow access to compass sensors.</p> <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">Allow Access</Button> <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400">Cancel</Button> </div> </div> )}
-            {hasParentPermission && sensorsActive && ( <> <div ref={worldRef} className="world-3d"> <div> {visiblePathSegments.map((seg, i) => { const scale = Math.max(0.5, 1 - (seg.dist / 150)); const PIXEL_PER_METER = 40; return ( <div key={i} className="path-segment" style={{ transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(120px) translateZ(${seg.z * PIXEL_PER_METER}px) rotateX(90deg) scale(${scale})`, opacity: scale }} /> ) })} </div> <div className="destination-marker flex flex-col items-center justify-center" style={{ transform: `translateX(${destX * 40}px) translateY(-50px) translateZ(${destZ * 40}px)` }}> <div className="relative animate-bounce-slow"> <div ref={distanceTextRef} className="bg-indigo-600 text-white px-3 py-1 rounded-full text-lg font-bold shadow-lg border-2 border-white mb-2 whitespace-nowrap">0m</div> <div className="w-16 h-16 bg-red-600 rounded-full border-4 border-white shadow-xl flex items-center justify-center"><MapPin className="h-8 w-8 text-white" /></div> </div> </div> </div> <div className="absolute top-4 left-4 right-4 flex justify-between items-start z-[65]"> <div className="bg-black/60 backdrop-blur text-white px-4 py-2 rounded-xl border border-white/10"> <p className="text-xs text-gray-300 font-bold uppercase tracking-wider">Heading</p> <p className="text-lg font-bold font-mono"><span ref={bearingTextRef}>0°</span></p> </div> <Button onClick={onClose} size="icon" className="rounded-full bg-black/50 text-white border border-white/20"><X className="h-5 w-5" /></Button> </div> </> )}
+            
+            {!permissionGranted && (
+                <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+                    <div className="text-center p-6 max-w-sm">
+                        <Compass className="h-16 w-16 text-indigo-500 mx-auto mb-4 animate-pulse"/>
+                        <h3 className="text-white text-xl font-bold mb-2">Enable AR View</h3>
+                        <p className="text-zinc-400 mb-6 text-sm">Access to camera & compass is required.</p>
+                        <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">Start Camera</Button>
+                        <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400 w-full">Cancel</Button>
+                    </div>
+                </div>
+            )}
+
+            {permissionGranted && (
+                <>
+                <div ref={worldRef} className="world-3d">
+                    {visiblePathSegments.map((seg, i) => {
+                        const opacity = Math.max(0, 1 - (seg.dist / 80)); 
+                        const PIXEL_PER_METER = 25;
+                        return (
+                            <div key={`seg-${i}`} className="ar-gate" style={{ transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(80px) translateZ(${seg.z * PIXEL_PER_METER}px)`, opacity: opacity }}>
+                                <span className="text-sm">{Math.round(seg.dist)}m</span>
+                            </div>
+                        )
+                    })}
+                    <div className="absolute flex flex-col items-center justify-center w-0 h-0" style={{ transform: `translateX(${destStats.x * 25}px) translateY(50px) translateZ(${destStats.z * 25}px)` }}>
+                        <div className="relative animate-bounce">
+                            <div className="bg-red-600 text-white px-3 py-1 rounded-lg text-lg font-bold shadow-xl border-2 border-white mb-1 whitespace-nowrap transform -translate-x-1/2">
+                                {destStats.dist > 1000 ? (destStats.dist/1000).toFixed(1) + 'km' : Math.round(destStats.dist) + 'm'}
+                            </div>
+                            <MapPin className="h-12 w-12 text-red-500 transform -translate-x-1/2 drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)] fill-red-600" />
+                        </div>
+                        <div className="w-4 h-4 bg-black/50 rounded-full blur-sm transform -translate-x-1/2 translate-y-2"></div>
+                    </div>
+                </div>
+
+                <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-start" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
+                    <div className="bg-black/40 backdrop-blur-md text-white px-4 py-2 rounded-xl border border-white/10">
+                        <div className="flex items-center gap-2 mb-1">
+                            <Navigation className="h-4 w-4 text-emerald-400" style={{ transform: `rotate(${destStats.bearing - sensorData.current.alpha}deg)` }} />
+                            <span className="text-xs font-bold uppercase text-emerald-400">Target</span>
+                        </div>
+                        <p className="text-2xl font-black font-mono leading-none">{Math.round(destStats.dist)}<span className="text-sm text-zinc-400">m</span></p>
+                    </div>
+                    <Button onClick={onClose} size="icon" className="rounded-full bg-black/40 backdrop-blur text-white border border-white/10 h-10 w-10"><X className="h-5 w-5" /></Button>
+                </div>
+
+                {/* Radar */}
+                <div className="absolute bottom-6 left-6" style={{ marginBottom: 'env(safe-area-inset-bottom)' }}>
+                    <div className="w-24 h-24 rounded-full bg-black/50 backdrop-blur border-2 border-white/20 relative overflow-hidden shadow-xl">
+                        <div className="absolute inset-0 rounded-full bg-gradient-to-t from-transparent via-emerald-500/20 to-transparent animate-spin-slow opacity-50"></div>
+                        <div className="absolute top-1/2 left-1/2 w-2 h-2 bg-blue-500 rounded-full transform -translate-x-1/2 -translate-y-1/2 border border-white z-10"></div>
+                        <div className="absolute top-1/2 left-1/2 w-0 h-0 border-l-[30px] border-l-transparent border-r-[30px] border-r-transparent border-t-[40px] border-t-white/10 transform -translate-x-1/2 -translate-y-full origin-bottom"></div>
+                        {visiblePathSegments.map((seg, i) => {
+                            const scale = 0.4;
+                            const cx = 48 + (seg.x * scale); 
+                            const cy = 48 - (Math.abs(seg.z) * scale);
+                            if (cx < 0 || cx > 96 || cy < 0 || cy > 96) return null;
+                            return <div key={`r-${i}`} className="absolute w-1.5 h-1.5 bg-emerald-400 rounded-full" style={{ left: cx, top: cy }}></div>
+                        })}
+                    </div>
+                </div>
+                
+                {debugMsg && <div className="absolute bottom-20 left-0 right-0 text-center text-red-400 text-xs bg-black/50 p-1">{debugMsg}</div>}
+                
+                {!sensorsActive && (
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/70 text-white px-6 py-4 rounded-xl text-center pointer-events-none animate-pulse">
+                        <div className="text-4xl mb-2">∞</div>
+                        <p className="font-bold">Move phone in Figure 8</p>
+                        <p className="text-xs text-zinc-400">Calibrating Compass...</p>
+                    </div>
+                )}
+                </>
+            )}
         </div>
     );
 };
@@ -269,6 +460,11 @@ export default function MapExplorerPage() {
   const isNavigatingRef = useRef(false);
   const currentSpeedRef = useRef(0);
   const lastSafetyUpdate = useRef<number>(0);
+
+  // Sync Refs to avoid stale closures in Geoloc callback
+  const activeConvoyRef = useRef<string | null>(null);
+  const isSafetyModeActiveRef = useRef<boolean>(false);
+  const currentTripIdRef = useRef<string | null>(null);
   
   const currentPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
   const targetPuckPos = useRef<[number, number]>(DEFAULT_CENTER);
@@ -282,7 +478,6 @@ export default function MapExplorerPage() {
   
   // UI State
   const [isNavigating, setIsNavigating] = useState(false);
-  const [isSecureContext, setIsSecureContext] = useState(true);
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
   const [richPlaceDetails, setRichPlaceDetails] = useState<any>(null);
@@ -328,9 +523,15 @@ export default function MapExplorerPage() {
   useEffect(() => { isNavigatingRef.current = isNavigating; }, [isNavigating]);
   useEffect(() => { currentSpeedRef.current = currentSpeed; }, [currentSpeed]);
   
+  // SYNC REFS FOR GEOLOCATION CALLBACK
+  useEffect(() => {
+    activeConvoyRef.current = activeConvoy;
+    isSafetyModeActiveRef.current = isSafetyModeActive;
+    currentTripIdRef.current = currentTripId;
+  }, [activeConvoy, isSafetyModeActive, currentTripId]);
+
   // Initial Setup
   useEffect(() => { 
-      if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') setIsSecureContext(false); 
       const saved = localStorage.getItem(AR_PERMISSION_KEY); 
       if (saved === 'true') setHasArPermission(true); 
   }, []);
@@ -393,7 +594,7 @@ export default function MapExplorerPage() {
       if (!convoyCode || !supabase) return;
       const { data: existing } = await supabase.from('convoys').select('code').eq('code', convoyCode).single();
       if (!existing) await supabase.from('convoys').insert({ code: convoyCode });
-      const myId = crypto.randomUUID(); 
+      const myId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(); 
       localStorage.setItem('convoy_user_id', myId);
       setActiveConvoy(convoyCode);
       setShowConvoyDialog(false);
@@ -502,15 +703,30 @@ export default function MapExplorerPage() {
 
   const animatePuck = useCallback(() => {
       if (!puckMarker.current || !isMounted.current) { animationFrameId.current = 0; return; }
+      
       const distDelta = getDistanceFromLatLonInMeters(currentPuckPos.current[1], currentPuckPos.current[0], targetPuckPos.current[1], targetPuckPos.current[0]);
-      if (distDelta < 0.1) { currentPuckPos.current = targetPuckPos.current; currentHeading.current = targetHeading.current; puckMarker.current.setLngLat(currentPuckPos.current); puckMarker.current.setRotation(currentHeading.current); animationFrameId.current = 0; return; }
-      currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.15);
-      currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.15);
-      currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.12);
-      puckMarker.current.setLngLat(currentPuckPos.current); puckMarker.current.setRotation(currentHeading.current);
+      
+      // Interpolate Position
+      currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.12);
+      currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.12);
+      
+      // Smart Interpolate Heading (Smoother and shortest path)
+      currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.08);
+      
+      puckMarker.current.setLngLat(currentPuckPos.current); 
+      puckMarker.current.setRotation(currentHeading.current);
+      
+      // Smooth Camera Follow
       if (map.current && isNavigatingRef.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           const speed = currentSpeedRef.current;
-          map.current.easeTo({ center: currentPuckPos.current, bearing: currentHeading.current, pitch: speed > 30 ? 60 : 40, zoom: speed > 50 ? 16 : 18, duration: 500, padding: { top: 0, bottom: 200, left: 0, right: 0 } });
+          map.current.easeTo({ 
+              center: currentPuckPos.current, 
+              bearing: currentHeading.current, 
+              pitch: speed > 30 ? 60 : 45, 
+              zoom: speed > 50 ? 16 : 18, 
+              duration: 0, 
+              padding: { top: 0, bottom: 200, left: 0, right: 0 } 
+          });
       }
       animationFrameId.current = requestAnimationFrame(animatePuck);
   }, []);
@@ -539,27 +755,62 @@ export default function MapExplorerPage() {
     if (typeof window !== 'undefined') { window.addEventListener('deviceorientation', handleOrientation); document.addEventListener('visibilitychange', handleVisibilityChange); }
     mapInstance.on('load', () => {
         if (!isMounted.current) return; setIsMapLoaded(true); geolocate.trigger(); mapInstance.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode); if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
+        
+        // --- FIXED GEOLOCATION WATCHER ---
         if ('geolocation' in navigator) {
-            watchId.current = navigator.geolocation.watchPosition(async (pos) => { if (!isMounted.current) return; const { latitude, longitude, heading, speed } = pos.coords; if (puckElement.current) puckElement.current.style.display = 'block'; const speedKmh = speed ? Math.round(speed * 3.6) : 0; setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); userLocation.current = [longitude, latitude]; setCurrentUserLocationForAR([longitude, latitude]); targetPuckPos.current = [longitude, latitude]; if (heading !== null && !isNaN(heading)) gpsHeading.current = heading; const isMoving = speedKmh > 5; targetHeading.current = isMoving && heading !== null ? heading : compassHeading.current; if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck); fetchWeather(latitude, longitude);
+            watchId.current = navigator.geolocation.watchPosition(async (pos) => {
+                if (!isMounted.current) return;
+                const { latitude, longitude, heading, speed } = pos.coords;
+                if (puckElement.current) puckElement.current.style.display = 'block';
                 
-                // Safety Mode & Convoy Updates
-                if ((isSafetyModeActive && currentTripId) || activeConvoy) {
+                // Update internal refs
+                userLocation.current = [longitude, latitude];
+                setCurrentUserLocationForAR([longitude, latitude]);
+                targetPuckPos.current = [longitude, latitude];
+                
+                const speedKmh = speed ? Math.round(speed * 3.6) : 0;
+                setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); // Debounce UI updates
+                
+                if (heading !== null && !isNaN(heading)) gpsHeading.current = heading;
+                const isMoving = speedKmh > 5;
+                targetHeading.current = isMoving && heading !== null ? heading : compassHeading.current;
+                
+                if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
+                fetchWeather(latitude, longitude);
+                
+                // --- FIX: USE REFS TO AVOID STALE STATE ---
+                const activeConvoy = activeConvoyRef.current;
+                const isSafety = isSafetyModeActiveRef.current;
+                const tripId = currentTripIdRef.current;
+
+                // Safety Mode & Convoy Updates (Throttled)
+                if ((isSafety && tripId) || activeConvoy) {
                     const now = Date.now();
-                    if (now - lastSafetyUpdate.current > 5000 && supabase) {
+                    if (now - lastSafetyUpdate.current > 3000 && supabase) {
                         const payload = { lat: latitude, lng: longitude, heading: heading || 0, speed: speed || 0, last_updated: new Date().toISOString() };
-                        if (isSafetyModeActive && currentTripId) supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading||0, speed: speed||0, last_updated: new Date().toISOString() }).eq('id', currentTripId).then(()=>{});
+                        if (isSafety && tripId) supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading||0, speed: speed||0, last_updated: new Date().toISOString() }).eq('id', tripId).then(()=>{});
                         if (activeConvoy) { const myId = localStorage.getItem('convoy_user_id'); if(myId) supabase.from('convoy_members').upsert({ convoy_code: activeConvoy, user_id: myId, ...payload }, {onConflict:'user_id'}).then(()=>{}); }
                         lastSafetyUpdate.current = now;
                     }
                 }
                 
                 // Geofencing Arrival
-                if (isSafetyModeActive && activeDestination.current) {
+                if (isNavigatingRef.current && activeDestination.current) {
                     const dist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]);
-                    if (dist < ARRIVAL_THRESHOLD_METERS) stopSafetyMode('arrived');
-                }
+                    
+                    setRouteDetails(prev => prev ? { ...prev, distance: dist, duration: (dist / 1000) / (Math.max(20, speedKmh) / 60) * 60 } : null);
 
-                if (isNavigatingRef.current && routeGeoJSON.current && activeDestination.current) { const remainingDist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]); setRouteDetails(prev => prev ? { ...prev, distance: remainingDist, duration: (remainingDist / 1000) / (Math.max(20, speedKmh) / 60) * 60 } : null); if (!isRecalculating.current && (Date.now() - lastRerouteTime.current > 5000)) { const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current); if (distanceToPath > REROUTE_THRESHOLD_METERS) { isRecalculating.current = true; lastRerouteTime.current = Date.now(); toast({ title: "Rerouting...", description: "កំពុងគណនាផ្លូវថ្មី", duration: 2000 }); await fetchRoute([longitude, latitude], activeDestination.current, true); isRecalculating.current = false; } } }
+                    if (dist < ARRIVAL_THRESHOLD_METERS) stopSafetyMode('arrived');
+
+                    if (routeGeoJSON.current && !isRecalculating.current && (Date.now() - lastRerouteTime.current > 5000)) { 
+                         const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current); 
+                         if (distanceToPath > REROUTE_THRESHOLD_METERS) { 
+                             isRecalculating.current = true; lastRerouteTime.current = Date.now(); 
+                             toast({ title: "Rerouting...", description: "កំពុងគណនាផ្លូវថ្មី", duration: 2000 }); 
+                             fetchRoute([longitude, latitude], activeDestination.current, true).then(() => { isRecalculating.current = false; }); 
+                        } 
+                    }
+                }
             }, (err) => { console.warn("GPS Warning:", err); }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
         }
     });
@@ -599,12 +850,12 @@ export default function MapExplorerPage() {
         {showDashcam && <AiDashcam onClose={() => setShowDashcam(false)} onDetect={() => {}} />}
 
         {/* Top Right Controls (Convoy & Dashcam) */}
-        <div className="absolute top-4 right-4 z-20 flex flex-col gap-2">
+        <div className="absolute top-4 right-4 z-20 flex flex-col gap-2 pointer-events-auto" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
             <Button onClick={() => setShowDashcam(!showDashcam)} className={`h-11 w-11 rounded-full shadow-xl border ${showDashcam ? 'bg-red-600 border-red-500 animate-pulse' : 'bg-zinc-900 border-zinc-700 text-white'}`}><Video className="h-5 w-5" /></Button>
             <Button onClick={() => setShowConvoyDialog(true)} className={`h-11 w-11 rounded-full shadow-xl border ${activeConvoy ? 'bg-indigo-600 border-indigo-500' : 'bg-zinc-900 border-zinc-700 text-white'}`}>{activeConvoy ? <Users className="h-5 w-5" /> : <Radio className="h-5 w-5" />}</Button>
         </div>
 
-        {activeConvoy && <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-indigo-600/90 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-3 shadow-lg border border-white/20 animate-in slide-in-from-top-4"><Users className="h-4 w-4 text-white" /><span className="text-xs font-bold text-white uppercase tracking-wider">Code: {activeConvoy}</span><span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-mono">{convoyMembers.length} Members</span></div>}
+        {activeConvoy && <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-indigo-600/90 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-3 shadow-lg border border-white/20 animate-in slide-in-from-top-4" style={{ marginTop: 'env(safe-area-inset-top)' }}><Users className="h-4 w-4 text-white" /><span className="text-xs font-bold text-white uppercase tracking-wider">Code: {activeConvoy}</span><span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-mono">{convoyMembers.length} Members</span></div>}
 
         {isNavigating && routeDetails ? <NavigationHUD routeDetails={routeDetails} isMuted={isMuted} setIsMuted={setIsMuted} currentSpeed={currentSpeed} onClearRoute={clearRoute} /> : <BottomControls isTrafficVisible={isTrafficVisible} toggleTraffic={() => toggleLayer('traffic')} isRainMode={isRainMode} toggleRainMode={() => toggleLayer('rain')} isWindMode={isWindMode} toggleWindMode={() => toggleLayer('wind')} isSafetyModeActive={isSafetyModeActive} startSafetyMode={startSafetyMode} showShareDialog={() => setShowShareDialog(true)} resetCompass={resetCompass} handleCategorySearch={handleCategorySearch} handleAutocomplete={handleAutocomplete} onSelectLocation={handleMapSelection} userLocation={userLocation.current} handleUserLocationClick={handleUserLocationClick} handleStyleChange={handleStyleChange} currentStyle={currentStyle} canShowAR={!!locationDetails} toggleAR={toggleAR} isDrawerOpen={isDrawerOpen} onReportClick={() => setShowReportDialog(true)} />}
         
@@ -638,7 +889,7 @@ export default function MapExplorerPage() {
 const WeatherWidget = memo(({ weather, isNavigating }: { weather: WeatherData | null, isNavigating: boolean }) => {
     if (isNavigating || !weather) return null;
     return (
-        <div className="absolute top-4 left-4 z-20 pointer-events-none">
+        <div className="absolute top-4 left-4 z-20 pointer-events-none" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
             <div className="bg-[#18181b]/80 backdrop-blur-xl border border-white/10 rounded-full px-3 py-1.5 flex items-center gap-2 shadow-2xl animate-in fade-in zoom-in-95">
                 {getWeatherIcon(weather.condition)}<div className="flex flex-col"><span className="text-sm font-bold text-white leading-none">{weather.temp}°</span><span className="text-[10px] text-zinc-400 capitalize">{weather.description}</span></div>
             </div>
@@ -650,7 +901,7 @@ WeatherWidget.displayName = "WeatherWidget";
 const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, onClearRoute }: any) => {
     return (
         <>
-        <div className="absolute top-0 left-0 right-0 z-30 pt-2 px-2 pointer-events-none pb-[safe-area-inset-top]">
+        <div className="absolute top-0 left-0 right-0 z-30 pt-2 px-2 pointer-events-none pb-[safe-area-inset-top]" style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top))' }}>
             <div className="w-full max-w-md mx-auto shadow-2xl bg-[#18181b] border-b-4 border-emerald-500 rounded-xl overflow-hidden pointer-events-auto ring-1 ring-white/10">
                 <div className="flex items-center p-4 gap-4">
                     <div className="bg-emerald-600 h-14 w-14 rounded-lg flex items-center justify-center shadow-lg shrink-0"><ManeuverIcon instruction={routeDetails.instruction} /></div>
@@ -701,13 +952,13 @@ const BottomControls = memo(({
     if (isDrawerOpen && !isInputActive) return null; 
 
     return (
-        <div className="absolute bottom-6 left-0 right-0 px-4 z-20 flex flex-col gap-3 pointer-events-none pb-[safe-area-inset-bottom]">
-            <div className={`flex justify-end gap-3 pointer-events-auto pb-2 transition-opacity duration-300 ${isInputActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+        <div className="absolute bottom-0 left-0 right-0 z-20 flex flex-col pointer-events-none" style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}>
+            <div className={`flex justify-end gap-3 px-4 mb-3 pointer-events-auto transition-opacity duration-300 ${isInputActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
                  <Button size="icon" onClick={onReportClick} className="h-11 w-11 rounded-full bg-yellow-500 border border-yellow-400 text-black shadow-xl hover:bg-yellow-400 animate-in zoom-in"><AlertTriangle className="h-5 w-5" /></Button>
 
                  <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button size="icon" aria-label="Map Layers" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800"><Layers className="h-5 w-5" /></Button></DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-48 bg-[#18181b]/95 border-zinc-800 text-white backdrop-blur-xl">
+                    <DropdownMenuContent align="end" side="top" className="w-48 bg-[#18181b]/95 border-zinc-800 text-white backdrop-blur-xl mb-2">
                         <DropdownMenuItem onClick={() => handleStyleChange(STYLES.DARK)} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><Layers className="mr-2 h-4 w-4" /> Dark {currentStyle === STYLES.DARK && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500" />}</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => handleStyleChange(STYLES.LIGHT)} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><MapIcon className="mr-2 h-4 w-4" /> Street {currentStyle === STYLES.LIGHT && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500" />}</DropdownMenuItem>
                          <DropdownMenuItem onClick={() => handleStyleChange(STYLES.OUTDOORS)} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><Mountain className="mr-2 h-4 w-4" /> Terrain {currentStyle === STYLES.OUTDOORS && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500" />}</DropdownMenuItem>
@@ -726,18 +977,18 @@ const BottomControls = memo(({
                 <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass} aria-label="Reset Compass"><Compass className="h-5 w-5" /></Button>
             </div>
 
-            <div className={`flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto pb-1 pl-1 transition-all duration-300 ease-out ${isInputActive || query.length > 0 ? 'opacity-0 translate-y-4 pointer-events-none h-0' : 'opacity-100 translate-y-0 h-10'}`}>
-                <Button onClick={() => handleCategorySearch("gas station")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white"><Fuel className="h-3.5 w-3.5 mr-2 text-orange-400" /> ប្រេង</Button>
-                <Button onClick={() => handleCategorySearch("restaurant")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white"><Utensils className="h-3.5 w-3.5 mr-2 text-rose-400" /> អាហារ</Button>
-                <Button onClick={() => handleCategorySearch("coffee")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white"><Coffee className="h-3.5 w-3.5 mr-2 text-amber-400" /> កាហ្វេ</Button>
-                <Button onClick={() => handleCategorySearch("bank")} className="rounded-full shadow-lg bg-white/10 backdrop-blur-md border border-white/10 px-4 h-10 text-xs font-medium shrink-0 hover:bg-white/20 text-white"><Banknote className="h-3.5 w-3.5 mr-2 text-emerald-400" /> ធនាគារ</Button>
+            <div className={`flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto px-4 mb-3 transition-all duration-300 ease-out ${isInputActive || query.length > 0 ? 'opacity-0 translate-y-4 pointer-events-none h-0 mb-0' : 'opacity-100 translate-y-0 h-10'}`}>
+                <Button onClick={() => handleCategorySearch("gas station")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Fuel className="h-3.5 w-3.5 mr-2 text-orange-400" /> ប្រេង</Button>
+                <Button onClick={() => handleCategorySearch("restaurant")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Utensils className="h-3.5 w-3.5 mr-2 text-rose-400" /> អាហារ</Button>
+                <Button onClick={() => handleCategorySearch("coffee")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Coffee className="h-3.5 w-3.5 mr-2 text-amber-400" /> កាហ្វេ</Button>
+                <Button onClick={() => handleCategorySearch("bank")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Banknote className="h-3.5 w-3.5 mr-2 text-emerald-400" /> ធនាគារ</Button>
             </div>
 
-            <div className="pointer-events-auto flex flex-col gap-2 relative group">
-                {isInputActive && <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[-1] animate-in fade-in" onClick={() => setIsInputActive(false)} />}
+            <div className="px-4 pointer-events-auto relative group">
+                {isInputActive && <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[-1] animate-in fade-in" onClick={() => { setIsInputActive(false); inputRef.current?.blur(); }} />}
                 {showCard && (
-                    <Card className="absolute bottom-16 left-0 right-0 bg-[#18181b]/95 backdrop-blur-xl border-zinc-800/50 max-h-[50vh] overflow-y-auto shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl scrollbar-thin">
-                        <CardContent className="p-0">
+                    <Card className="absolute bottom-16 left-4 right-4 bg-[#18181b] border-zinc-800 shadow-2xl z-30 animate-in fade-in slide-in-from-bottom-4 duration-300 rounded-2xl overflow-hidden">
+                        <CardContent className="p-0 max-h-[40dvh] overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-700">
                             {query.length === 0 && history.length > 0 && (
                                 <div className="border-b border-white/5 transition-all duration-300">
                                     <div onClick={() => setIsHistoryExpanded(!isHistoryExpanded)} className="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white/5 transition-colors bg-zinc-900/50 sticky top-0 backdrop-blur-md z-10">
@@ -771,7 +1022,7 @@ const BottomControls = memo(({
 
                 <div className="relative shadow-2xl transition-all duration-300 ease-out active:scale-[0.99]">
                     <Search className={`absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 transition-colors ${isSearching ? 'text-indigo-400' : 'text-zinc-400'}`} />
-                    <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)} onFocus={() => setIsInputActive(true)} placeholder="ស្វែងរកទីតាំង, ហាង..." inputMode="search" className="w-full h-14 pl-12 pr-24 rounded-full bg-[#18181b]/90 backdrop-blur-md border border-white/10 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]" />
+                    <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)} onFocus={() => setIsInputActive(true)} placeholder="ស្វែងរកទីតាំង, ហាង..." inputMode="search" className="w-full h-14 pl-12 pr-24 rounded-2xl bg-[#18181b] border border-zinc-800 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]" />
                     
                     <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2">
                         {isSearching ? <Loader2 className="h-5 w-5 text-indigo-500 animate-spin mr-2" />
