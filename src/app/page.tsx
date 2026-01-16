@@ -20,7 +20,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFo
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -35,7 +35,8 @@ import {
   Navigation as NavIcon, Crosshair, Banknote, ChevronDown, ChevronUp, 
   Trash2, Map as MapIcon, CarFront, ExternalLink, Camera, 
   Mountain, Shield, Copy, Siren, Construction, 
-  Video, Users, LogOut, Radio, Satellite
+  Video, Users, LogOut, Radio, Satellite,
+  Briefcase, Home, Stethoscope, Sparkles, CheckCircle2, ChevronRight, BatteryCharging, Mic2
 } from 'lucide-react';
 
 // ==========================================
@@ -74,6 +75,7 @@ const REROUTE_THRESHOLD_METERS = 50;
 const REROUTE_COOLDOWN_MS = 5000;
 const AR_PERMISSION_KEY = "map_ar_permission_v1";
 const ARRIVAL_THRESHOLD_METERS = 30;
+const IDLE_TIMEOUT_MS = 30000; // 30s for Battery Saver
 
 const FUEL_STATS: any = { moto: 2.5, car: 10, suv: 14 };
 const GAS_PRICE_KHR = 4500;
@@ -147,7 +149,7 @@ type Incident = { id: number, type: 'police' | 'traffic' | 'accident' | 'pothole
 type ConvoyMember = { user_id: string, lat: number, lng: number, heading: number, speed: number, last_updated: string };
 
 // ==========================================
-// 3. AI DASHCAM COMPONENT (OPTIMIZED)
+// 3. HYPER-THREADED AI DASHCAM (TTC LOGIC)
 // ==========================================
 const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type: string) => void }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -156,13 +158,16 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
     const [dangerLevel, setDangerLevel] = useState<0 | 1 | 2>(0); 
     const lastSpeakTime = useRef<number>(0);
     const lastDetectTime = useRef<number>(0);
+    const previousBoxes = useRef<Map<string, { w: number, h: number, time: number }>>(new Map());
     const isActive = useRef(true);
 
     const speakAlert = (text: string) => {
         const now = Date.now();
-        if (now - lastSpeakTime.current > 4000) { 
+        if (now - lastSpeakTime.current > 3500) { 
+            window.speechSynthesis.cancel();
             const u = new SpeechSynthesisUtterance(text);
-            u.rate = 1.3;
+            u.rate = 1.4;
+            u.pitch = 1.2;
             window.speechSynthesis.speak(u);
             lastSpeakTime.current = now;
         }
@@ -170,37 +175,16 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 
     useEffect(() => {
         isActive.current = true;
-        const loadModel = async () => {
-            try { 
-                await tf.ready(); 
-                // Using lite_mobilenet_v2 for mobile performance
-                const loadedModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' }); 
-                if(isActive.current) setModel(loadedModel); 
-            } catch (e) { console.error("TFJS Error", e); }
-        };
-        loadModel();
+        tf.ready().then(() => cocoSsd.load({ base: 'lite_mobilenet_v2' }).then(m => { if(isActive.current) setModel(m); }));
         return () => { isActive.current = false; }
     }, []);
 
     useEffect(() => {
         let stream: MediaStream | null = null;
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } }, 
-                audio: false 
-            })
-            .then(s => { 
-                stream = s;
-                if (videoRef.current && isActive.current) { 
-                    videoRef.current.srcObject = s; 
-                    videoRef.current.play().catch(e => console.log("Play error", e)); 
-                } 
-            })
-            .catch(err => console.error("Dashcam Cam Error", err));
-        }
-        return () => {
-            if (stream) stream.getTracks().forEach(t => t.stop());
-        };
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false })
+            .then(s => { stream = s; if (videoRef.current && isActive.current) { videoRef.current.srcObject = s; videoRef.current.play().catch(()=>{}); } })
+            .catch(e => console.error(e));
+        return () => { if (stream) stream.getTracks().forEach(t => t.stop()); };
     }, []);
 
     const takeSnapshot = () => {
@@ -220,90 +204,77 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 
         const renderFrame = async () => {
             if (!isActive.current) return;
-
             const ctx = canvasRef.current!.getContext('2d');
             if (ctx && videoRef.current && videoRef.current.readyState === 4) {
                 const vid = videoRef.current;
                 const cw = ctx.canvas.width;
                 const ch = ctx.canvas.height;
-                
-                // Draw video frame
                 ctx.clearRect(0, 0, cw, ch);
                 ctx.drawImage(vid, 0, 0, cw, ch);
 
-                // Draw Lane Guidelines (Cosmetic)
-                ctx.beginPath();
-                ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+                // Lane Guides
+                ctx.strokeStyle = "rgba(0, 255, 255, 0.2)";
                 ctx.lineWidth = 2;
-                ctx.moveTo(cw * 0.2, ch);
-                ctx.lineTo(cw * 0.45, ch * 0.55);
-                ctx.moveTo(cw * 0.8, ch);
-                ctx.lineTo(cw * 0.55, ch * 0.55);
-                ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(cw * 0.1, ch); ctx.lineTo(cw * 0.45, ch * 0.55); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(cw * 0.9, ch); ctx.lineTo(cw * 0.55, ch * 0.55); ctx.stroke();
 
-                // Detection Throttle (150ms)
                 const now = Date.now();
-                if (now - lastDetectTime.current > 150) {
+                if (now - lastDetectTime.current > 100) { // 10 FPS for detection
                     lastDetectTime.current = now;
-                    
                     try {
                         const predictions = await model.detect(vid);
                         if (!isActive.current) return;
-
                         let maxDanger = 0;
 
-                        predictions.forEach(p => {
-                            if (['car', 'truck', 'bus', 'person', 'bicycle', 'motorcycle', 'traffic light', 'stop sign'].includes(p.class)) {
+                        predictions.forEach((p, idx) => {
+                            if (['car', 'truck', 'bus', 'person', 'motorcycle'].includes(p.class)) {
                                 const [x, y, w, h] = p.bbox;
-                                const sizeRatio = (w * h) / (cw * ch);
-                                const centerX = x + w / 2;
-                                const centerDist = Math.abs(centerX - cw / 2) / (cw / 2); // 0=center, 1=edge
-                                const isCentered = centerDist < 0.4; 
+                                const area = w * h;
+                                const id = `${p.class}-${idx}`;
+                                
+                                // --- Time To Collision (TTC) Heuristic ---
+                                let expandingRate = 0;
+                                const prev = previousBoxes.current.get(id);
+                                if (prev) {
+                                    const areaDiff = area - (prev.w * prev.h);
+                                    if (areaDiff > 0) expandingRate = areaDiff; // It's getting bigger (closer)
+                                }
+                                previousBoxes.current.set(id, { w, h, time: now });
 
-                                let color = '#00ff00';
-                                let label = p.class;
+                                const isCentered = x + w/2 > cw * 0.3 && x + w/2 < cw * 0.7;
+                                const isClose = area > (cw * ch) * 0.25;
+                                const isRapidlyApproaching = expandingRate > 3000; 
 
-                                if (sizeRatio > 0.45 && isCentered) {
-                                    color = '#ef4444';
+                                let color = '#10b981'; // Green
+                                
+                                if (isRapidlyApproaching && isCentered) {
+                                    color = '#ef4444'; // Red
                                     maxDanger = 2;
-                                    label = `⚠️ ${p.class.toUpperCase()}`;
-                                } else if (sizeRatio > 0.15 && isCentered) {
-                                    color = '#eab308';
-                                    if (maxDanger < 1) maxDanger = 1;
-                                } else if (p.class === 'person' && sizeRatio > 0.1) {
-                                    color = '#f97316';
+                                } else if (isClose && isCentered) {
+                                    color = '#eab308'; // Yellow
                                     if (maxDanger < 1) maxDanger = 1;
                                 }
 
-                                ctx.beginPath();
                                 ctx.lineWidth = maxDanger === 2 ? 4 : 2;
                                 ctx.strokeStyle = color;
-                                ctx.roundRect(x, y, w, h, 4);
-                                ctx.stroke();
-
+                                ctx.strokeRect(x, y, w, h);
                                 ctx.fillStyle = color;
-                                const textWidth = ctx.measureText(label).width;
-                                ctx.fillRect(x, y - 20, textWidth + 10, 20);
-
-                                ctx.fillStyle = '#000000';
-                                ctx.font = 'bold 12px monospace';
-                                ctx.fillText(label, x + 5, y - 5);
+                                ctx.fillText(`${p.class} ${isRapidlyApproaching ? '!!!' : ''}`, x, y > 10 ? y - 5 : 10);
                             }
                         });
 
+                        if (previousBoxes.current.size > 20) previousBoxes.current.clear();
+
                         setDangerLevel(maxDanger as any);
-                        if (maxDanger === 2) {
-                            speakAlert("Brake!");
-                            onDetect('traffic_danger');
-                        }
-                    } catch(e) { /* ignore detection error */ }
+                        if (maxDanger === 2) { speakAlert("Caution!"); onDetect('traffic_danger'); }
+
+                    } catch(e) {}
                 }
             }
             animationId = requestAnimationFrame(renderFrame);
         };
-
         renderFrame();
-        return () => { isActive.current = false; cancelAnimationFrame(animationId); };
+        return () => cancelAnimationFrame(animationId);
     }, [model, onDetect]);
 
     return (
@@ -552,7 +523,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 };
 
 // ==========================================
-// 5. MAIN PAGE
+// 5. MAIN PAGE (OPTIMIZED)
 // ==========================================
 export default function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
@@ -571,6 +542,8 @@ export default function MapExplorerPage() {
   const userLocation = useRef<[number, number] | null>(null);
   const activeDestination = useRef<[number, number] | null>(null);
   const watchId = useRef<number | null>(null);
+  const lastInteractionTime = useRef(Date.now());
+  const idleTimer = useRef<NodeJS.Timeout>();
   
   const isRecalculating = useRef<boolean>(false);
   const userIsInteracting = useRef<boolean>(false);
@@ -584,8 +557,9 @@ export default function MapExplorerPage() {
   const currentSpeedRef = useRef(0);
   const lastSafetyUpdate = useRef<number>(0);
   const hasLoggedSupabaseError = useRef(false);
+  const supabaseErrorCount = useRef(0);
 
-  // Sync Refs to avoid stale closures in Geoloc callback
+  // Sync Refs
   const activeConvoyRef = useRef<string | null>(null);
   const isSafetyModeActiveRef = useRef<boolean>(false);
   const currentTripIdRef = useRef<string | null>(null);
@@ -602,6 +576,7 @@ export default function MapExplorerPage() {
   
   // UI State
   const [isNavigating, setIsNavigating] = useState(false);
+  const [isBatterySaver, setIsBatterySaver] = useState(false);
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
   const [addressDetails, setAddressDetails] = useState<any>(null);
   const [richPlaceDetails, setRichPlaceDetails] = useState<any>(null);
@@ -647,7 +622,6 @@ export default function MapExplorerPage() {
   useEffect(() => { isNavigatingRef.current = isNavigating; }, [isNavigating]);
   useEffect(() => { currentSpeedRef.current = currentSpeed; }, [currentSpeed]);
   
-  // SYNC REFS FOR GEOLOCATION CALLBACK
   useEffect(() => {
     activeConvoyRef.current = activeConvoy;
     isSafetyModeActiveRef.current = isSafetyModeActive;
@@ -678,16 +652,46 @@ export default function MapExplorerPage() {
       window.speechSynthesis.speak(utteranceRef.current); 
   }, [isMuted, availableVoices]);
 
-  // --- FEATURE: INCIDENTS ---
+  // --- BATTERY SAVER LOGIC (OLED SAVER) ---
+  const resetIdleTimer = useCallback(() => {
+      lastInteractionTime.current = Date.now();
+      if (isBatterySaver) setIsBatterySaver(false);
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+      // If navigating, screen dims after 30s of no touch
+      if (isNavigating) {
+          idleTimer.current = setTimeout(() => setIsBatterySaver(true), IDLE_TIMEOUT_MS);
+      }
+  }, [isNavigating, isBatterySaver]);
+
+  useEffect(() => {
+      window.addEventListener('touchstart', resetIdleTimer);
+      window.addEventListener('click', resetIdleTimer);
+      return () => {
+          window.removeEventListener('touchstart', resetIdleTimer);
+          window.removeEventListener('click', resetIdleTimer);
+      };
+  }, [resetIdleTimer]);
+
+  // --- VOICE COMMANDS ---
+  const handleVoiceCommand = () => {
+      // @ts-ignore
+      const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+      recognition.lang = 'en-US';
+      recognition.start();
+      recognition.onresult = (event: any) => {
+          const cmd = event.results[0][0].transcript.toLowerCase();
+          if (cmd.includes('stop')) { setIsNavigating(false); setRouteDetails(null); speak("Navigation stopped"); }
+          else if (cmd.includes('traffic')) { toggleLayer('traffic'); speak("Traffic toggled"); }
+          else if (cmd.includes('dashcam')) { setShowDashcam(true); speak("Dashcam active"); }
+      };
+  };
+
+  // --- CORE FUNCTIONS ---
   const fetchIncidents = useCallback(async () => {
     if (!supabase) return;
     try {
         const { data, error } = await supabase.from('incidents').select('*').gt('created_at', new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()); 
-        if (error) {
-            if (!hasLoggedSupabaseError.current) { console.warn("Supabase Error (Incidents):", error.message); hasLoggedSupabaseError.current = true; }
-        } else if (data) {
-            setIncidents(data as Incident[]);
-        }
+        if (data) { setIncidents(data as Incident[]); }
     } catch (e) {}
   }, []);
 
@@ -720,13 +724,11 @@ export default function MapExplorerPage() {
       });
   }, [incidents]);
 
-  // --- FEATURE: CONVOY ---
   const joinConvoy = async () => {
       if (!convoyCode || !supabase) return;
-      const { data: existing, error } = await supabase.from('convoys').select('code').eq('code', convoyCode).single();
-      if (error && error.code !== 'PGRST116') { toast({ title: "Error", description: "Database error (check RLS)", variant: "destructive" }); return; }
+      const { data: existing, error } = await supabase.from('convoys').select('code').eq('code', convoyCode).maybeSingle();
       
-      if (!existing) {
+      if (!existing && !error) {
           const { error: insertError } = await supabase.from('convoys').insert({ code: convoyCode });
           if(insertError) { toast({ title: "Error", description: "Failed to create convoy", variant: "destructive" }); return; }
       }
@@ -762,7 +764,19 @@ export default function MapExplorerPage() {
       convoyMembers.forEach(member => {
           if (member.user_id === myId) return;
           if (convoyMarkers.current[member.user_id]) {
-              convoyMarkers.current[member.user_id].setLngLat([member.lng, member.lat]);
+              const marker = convoyMarkers.current[member.user_id];
+              const currentLngLat = marker.getLngLat();
+              // LERP Animation for smoother movement
+              let start = Date.now();
+              const animate = () => {
+                  let now = Date.now();
+                  let t = Math.min(1, (now - start) / 1000);
+                  let newLng = lerp(currentLngLat.lng, member.lng, t);
+                  let newLat = lerp(currentLngLat.lat, member.lat, t);
+                  marker.setLngLat([newLng, newLat]);
+                  if (t < 1) requestAnimationFrame(animate);
+              };
+              animate();
           } else {
               const el = document.createElement('div');
               el.innerHTML = `<div class="flex flex-col items-center"><div class="bg-indigo-600 text-white text-[10px] font-bold px-1.5 rounded mb-1 shadow">Friend</div><div class="w-8 h-8 bg-indigo-500 rounded-full border-2 border-white shadow-lg flex items-center justify-center">🚗</div></div>`;
@@ -771,7 +785,6 @@ export default function MapExplorerPage() {
       });
   }, [convoyMembers]);
 
-  // --- COST CALCULATOR ---
   useEffect(() => {
       if (routeDetails?.totalDistance) {
           const liters = (routeDetails.totalDistance / 100000) * FUEL_STATS[vehicleType];
@@ -779,7 +792,6 @@ export default function MapExplorerPage() {
       }
   }, [routeDetails, vehicleType]);
 
-  // --- CORE FUNCTIONS ---
   const requestWakeLock = async () => { try { if ('wakeLock' in navigator) wakeLock.current = await navigator.wakeLock.request('screen'); } catch (err) {} };
   const releaseWakeLock = async () => { if(wakeLock.current) { await wakeLock.current.release().catch(() => {}); wakeLock.current = null; } };
 
@@ -829,6 +841,7 @@ export default function MapExplorerPage() {
           if (map.current) drawBlueRoute(map.current, { type: 'Feature', properties: {}, geometry: route.geometry });
           const leg = route.legs[0]; const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) ? leg.steps[1].maneuver.instruction : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
           setRouteDetails({ distance: route.distance, duration: route.duration, instruction: instructionText, arrivalTime: new Date(Date.now() + route.duration * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), totalDistance: route.distance });
+          resetIdleTimer();
           return true;
       } catch (error) { if(!isSilentRecalc) toast({ title: "កំហុសបណ្តាញ", description: "សូមពិនិត្យអ៊ីនធឺណិតរបស់អ្នក", variant: "destructive" }); return false; }
   }, [toast, drawBlueRoute]);
@@ -929,8 +942,11 @@ export default function MapExplorerPage() {
                 const isSafety = isSafetyModeActiveRef.current;
                 const tripId = currentTripIdRef.current;
 
-                // Safety Mode & Convoy Updates (Throttled 3000ms)
+                // Safety Mode & Convoy Updates (Throttled & Circuit Breaker)
                 if ((isSafety && tripId) || activeConvoy) {
+                    // Stop trying if DB is broken to avoid 400 error spam
+                    if (supabaseErrorCount.current > 3) return;
+
                     const now = Date.now();
                     if (now - lastSafetyUpdate.current > 3000 && supabase) {
                         const payload = { lat: latitude, lng: longitude, heading: heading || 0, speed: speed || 0, last_updated: new Date().toISOString() };
@@ -938,16 +954,25 @@ export default function MapExplorerPage() {
                         // Safety Trip
                         if (isSafety && tripId) {
                             supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading||0, speed: speed||0, last_updated: new Date().toISOString() })
-                                .eq('id', tripId).then(({ error }) => { if (error && !hasLoggedSupabaseError.current) { console.warn("Trip update failed:", error.message); hasLoggedSupabaseError.current = true; } });
+                                .eq('id', tripId).then(({ error }) => { 
+                                    if (error) { 
+                                        supabaseErrorCount.current++;
+                                        if (!hasLoggedSupabaseError.current) { console.warn("Trip update failed:", error.message); hasLoggedSupabaseError.current = true; } 
+                                    } 
+                                });
                         }
                         
                         // Convoy
                         if (activeConvoy) { 
                             const myId = localStorage.getItem('convoy_user_id'); 
                             if(myId) {
-                                // Try upserting. If 400 happens due to no constraint, this will fail but catch block handles it
                                 supabase.from('convoy_members').upsert({ convoy_code: activeConvoy, user_id: myId, ...payload }, { onConflict: 'user_id' })
-                                    .then(({ error }) => { if (error && !hasLoggedSupabaseError.current) { console.warn("Convoy update failed (Check RLS/Constraints):", error.message); hasLoggedSupabaseError.current = true; } });
+                                    .then(({ error }) => { 
+                                        if (error) { 
+                                            supabaseErrorCount.current++;
+                                            if (!hasLoggedSupabaseError.current) { console.warn("Convoy update failed (Check RLS/Constraints):", error.message); hasLoggedSupabaseError.current = true; } 
+                                        } 
+                                    });
                             }
                         }
                         lastSafetyUpdate.current = now;
@@ -1059,14 +1084,23 @@ export default function MapExplorerPage() {
         
         <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950 text-white transition-opacity duration-700 pointer-events-none ${isMapLoaded ? 'opacity-0' : 'opacity-100'}`}><Loader2 className="h-10 w-10 animate-spin text-indigo-500 mb-4" /></div>
         
+        <WelcomeWizard onComplete={() => {}} />
         <WeatherWidget weather={weather} isNavigating={isNavigating} />
+        {/* Battery Saver Overlay */}
+        <div className={`absolute inset-0 bg-black z-[100] flex flex-col items-center justify-center transition-opacity duration-1000 pointer-events-none ${isBatterySaver ? 'opacity-100' : 'opacity-0'}`}>
+            <BatteryCharging className="h-16 w-16 text-emerald-500 animate-pulse mb-4" />
+            <h1 className="text-4xl font-bold font-mono text-center px-4">{routeDetails?.instruction || "Proceed"}</h1>
+            <p className="text-zinc-500 mt-2">Tap to wake</p>
+        </div>
+
         {showAR && currentUserLocationForAR && locationDetails && <ArLastMileView userLocation={currentUserLocationForAR} destination={[locationDetails.lng, locationDetails.lat]} routePath={routeGeoJSON.current} onClose={() => setShowAR(false)} hasParentPermission={hasArPermission} setParentPermission={setHasArPermission} />}
         {showDashcam && <AiDashcam onClose={() => setShowDashcam(false)} onDetect={() => {}} />}
 
         {/* Top Right Controls (Convoy & Dashcam) */}
         <div className="absolute top-4 right-4 z-20 flex flex-col gap-2 pointer-events-auto" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
-            <Button onClick={() => setShowDashcam(!showDashcam)} className={`h-11 w-11 rounded-full shadow-xl border ${showDashcam ? 'bg-red-600 border-red-500 animate-pulse' : 'bg-zinc-900 border-zinc-700 text-white'}`}><Video className="h-5 w-5" /></Button>
-            <Button onClick={() => setShowConvoyDialog(true)} className={`h-11 w-11 rounded-full shadow-xl border ${activeConvoy ? 'bg-indigo-600 border-indigo-500' : 'bg-zinc-900 border-zinc-700 text-white'}`}>{activeConvoy ? <Users className="h-5 w-5" /> : <Radio className="h-5 w-5" />}</Button>
+            <Button onClick={() => setShowDashcam(!showDashcam)} className={`h-11 w-11 rounded-full shadow-xl border ${showDashcam ? 'bg-red-600 border-red-500 animate-pulse' : 'bg-zinc-900 border-zinc-700 text-white animate-in zoom-in slide-in-from-right-10 duration-700'}`}><Video className="h-5 w-5" /></Button>
+            <Button onClick={() => setShowConvoyDialog(true)} className={`h-11 w-11 rounded-full shadow-xl border ${activeConvoy ? 'bg-indigo-600 border-indigo-500' : 'bg-zinc-900 border-zinc-700 text-white animate-in zoom-in slide-in-from-right-10 duration-1000 delay-100'}`}>{activeConvoy ? <Users className="h-5 w-5" /> : <Radio className="h-5 w-5" />}</Button>
+            <Button onClick={handleVoiceCommand} className="h-11 w-11 rounded-full shadow-xl border bg-zinc-900 border-zinc-700 text-blue-400"><Mic2 className="h-5 w-5" /></Button>
         </div>
 
         {activeConvoy && <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-indigo-600/90 backdrop-blur-md px-4 py-2 rounded-full flex items-center gap-3 shadow-lg border border-white/20 animate-in slide-in-from-top-4" style={{ marginTop: 'env(safe-area-inset-top)' }}><Users className="h-4 w-4 text-white" /><span className="text-xs font-bold text-white uppercase tracking-wider">Code: {activeConvoy}</span><span className="bg-white/20 px-2 py-0.5 rounded text-[10px] font-mono">{convoyMembers.length} Members</span></div>}
@@ -1138,6 +1172,88 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
 });
 NavigationHUD.displayName = "NavigationHUD";
 
+// ==========================================
+// 4. NEW USER EXPERIENCE (ONBOARDING)
+// ==========================================
+const WelcomeWizard = ({ onComplete }: { onComplete: () => void }) => {
+    const [step, setStep] = useState(0);
+    const [isOpen, setIsOpen] = useState(false);
+
+    useEffect(() => {
+        const hasSeen = localStorage.getItem('has_seen_onboarding_v2');
+        if (!hasSeen) {
+            setTimeout(() => setIsOpen(true), 1500);
+        }
+    }, []);
+
+    const handleNext = () => {
+        if (step < 3) {
+            setStep(prev => prev + 1);
+        } else {
+            localStorage.setItem('has_seen_onboarding_v2', 'true');
+            setIsOpen(false);
+            onComplete();
+        }
+    };
+
+    const handleLocationPerm = () => {
+        if ('geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(() => handleNext(), () => handleNext());
+        } else {
+            handleNext();
+        }
+    };
+
+    const steps = [
+        {
+            icon: <MapPin className="h-10 w-10 text-emerald-500" />,
+            title: "Welcome to Map Explorer",
+            desc: "The ultimate navigation tool for Cambodia. Let's get you set up.",
+            action: <Button onClick={handleLocationPerm} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2"><LocateFixed className="h-4 w-4" /> Enable Location</Button>
+        },
+        {
+            icon: <Camera className="h-10 w-10 text-indigo-500" />,
+            title: "AR Navigation",
+            desc: "See your destination in the real world. Just tap 'Live View' when navigating.",
+            action: <Button onClick={handleNext} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white">Got it</Button>
+        },
+        {
+            icon: <Shield className="h-10 w-10 text-red-500" />,
+            title: "Safety & Dashcam",
+            desc: "AI Traffic detection and live location sharing keep you safe on the road.",
+            action: <Button onClick={handleNext} className="w-full bg-red-600 hover:bg-red-700 text-white">Next</Button>
+        },
+        {
+            icon: <CheckCircle2 className="h-10 w-10 text-blue-500" />,
+            title: "You're Ready!",
+            desc: "Explore nearby places, join convoys, and drive safely.",
+            action: <Button onClick={handleNext} className="w-full bg-blue-600 hover:bg-blue-700 text-white">Start Exploring</Button>
+        }
+    ];
+
+    if (!isOpen) return null;
+
+    return (
+        <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogContent className="sm:max-w-md bg-zinc-900 border-zinc-800 text-white p-0 overflow-hidden gap-0">
+                <div className="h-2 w-full bg-zinc-800">
+                    <div className="h-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-all duration-500" style={{ width: `${((step + 1) / 4) * 100}%` }}></div>
+                </div>
+                <div className="p-6 text-center flex flex-col items-center gap-4">
+                    <div className="w-20 h-20 bg-zinc-800 rounded-full flex items-center justify-center mb-2 animate-in zoom-in duration-500">
+                        {steps[step].icon}
+                    </div>
+                    <DialogTitle className="text-2xl font-bold">{steps[step].title}</DialogTitle>
+                    <DialogDescription className="text-zinc-400 text-base">{steps[step].desc}</DialogDescription>
+                </div>
+                <DialogFooter className="p-6 pt-0 sm:justify-center">
+                    {steps[step].action}
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+};
+
 const BottomControls = memo(({
     isTrafficVisible, toggleTraffic, isRainMode, toggleRainMode, isWindMode, toggleWindMode,
     isSafetyModeActive, startSafetyMode, showShareDialog,
@@ -1191,11 +1307,13 @@ const BottomControls = memo(({
                 <Button size="icon" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800" onClick={resetCompass} aria-label="Reset Compass"><Compass className="h-5 w-5" /></Button>
             </div>
 
+            {/* Quick Action Chips */}
             <div className={`flex gap-2 overflow-x-auto no-scrollbar pointer-events-auto px-4 mb-3 transition-all duration-300 ease-out ${isInputActive || query.length > 0 ? 'opacity-0 translate-y-4 pointer-events-none h-0 mb-0' : 'opacity-100 translate-y-0 h-10'}`}>
-                <Button onClick={() => handleCategorySearch("gas station")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Fuel className="h-3.5 w-3.5 mr-2 text-orange-400" /> ប្រេង</Button>
-                <Button onClick={() => handleCategorySearch("restaurant")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Utensils className="h-3.5 w-3.5 mr-2 text-rose-400" /> អាហារ</Button>
-                <Button onClick={() => handleCategorySearch("coffee")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Coffee className="h-3.5 w-3.5 mr-2 text-amber-400" /> កាហ្វេ</Button>
-                <Button onClick={() => handleCategorySearch("bank")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Banknote className="h-3.5 w-3.5 mr-2 text-emerald-400" /> ធនាគារ</Button>
+                <Button onClick={() => handleCategorySearch("home")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Home className="h-3.5 w-3.5 mr-2 text-indigo-400" /> Home</Button>
+                <Button onClick={() => handleCategorySearch("work")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Briefcase className="h-3.5 w-3.5 mr-2 text-blue-400" /> Work</Button>
+                <Button onClick={() => handleCategorySearch("gas station")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Fuel className="h-3.5 w-3.5 mr-2 text-orange-400" /> Gas</Button>
+                <Button onClick={() => handleCategorySearch("bank")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Banknote className="h-3.5 w-3.5 mr-2 text-emerald-400" /> ATM</Button>
+                <Button onClick={() => handleCategorySearch("hospital")} className="rounded-full shadow-lg bg-zinc-900/80 backdrop-blur-md border border-zinc-700 px-4 h-10 text-xs font-medium shrink-0 hover:bg-zinc-800 text-white active:scale-95"><Stethoscope className="h-3.5 w-3.5 mr-2 text-red-400" /> Hospital</Button>
             </div>
 
             <div className="px-4 pointer-events-auto relative group">
