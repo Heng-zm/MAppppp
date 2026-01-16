@@ -71,6 +71,7 @@ const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000;
 const REROUTE_THRESHOLD_METERS = 50;
+const REROUTE_COOLDOWN_MS = 5000;
 const AR_PERMISSION_KEY = "map_ar_permission_v1";
 const ARRIVAL_THRESHOLD_METERS = 30;
 
@@ -146,23 +147,22 @@ type Incident = { id: number, type: 'police' | 'traffic' | 'accident' | 'pothole
 type ConvoyMember = { user_id: string, lat: number, lng: number, heading: number, speed: number, last_updated: string };
 
 // ==========================================
-// 3. AI DASHCAM COMPONENT (UPGRADED)
+// 3. AI DASHCAM COMPONENT (OPTIMIZED)
 // ==========================================
 const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type: string) => void }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
-    const [dangerLevel, setDangerLevel] = useState<0 | 1 | 2>(0); // 0=Safe, 1=Warn, 2=Danger
+    const [dangerLevel, setDangerLevel] = useState<0 | 1 | 2>(0); 
     const lastSpeakTime = useRef<number>(0);
     const lastDetectTime = useRef<number>(0);
     const isActive = useRef(true);
 
-    // Audio Alert Helper
     const speakAlert = (text: string) => {
         const now = Date.now();
-        if (now - lastSpeakTime.current > 3000) { // Don't spam audio
+        if (now - lastSpeakTime.current > 4000) { 
             const u = new SpeechSynthesisUtterance(text);
-            u.rate = 1.2;
+            u.rate = 1.3;
             window.speechSynthesis.speak(u);
             lastSpeakTime.current = now;
         }
@@ -173,7 +173,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
         const loadModel = async () => {
             try { 
                 await tf.ready(); 
-                // Use 'lite_mobilenet_v2' for better mobile performance
+                // Using lite_mobilenet_v2 for mobile performance
                 const loadedModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' }); 
                 if(isActive.current) setModel(loadedModel); 
             } catch (e) { console.error("TFJS Error", e); }
@@ -183,27 +183,35 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
     }, []);
 
     useEffect(() => {
+        let stream: MediaStream | null = null;
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             navigator.mediaDevices.getUserMedia({ 
-                video: { 
-                    facingMode: "environment",
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
-                }, 
+                video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } }, 
                 audio: false 
             })
-            .then(stream => { if (videoRef.current && isActive.current) { videoRef.current.srcObject = stream; videoRef.current.play(); } else { stream.getTracks().forEach(t => t.stop()); } })
+            .then(s => { 
+                stream = s;
+                if (videoRef.current && isActive.current) { 
+                    videoRef.current.srcObject = s; 
+                    videoRef.current.play().catch(e => console.log("Play error", e)); 
+                } 
+            })
             .catch(err => console.error("Dashcam Cam Error", err));
         }
+        return () => {
+            if (stream) stream.getTracks().forEach(t => t.stop());
+        };
     }, []);
 
     const takeSnapshot = () => {
         if (!canvasRef.current || !videoRef.current) return;
-        const link = document.createElement('a');
-        link.download = `dashcam-${Date.now()}.png`;
-        link.href = canvasRef.current.toDataURL();
-        link.click();
-        onDetect('snapshot'); // Feedback sound/event
+        try {
+            const link = document.createElement('a');
+            link.download = `dashcam-${Date.now()}.png`;
+            link.href = canvasRef.current.toDataURL();
+            link.click();
+            onDetect('snapshot'); 
+        } catch(e) {}
     };
 
     useEffect(() => {
@@ -213,18 +221,27 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
         const renderFrame = async () => {
             if (!isActive.current) return;
 
-            // 1. Draw Video Feed (Always runs at max FPS)
             const ctx = canvasRef.current!.getContext('2d');
             if (ctx && videoRef.current && videoRef.current.readyState === 4) {
                 const vid = videoRef.current;
                 const cw = ctx.canvas.width;
                 const ch = ctx.canvas.height;
                 
-                // Clear and draw video
+                // Draw video frame
                 ctx.clearRect(0, 0, cw, ch);
                 ctx.drawImage(vid, 0, 0, cw, ch);
 
-                // 2. Run AI Detection (Throttled to every 150ms to save CPU)
+                // Draw Lane Guidelines (Cosmetic)
+                ctx.beginPath();
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+                ctx.lineWidth = 2;
+                ctx.moveTo(cw * 0.2, ch);
+                ctx.lineTo(cw * 0.45, ch * 0.55);
+                ctx.moveTo(cw * 0.8, ch);
+                ctx.lineTo(cw * 0.55, ch * 0.55);
+                ctx.stroke();
+
+                // Detection Throttle (150ms)
                 const now = Date.now();
                 if (now - lastDetectTime.current > 150) {
                     lastDetectTime.current = now;
@@ -236,47 +253,38 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                         let maxDanger = 0;
 
                         predictions.forEach(p => {
-                            // Filter for traffic relevant classes
                             if (['car', 'truck', 'bus', 'person', 'bicycle', 'motorcycle', 'traffic light', 'stop sign'].includes(p.class)) {
                                 const [x, y, w, h] = p.bbox;
-                                
-                                // --- DANGER HEURISTIC ---
-                                // 1. Size: How much screen does it take? (h/ch)
-                                // 2. Center: Is it in front of us? (Distance from center x)
                                 const sizeRatio = (w * h) / (cw * ch);
                                 const centerX = x + w / 2;
-                                const centerDist = Math.abs(centerX - cw / 2) / (cw / 2); // 0 = center, 1 = edge
+                                const centerDist = Math.abs(centerX - cw / 2) / (cw / 2); // 0=center, 1=edge
                                 const isCentered = centerDist < 0.4; 
 
-                                let color = '#00ff00'; // Green
+                                let color = '#00ff00';
                                 let label = p.class;
 
-                                // Logic: Large and Centered = Danger
                                 if (sizeRatio > 0.45 && isCentered) {
-                                    color = '#ef4444'; // Red
+                                    color = '#ef4444';
                                     maxDanger = 2;
                                     label = `⚠️ ${p.class.toUpperCase()}`;
                                 } else if (sizeRatio > 0.15 && isCentered) {
-                                    color = '#eab308'; // Yellow
+                                    color = '#eab308';
                                     if (maxDanger < 1) maxDanger = 1;
                                 } else if (p.class === 'person' && sizeRatio > 0.1) {
-                                    color = '#f97316'; // Orange for pedestrians
+                                    color = '#f97316';
                                     if (maxDanger < 1) maxDanger = 1;
                                 }
 
-                                // Draw Box
                                 ctx.beginPath();
                                 ctx.lineWidth = maxDanger === 2 ? 4 : 2;
                                 ctx.strokeStyle = color;
                                 ctx.roundRect(x, y, w, h, 4);
                                 ctx.stroke();
 
-                                // Draw Label Background
                                 ctx.fillStyle = color;
                                 const textWidth = ctx.measureText(label).width;
                                 ctx.fillRect(x, y - 20, textWidth + 10, 20);
 
-                                // Draw Label Text
                                 ctx.fillStyle = '#000000';
                                 ctx.font = 'bold 12px monospace';
                                 ctx.fillText(label, x + 5, y - 5);
@@ -288,8 +296,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                             speakAlert("Brake!");
                             onDetect('traffic_danger');
                         }
-
-                    } catch(e) { /* ignore frame skip */ }
+                    } catch(e) { /* ignore detection error */ }
                 }
             }
             animationId = requestAnimationFrame(renderFrame);
@@ -301,14 +308,9 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 
     return (
         <div className={`fixed top-4 right-4 bg-zinc-950 rounded-2xl overflow-hidden shadow-2xl z-[50] border-2 transition-all duration-300 animate-in slide-in-from-right-4 ${dangerLevel === 2 ? 'border-red-500 shadow-red-900/50 scale-105' : 'border-zinc-800'}`} style={{ top: 'max(1rem, env(safe-area-inset-top))', width: '180px', height: '240px' }}>
-            
-            {/* Hidden Video Source */}
             <video ref={videoRef} className="absolute opacity-0 pointer-events-none" muted playsInline />
-            
-            {/* Drawing Canvas */}
             <canvas ref={canvasRef} width={320} height={480} className="absolute inset-0 w-full h-full object-cover" />
             
-            {/* UI Overlay */}
             <div className="absolute inset-0 flex flex-col justify-between p-3 pointer-events-none">
                 <div className="flex justify-between items-start">
                     <div className="flex items-center gap-1.5 bg-black/60 backdrop-blur-md px-2 py-1 rounded-md border border-white/10">
@@ -318,33 +320,23 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                     <button onClick={onClose} className="pointer-events-auto bg-black/50 hover:bg-red-500/50 text-white rounded-full p-1.5 transition-colors"><X className="h-3.5 w-3.5" /></button>
                 </div>
 
-                {/* HUD Elements */}
                 <div className="space-y-1">
                     {dangerLevel === 2 && (
-                        <div className="bg-red-600/90 text-white text-center font-black text-xl py-1 animate-bounce uppercase tracking-widest border-2 border-white rounded-lg shadow-lg">
-                            BRAKE!
-                        </div>
+                        <div className="bg-red-600/90 text-white text-center font-black text-xl py-1 animate-bounce uppercase tracking-widest border-2 border-white rounded-lg shadow-lg">BRAKE!</div>
                     )}
                     <div className="flex justify-between items-end">
-                        <div className="text-[8px] font-mono text-zinc-400">
-                            CONF: {(Math.random() * (99 - 85) + 85).toFixed(0)}%<br/>
-                            FPS: 60
-                        </div>
-                        <button onClick={takeSnapshot} className="pointer-events-auto p-2 bg-white/10 hover:bg-white/30 backdrop-blur-md rounded-full border border-white/20 active:scale-95 transition-all">
-                            <Camera className="h-4 w-4 text-white" />
-                        </button>
+                        <div className="text-[8px] font-mono text-zinc-400">FPS: 60</div>
+                        <button onClick={takeSnapshot} className="pointer-events-auto p-2 bg-white/10 hover:bg-white/30 backdrop-blur-md rounded-full border border-white/20 active:scale-95 transition-all"><Camera className="h-4 w-4 text-white" /></button>
                     </div>
                 </div>
             </div>
-
-            {/* Scanline Effect */}
             <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(transparent_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_4px] opacity-20"></div>
         </div>
     );
 };
 
 // ==========================================
-// 4. AR COMPONENT (UPDATED: Gates & Radar)
+// 4. AR COMPONENT (UPDATED & STABILIZED)
 // ==========================================
 const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -357,29 +349,25 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const [debugMsg, setDebugMsg] = useState("");
     const [perspective, setPerspective] = useState("800px");
     
-    // Smooth Data Refs (Mutable to avoid re-renders in anim loop)
-    const sensorData = useRef({ alpha: 0, beta: 0, gamma: 0, smoothAlpha: 0, smoothBeta: 90 });
+    // Smooth Data Refs
+    const sensorData = useRef({ alpha: 0, smoothAlpha: 0 });
 
     useEffect(() => {
-        if (typeof window !== 'undefined') {
-             setPerspective(`${window.innerHeight}px`);
-        }
+        if (typeof window !== 'undefined') setPerspective(`${window.innerHeight}px`);
     }, []);
 
     const visiblePathSegments = useMemo(() => {
         if (!routePath || routePath.length === 0) return [];
         const segments: { x: number; z: number; dist: number; index: number }[] = [];
-        const step = 2; // Downsample for performance
+        const step = 2; 
         let count = 0;
         
         for (let i = 0; i < routePath.length; i += step) {
             const pt = routePath[i];
             const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]);
-            // Show points within 120m
             if (dist < 120 && count < 25) { 
                 const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]);
                 const rad = bearing * (Math.PI / 180);
-                // Convert Polar to Cartesian (Z is negative forward)
                 segments.push({ x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist: dist, index: i });
                 count++;
             }
@@ -396,24 +384,23 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent) => {
         let heading = 0;
-        // @ts-ignore - iOS Webkit Support
+        // @ts-ignore
         if ((e as any).webkitCompassHeading) { heading = (e as any).webkitCompassHeading; } 
-        // Android Standard
         else if (e.alpha !== null) { heading = 360 - e.alpha; }
 
         sensorData.current.alpha = heading;
-        sensorData.current.beta = e.beta || 0; 
         if (!sensorsActive) setSensorsActive(true);
     }, [sensorsActive]);
 
     useEffect(() => {
+        let stream: MediaStream | null = null;
         const startCamera = async () => {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } }, audio: false });
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } }, audio: false });
                 if (videoRef.current) videoRef.current.srcObject = stream;
             } catch (err) {
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    stream = await navigator.mediaDevices.getUserMedia({ video: true });
                     if (videoRef.current) videoRef.current.srcObject = stream;
                 } catch (e) { setDebugMsg("Camera access denied."); }
             }
@@ -426,7 +413,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
         return () => {
             window.removeEventListener('deviceorientation', handleOrientation);
-            if (videoRef.current?.srcObject) { (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop()); }
+            if (stream) stream.getTracks().forEach(t => t.stop());
             cancelAnimationFrame(requestRef.current);
         };
     }, [permissionGranted, handleOrientation]);
@@ -435,9 +422,9 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         if (!permissionGranted) return;
         const updateLoop = () => {
             const data = sensorData.current;
-            data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.1); 
+            // Stronger smoothing factor (0.05) for less jitter
+            data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.05); 
             if (worldRef.current) {
-                // Rotate opposite to heading
                 worldRef.current.style.transform = `translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
             }
             requestRef.current = requestAnimationFrame(updateLoop);
@@ -882,7 +869,7 @@ export default function MapExplorerPage() {
   const handleStyleChange = (style: string) => { if (!map.current || style === currentStyle) return; map.current.once('style.load', () => { if (map.current) { map.current.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); restoreMapLayers(map.current, isTrafficVisible, isRainMode, isWindMode); } }); map.current.setStyle(style); setCurrentStyle(style); };
   const clearSearchMarkers = useCallback(() => { searchMarkers.current.forEach(m => m.remove()); searchMarkers.current = []; }, []);
   const handleMapSelection = useCallback((lngLat: { lng: number, lat: number }) => { if(!map.current) return; clearRoute(); if (destinationMarker.current) destinationMarker.current.remove(); destinationMarker.current = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current); setLocationDetails(lngLat); setIsDrawerOpen(true); fetchRichDetails(lngLat.lat, lngLat.lng); map.current.flyTo({ center: lngLat, zoom: 16, padding: { top: 0, bottom: 250, left: 0, right: 0 }, essential: true, duration: 1500 }); }, []);
-  const plotSearchResults = useCallback((results: SearchResult[], type: string) => { if(!map.current) return; const bounds = new LngLatBounds(); results.forEach(r => { const el = document.createElement('div'); el.className = 'marker-pin'; el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`; const marker = new Marker({ element: el }).setLngLat([r.lng, r.lat]).setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`)).addTo(map.current!); marker.getElement().addEventListener('click', () => { handleMapSelection({ lng: r.lng, lat: r.lat }); }); searchMarkers.current.push(marker); bounds.extend([r.lng, r.lat]); }); if (results.length > 0) map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 }); else toast({ title: "No results", description: "Nothing found nearby." }); }, [handleMapSelection, toast]);
+  const plotSearchResults = useCallback((results: SearchResult[], type: string) => { if(!map.current) return; const bounds = new LngLatBounds(); results.forEach(r => { const el = document.createElement('div'); el.className = 'marker-pin'; el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`; const marker = new Marker({ element: el }).setLngLat([r.lng, r.lat]).setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`)).addTo(map.current!); marker.getElement().addEventListener('click', (e) => { e.stopPropagation(); handleMapSelection({ lng: r.lng, lat: r.lat }); }); searchMarkers.current.push(marker); bounds.extend([r.lng, r.lat]); }); if (results.length > 0) map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 }); else toast({ title: "No results", description: "Nothing found nearby." }); }, [handleMapSelection, toast]);
   const handleCategorySearch = useCallback(async (query: string) => { const geoKey = GEOAPIFY_API_KEY; const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER); clearSearchMarkers(); if (isNavigating && routeGeoJSON.current && geoKey) { let category = "commercial"; if (query === "gas station") category = "service.vehicle.fuel"; else if (query === "restaurant") category = "catering.restaurant"; else if (query === "coffee") category = "catering.cafe"; else if (query === "bank") category = "service.financial"; else if (query === "school") category = "education"; try { const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${simplifyGeometry(routeGeoJSON.current)}&limit=10&apiKey=${geoKey}`; const res = await fetch(url); const data = await res.json(); const results = data.features.map((f: any) => ({ lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], name: f.properties.name || f.properties.address_line1 || "Unknown", address: f.properties.address_line2 || "", type: query })); plotSearchResults(results, query); } catch (e) { const fallbackResults = await searchPlaces(query, center, true); plotSearchResults(fallbackResults, query); } } else { const results = await searchPlaces(query, center, true); plotSearchResults(results, query); } }, [clearSearchMarkers, plotSearchResults, toast, isNavigating]);
 
   // --- INIT MAP ---
@@ -942,7 +929,7 @@ export default function MapExplorerPage() {
                 const isSafety = isSafetyModeActiveRef.current;
                 const tripId = currentTripIdRef.current;
 
-                // Safety Mode & Convoy Updates (Throttled & Defensive)
+                // Safety Mode & Convoy Updates (Throttled 3000ms)
                 if ((isSafety && tripId) || activeConvoy) {
                     const now = Date.now();
                     if (now - lastSafetyUpdate.current > 3000 && supabase) {
@@ -975,7 +962,7 @@ export default function MapExplorerPage() {
 
                     if (dist < ARRIVAL_THRESHOLD_METERS) stopSafetyMode('arrived');
 
-                    if (routeGeoJSON.current && !isRecalculating.current && (Date.now() - lastRerouteTime.current > 10000)) { 
+                    if (routeGeoJSON.current && !isRecalculating.current && (Date.now() - lastRerouteTime.current > REROUTE_COOLDOWN_MS)) { 
                          const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current); 
                          if (distanceToPath > REROUTE_THRESHOLD_METERS) { 
                              isRecalculating.current = true; lastRerouteTime.current = Date.now(); 
@@ -1026,8 +1013,11 @@ export default function MapExplorerPage() {
   const handleStartNavigation = async () => { 
       if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "No GPS" }); return; } 
       setIsRouting(true); 
-      // Initialize audio context on user click
+      // Initialize audio context on user click (Silent utterance trick)
+      const u = new SpeechSynthesisUtterance(" ");
+      window.speechSynthesis.speak(u);
       speak("Starting navigation");
+      
       const start = userLocation.current; 
       const end: [number, number] = [locationDetails.lng, locationDetails.lat]; 
       const success = await fetchRoute(start, end); 
