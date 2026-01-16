@@ -7,7 +7,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { 
   Loader2, ShieldCheck, AlertTriangle, 
   Phone, Share2, Star, 
-  CarFront, LocateFixed, Gauge
+  CarFront, LocateFixed, Gauge, Radio
 } from 'lucide-react';
 
 // --- CONFIGURATION ---
@@ -16,6 +16,8 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
+
+// Create Supabase client
 const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
 // --- MATH HELPERS ---
@@ -49,7 +51,6 @@ const DRIVER_INFO = {
 };
 
 export default function TrackingPage({ params }: { params: Promise<{ id: string }> }) {
-    // Next.js 15: params must be unwrapped with use()
     const { id: tripId } = use(params);
 
     // --- REFS ---
@@ -61,7 +62,7 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
     const isMapLoaded = useRef(false);
     
     // Animation Refs
-    const currentPos = useRef<[number, number]>([104.9282, 11.5564]); 
+    const currentPos = useRef<[number, number]>([104.9282, 11.5564]); // Default to PP
     const targetPos = useRef<[number, number]>([104.9282, 11.5564]);
     const currentBearing = useRef<number>(0);
     const targetBearing = useRef<number>(0);
@@ -70,6 +71,7 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
 
     // --- STATE ---
     const [status, setStatus] = useState<'loading' | 'active' | 'ended' | 'error'>('loading');
+    const [errorMsg, setErrorMsg] = useState('');
     const [showRecenterBtn, setShowRecenterBtn] = useState(false);
     const [trailCoordinates, setTrailCoordinates] = useState<number[][]>([]);
     const [currentSpeed, setCurrentSpeed] = useState(0);
@@ -78,31 +80,28 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
     // --- 1. ANIMATION LOOP ---
     const animate = useCallback(() => {
         if (!map.current || !marker.current) {
-            // Keep requesting frame until map/marker is ready or component unmounts
             animationFrameId.current = requestAnimationFrame(animate);
             return;
         }
 
-        // 1. Interpolate Position (Smooth Slide)
+        // Interpolate Position
         const lng = lerp(currentPos.current[0], targetPos.current[0], 0.08);
         const lat = lerp(currentPos.current[1], targetPos.current[1], 0.08);
         
-        // 2. Interpolate Bearing (Smooth Turn)
+        // Interpolate Bearing
         const newBearing = lerpAngle(currentBearing.current, targetBearing.current, 0.05);
 
-        // 3. Update Refs
+        // Update Refs
         currentPos.current = [lng, lat];
         currentBearing.current = newBearing;
 
-        // 4. Update Marker
+        // Update Marker UI
         marker.current.setLngLat([lng, lat]);
-        
-        // 5. Update Rotation DOM
         if (markerEl.current) {
             markerEl.current.style.transform = `rotate(${newBearing}deg)`;
         }
 
-        // 6. Camera Follow
+        // Camera Follow (only if user isn't panning)
         if (!isUserInteractingRef.current) {
             map.current.easeTo({
                 center: [lng, lat],
@@ -116,18 +115,19 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
         animationFrameId.current = requestAnimationFrame(animate);
     }, []);
 
-    // --- 2. DATA PACKET HANDLER ---
+    // --- 2. DATA HANDLER ---
     const handleNewLocationPacket = useCallback((lng: number, lat: number, heading?: number, speed?: number) => {
-        // Visual Feedback
+        console.log("📍 New Packet:", lng, lat, heading); // Debug log
+        
         setIsPulsing(true);
         setTimeout(() => setIsPulsing(false), 1000);
 
         if (speed !== undefined) setCurrentSpeed(Math.round(speed * 3.6));
 
-        // Calculate distance moved
+        // Calculate distance from last target
         const dist = Math.sqrt(Math.pow(lng - targetPos.current[0], 2) + Math.pow(lat - targetPos.current[1], 2));
         
-        // Only update bearing if moved significantly (> ~2 meters)
+        // Only update bearing if moving
         let finalBearing = targetBearing.current;
         if (dist > 0.00002) {
              const calculatedBearing = getBearing(targetPos.current[1], targetPos.current[0], lat, lng);
@@ -137,157 +137,188 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
         targetPos.current = [lng, lat];
         targetBearing.current = finalBearing;
 
-        // Update Trail
-        setTrailCoordinates(prev => {
-            const newTrail = [...prev, [lng, lat]];
-            return newTrail.slice(-50); 
-        });
+        setTrailCoordinates(prev => [...prev, [lng, lat]].slice(-50));
     }, []);
 
-    // --- 3. MAP & REALTIME INIT ---
+    // --- 3. INITIALIZATION & CONNECTION ---
     useEffect(() => {
-        if (!MAPBOX_TOKEN || !mapContainer.current || !supabase || !tripId) return;
-        if (map.current) return;
+        if (!supabase) {
+            console.error("Supabase client not initialized. Check ENV variables.");
+            setStatus('error');
+            setErrorMsg("Database Config Missing");
+            return;
+        }
 
-        // --- MAP SETUP ---
-        map.current = new mapboxgl.Map({
-            container: mapContainer.current,
-            style: 'mapbox://styles/mapbox/navigation-night-v1', 
-            center: currentPos.current,
-            zoom: 15,
-            pitch: 50,
-            bearing: 0,
-            attributionControl: false,
-            logoPosition: 'top-left',
-            cooperativeGestures: true
-        });
+        // 1. Setup Map
+        if (!map.current && mapContainer.current) {
+            map.current = new mapboxgl.Map({
+                container: mapContainer.current,
+                style: 'mapbox://styles/mapbox/navigation-night-v1', 
+                center: currentPos.current,
+                zoom: 15,
+                pitch: 50,
+                attributionControl: false,
+                logoPosition: 'top-left',
+                cooperativeGestures: true
+            });
 
-        const startInteraction = () => { isUserInteractingRef.current = true; setShowRecenterBtn(true); };
-        map.current.on('mousedown', startInteraction);
-        map.current.on('touchstart', startInteraction);
-        map.current.on('dragstart', startInteraction);
+            // Interaction Listeners
+            const startInteraction = () => { isUserInteractingRef.current = true; setShowRecenterBtn(true); };
+            map.current.on('mousedown', startInteraction);
+            map.current.on('touchstart', startInteraction);
+            map.current.on('dragstart', startInteraction);
 
-        map.current.on('load', () => {
-            if (!map.current) return;
-            isMapLoaded.current = true;
+            map.current.on('load', () => {
+                if (!map.current) return;
+                isMapLoaded.current = true;
 
-            // 3D Buildings
-            const layers = map.current.getStyle().layers;
-            const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
-            
-            if (!map.current.getLayer('3d-buildings')) {
+                // 3D Buildings Layer
+                const layers = map.current.getStyle().layers;
+                const labelLayerId = layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id;
+                if (!map.current.getLayer('3d-buildings')) {
+                    map.current.addLayer({
+                        'id': '3d-buildings',
+                        'source': 'composite',
+                        'source-layer': 'building',
+                        'filter': ['==', 'extrude', 'true'],
+                        'type': 'fill-extrusion',
+                        'minzoom': 14,
+                        'paint': {
+                            'fill-extrusion-color': '#27272a',
+                            'fill-extrusion-height': ['get', 'height'],
+                            'fill-extrusion-base': ['get', 'min_height'],
+                            'fill-extrusion-opacity': 0.8
+                        }
+                    }, labelLayerId);
+                }
+
+                // Trail Layer
+                map.current.addSource('route', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }, lineMetrics: true });
                 map.current.addLayer({
-                    'id': '3d-buildings',
-                    'source': 'composite',
-                    'source-layer': 'building',
-                    'filter': ['==', 'extrude', 'true'],
-                    'type': 'fill-extrusion',
-                    'minzoom': 14,
-                    'paint': {
-                        'fill-extrusion-color': '#27272a',
-                        'fill-extrusion-height': ['get', 'height'],
-                        'fill-extrusion-base': ['get', 'min_height'],
-                        'fill-extrusion-opacity': 0.8
+                    id: 'route',
+                    type: 'line',
+                    source: 'route',
+                    layout: { 'line-join': 'round', 'line-cap': 'round' },
+                    paint: {
+                        'line-color': '#6366f1',
+                        'line-width': 6,
+                        'line-opacity': 0.8,
+                        'line-gradient': [ 'interpolate', ['linear'], ['line-progress'], 0, "rgba(99, 102, 241, 0)", 0.2, "#818cf8", 1, "#ffffff" ]
                     }
-                }, labelLayerId);
+                }, '3d-buildings');
+            });
+
+            // Car Marker
+            const el = document.createElement('div');
+            el.className = 'car-marker-container';
+            el.innerHTML = `
+                <div id="car-rotator" style="transition: transform 0.1s linear; will-change: transform;">
+                    <div class="relative">
+                        <div class="absolute inset-0 bg-indigo-500/40 blur-xl rounded-full"></div>
+                        <div class="relative w-12 h-12 bg-zinc-100 rounded-full border-2 border-indigo-600 shadow-2xl flex items-center justify-center z-10">
+                            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" /><circle cx="7" cy="17" r="2" /><circle cx="17" cy="17" r="2" /></svg>
+                        </div>
+                        <div class="absolute -top-3 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[8px] border-b-indigo-500"></div>
+                    </div>
+                </div>`;
+            markerEl.current = el.querySelector('#car-rotator');
+            marker.current = new mapboxgl.Marker({ element: el }).setLngLat(currentPos.current).addTo(map.current);
+
+            // Start Animation
+            animationFrameId.current = requestAnimationFrame(animate);
+        }
+
+        // 2. Fetch Initial Data
+        const fetchDataAndSubscribe = async () => {
+            console.log("🔍 Fetching trip:", tripId);
+            
+            // Initial Fetch
+            const { data, error } = await supabase
+                .from('active_trips')
+                .select('*')
+                .eq('id', tripId)
+                .single();
+            
+            if (error) {
+                console.error("Supabase Error:", error);
+                setStatus('error');
+                setErrorMsg("Trip Not Found or Access Denied (Check RLS)");
+                return;
             }
 
-            // Trail Line
-            map.current.addSource('route', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }, lineMetrics: true });
-            map.current.addLayer({
-                id: 'route',
-                type: 'line',
-                source: 'route',
-                layout: { 'line-join': 'round', 'line-cap': 'round' },
-                paint: {
-                    'line-color': '#6366f1',
-                    'line-width': 6,
-                    'line-opacity': 0.8,
-                    'line-gradient': [
-                        'interpolate',
-                        ['linear'],
-                        ['line-progress'],
-                        0, "rgba(99, 102, 241, 0)",
-                        0.2, "#818cf8",
-                        1, "#ffffff"
-                    ]
-                }
-            }, '3d-buildings');
-        });
+            if (!data) {
+                setStatus('error');
+                setErrorMsg("No data returned for this ID");
+                return;
+            }
 
-        // Marker Element
-        const el = document.createElement('div');
-        el.className = 'car-marker-container';
-        el.innerHTML = `
-            <div id="car-rotator" style="transition: transform 0.1s linear; will-change: transform;">
-                <div class="relative">
-                    <div class="absolute inset-0 bg-indigo-500/40 blur-xl rounded-full"></div>
-                    <div class="relative w-12 h-12 bg-zinc-100 rounded-full border-2 border-indigo-600 shadow-2xl flex items-center justify-center z-10">
-                        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" />
-                            <circle cx="7" cy="17" r="2" />
-                            <circle cx="17" cy="17" r="2" />
-                        </svg>
-                    </div>
-                    <div class="absolute -top-3 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[8px] border-b-indigo-500"></div>
-                </div>
-            </div>
-        `;
-        markerEl.current = el.querySelector('#car-rotator');
-        marker.current = new mapboxgl.Marker({ element: el }).setLngLat(currentPos.current).addTo(map.current);
-
-        // Start Loop
-        animationFrameId.current = requestAnimationFrame(animate);
-
-        // --- FETCH & SUBSCRIBE ---
-        const fetchInitial = async () => {
-            const { data, error } = await supabase.from('active_trips').select('*').eq('id', tripId).single();
-            
-            if (error || !data) { setStatus('error'); return; }
-            if (data.status === 'ended') { setStatus('ended'); return; }
+            if (data.status === 'ended') {
+                setStatus('ended');
+                return;
+            }
             
             setStatus('active');
             
-            // Hard teleport
+            // Set initial position
             currentPos.current = [data.current_lng, data.current_lat];
             targetPos.current = [data.current_lng, data.current_lat];
             currentBearing.current = data.heading || 0;
             targetBearing.current = data.heading || 0;
             if (data.speed) setCurrentSpeed(Math.round(data.speed * 3.6));
 
-            if (map.current) {
-                if (data.dest_lat && data.dest_lng) {
+            // Plot Destination if available
+            if (map.current && data.dest_lat && data.dest_lng) {
+                if (!destinationMarker.current) {
                     const destEl = document.createElement('div');
                     destEl.innerHTML = `<div class="w-8 h-8 bg-red-500 rounded-full border-2 border-white shadow-lg flex items-center justify-center animate-bounce"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>`;
                     destinationMarker.current = new mapboxgl.Marker({ element: destEl }).setLngLat([data.dest_lng, data.dest_lat]).addTo(map.current);
-                    const bounds = new mapboxgl.LngLatBounds().extend([data.current_lng, data.current_lat]).extend([data.dest_lng, data.dest_lat]);
-                    map.current.fitBounds(bounds, { padding: 100, animate: false });
-                } else {
-                    map.current.jumpTo({ center: currentPos.current, zoom: 16 });
                 }
+                // Only fit bounds on first load
+                const bounds = new mapboxgl.LngLatBounds().extend([data.current_lng, data.current_lat]).extend([data.dest_lng, data.dest_lat]);
+                map.current.fitBounds(bounds, { padding: 100, animate: false });
+            } else if (map.current) {
+                map.current.jumpTo({ center: currentPos.current, zoom: 16 });
             }
+
+            // 3. Subscribe to Realtime
+            console.log("📡 Subscribing to Realtime...");
+            const channel = supabase.channel(`tracking-${tripId}`)
+                .on('postgres_changes', 
+                    { event: 'UPDATE', schema: 'public', table: 'active_trips', filter: `id=eq.${tripId}` }, 
+                    (payload) => {
+                        console.log("⚡ Realtime Update:", payload);
+                        const trip = payload.new as any;
+                        if (trip.status === 'ended') setStatus('ended');
+                        else handleNewLocationPacket(trip.current_lng, trip.current_lat, trip.heading, trip.speed);
+                    }
+                )
+                .subscribe((status) => {
+                    console.log("Subscription Status:", status);
+                    if (status !== 'SUBSCRIBED') {
+                        // Optional: Retry logic or error toast
+                    }
+                });
+
+            // Cleanup subscription
+            return () => {
+                supabase.removeChannel(channel);
+            };
         };
 
-        fetchInitial();
-
-        const channel = supabase.channel(`tracking-${tripId}`)
-            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'active_trips', filter: `id=eq.${tripId}` }, 
-                (payload) => {
-                    const trip = payload.new as any;
-                    if (trip.status === 'ended') setStatus('ended');
-                    else handleNewLocationPacket(trip.current_lng, trip.current_lat, trip.heading, trip.speed);
-                }
-            )
-            .subscribe();
+        const cleanupSubscription = fetchDataAndSubscribe();
 
         return () => {
-            supabase.removeChannel(channel);
+            if (cleanupSubscription && typeof cleanupSubscription === 'function') {
+                // @ts-ignore
+                cleanupSubscription.then(cleanup => cleanup && cleanup());
+            }
             cancelAnimationFrame(animationFrameId.current);
             if(map.current) map.current.remove();
         };
-    }, [tripId, handleNewLocationPacket, animate]); 
 
-    // --- TRAIL UPDATES ---
+    }, [tripId, handleNewLocationPacket, animate]);
+
+    // --- TRAIL UPDATE ---
     useEffect(() => {
         if (!map.current || !isMapLoaded.current || trailCoordinates.length < 2) return;
         const source = map.current.getSource('route') as mapboxgl.GeoJSONSource;
@@ -300,7 +331,7 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
         map.current?.flyTo({ center: currentPos.current, bearing: targetBearing.current, pitch: 50, zoom: 17, duration: 1000 });
     };
 
-    if (status === 'error') return <ErrorScreen title="Link Expired" desc="This trip link is no longer valid." />;
+    if (status === 'error') return <ErrorScreen title="Connection Failed" desc={errorMsg || "Could not load trip details."} />;
     if (status === 'ended') return <ErrorScreen title="Arrived" desc="The driver has completed this trip." icon={<ShieldCheck className="h-16 w-16 text-emerald-500 mb-4"/>} />;
 
     return (
@@ -325,7 +356,7 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
                                 <span className="text-xs font-mono font-bold">{currentSpeed} <span className="text-[10px] text-zinc-500">km/h</span></span>
                              </>
                          ) : (
-                             <span className="text-xs font-mono">Stationary</span>
+                             <span className="text-xs font-mono flex items-center gap-1"><Radio className="h-3 w-3" /> Standby</span>
                          )}
                     </div>
                 </div>
@@ -391,7 +422,7 @@ export default function TrackingPage({ params }: { params: Promise<{ id: string 
                 <div className="absolute inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center z-50">
                     <div className="flex flex-col items-center gap-4 animate-pulse">
                         <Loader2 className="h-12 w-12 text-indigo-500 animate-spin" />
-                        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Acquiring Satellite...</p>
+                        <p className="text-xs font-bold uppercase tracking-widest text-zinc-500">Connecting Satellite...</p>
                     </div>
                 </div>
             )}
