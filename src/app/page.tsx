@@ -74,9 +74,9 @@ const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUP
 const DEFAULT_CENTER: [number, number] = [104.9282, 11.5564]; // Phnom Penh
 const DEFAULT_ZOOM = 15;
 const WEATHER_REFRESH_RATE = 15 * 60 * 1000;
-const REROUTE_THRESHOLD_METERS = 45;
+const REROUTE_THRESHOLD_METERS = 50;
 const AR_PERMISSION_KEY = "map_ar_permission_v1";
-const ARRIVAL_THRESHOLD_METERS = 50;
+const ARRIVAL_THRESHOLD_METERS = 30;
 
 const FUEL_STATS: any = { moto: 2.5, car: 10, suv: 14 };
 const GAS_PRICE_KHR = 4500;
@@ -114,7 +114,6 @@ function getBearing(startLat: number, startLng: number, destLat: number, destLng
   const x = Math.cos(startLatRad) * Math.sin(destLatRad) - Math.sin(startLatRad) * Math.cos(destLatRad) * Math.cos(destLngRad - startLngRad);
   const brng = Math.atan2(y, x); return ((brng * 180 / Math.PI) + 360) % 360;
 }
-function getShortestAngleDistance(target: number, current: number) { let delta = target - current; while (delta < -180) delta += 360; while (delta > 180) delta -= 360; return delta; }
 
 // Improved Smooth Angle Interpolation
 function lerpAngle(start: number, end: number, amount: number) {
@@ -160,18 +159,22 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
     const [alert, setAlert] = useState<string | null>(null);
+    const isActive = useRef(true);
 
     useEffect(() => {
+        isActive.current = true;
         const loadModel = async () => {
-            try { await tf.ready(); const loadedModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' }); setModel(loadedModel); } catch (e) { console.error("TFJS Error", e); }
+            try { await tf.ready(); const loadedModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' }); if(isActive.current) setModel(loadedModel); } catch (e) { console.error("TFJS Error", e); }
         };
         loadModel();
+        return () => { isActive.current = false; }
     }, []);
 
     useEffect(() => {
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
-                .then(stream => { if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play(); } });
+                .then(stream => { if (videoRef.current && isActive.current) { videoRef.current.srcObject = stream; videoRef.current.play(); } else { stream.getTracks().forEach(t => t.stop()); } })
+                .catch(err => console.error("Dashcam Cam Error", err));
         }
     }, []);
 
@@ -179,27 +182,31 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
         if (!model || !videoRef.current || !canvasRef.current) return;
         let animationId: number;
         const detectFrame = async () => {
+            if (!isActive.current) return;
             if (videoRef.current && videoRef.current.readyState === 4) {
-                const predictions = await model.detect(videoRef.current);
-                const ctx = canvasRef.current!.getContext('2d');
-                if (ctx) {
-                    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-                    predictions.forEach(p => {
-                        if (['car', 'truck', 'bus', 'person', 'traffic light'].includes(p.class)) {
-                            ctx.beginPath(); ctx.lineWidth = 2; ctx.strokeStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
-                            ctx.rect(p.bbox[0], p.bbox[1], p.bbox[2], p.bbox[3]); ctx.stroke();
-                            ctx.fillStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
-                            ctx.fillText(`${p.class} ${(p.score * 100).toFixed(0)}%`, p.bbox[0], p.bbox[1] > 10 ? p.bbox[1] - 5 : 10);
-                            const widthRatio = p.bbox[2] / 320; 
-                            if (widthRatio > 0.6) { setAlert("⚠️ BRAKE!"); onDetect('traffic'); } else { setAlert(null); }
-                        }
-                    });
-                }
+                try {
+                    const predictions = await model.detect(videoRef.current);
+                    if (!isActive.current) return;
+                    const ctx = canvasRef.current!.getContext('2d');
+                    if (ctx) {
+                        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+                        predictions.forEach(p => {
+                            if (['car', 'truck', 'bus', 'person', 'traffic light'].includes(p.class)) {
+                                ctx.beginPath(); ctx.lineWidth = 2; ctx.strokeStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
+                                ctx.rect(p.bbox[0], p.bbox[1], p.bbox[2], p.bbox[3]); ctx.stroke();
+                                ctx.fillStyle = p.class === 'person' ? '#ef4444' : '#00ff00';
+                                ctx.fillText(`${p.class} ${(p.score * 100).toFixed(0)}%`, p.bbox[0], p.bbox[1] > 10 ? p.bbox[1] - 5 : 10);
+                                const widthRatio = p.bbox[2] / 320; 
+                                if (widthRatio > 0.6) { setAlert("⚠️ BRAKE!"); onDetect('traffic'); } else { setAlert(null); }
+                            }
+                        });
+                    }
+                } catch(e) { console.log("Detection skip"); }
             }
             animationId = requestAnimationFrame(detectFrame);
         };
         detectFrame();
-        return () => cancelAnimationFrame(animationId);
+        return () => { isActive.current = false; cancelAnimationFrame(animationId); };
     }, [model, onDetect]);
 
     return (
@@ -227,9 +234,17 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const [sensorsActive, setSensorsActive] = useState(false);
     const [permissionGranted, setPermissionGranted] = useState(hasParentPermission);
     const [debugMsg, setDebugMsg] = useState("");
+    const [perspective, setPerspective] = useState("800px");
     
     // Smooth Data Refs (Mutable to avoid re-renders in anim loop)
     const sensorData = useRef({ alpha: 0, beta: 0, gamma: 0, smoothAlpha: 0, smoothBeta: 90 });
+
+    useEffect(() => {
+        // Dynamic perspective based on height to approximate ~60deg FOV
+        if (typeof window !== 'undefined') {
+             setPerspective(`${window.innerHeight}px`);
+        }
+    }, []);
 
     const visiblePathSegments = useMemo(() => {
         if (!routePath || routePath.length === 0) return [];
@@ -262,7 +277,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const handleOrientation = useCallback((e: DeviceOrientationEvent) => {
         let heading = 0;
         // @ts-ignore - iOS Webkit Support
-        if (e.webkitCompassHeading) { heading = e.webkitCompassHeading; } 
+        if ((e as any).webkitCompassHeading) { heading = (e as any).webkitCompassHeading; } 
         // Android Standard
         else if (e.alpha !== null) { heading = 360 - e.alpha; }
 
@@ -292,6 +307,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         return () => {
             window.removeEventListener('deviceorientation', handleOrientation);
             if (videoRef.current?.srcObject) { (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop()); }
+            cancelAnimationFrame(requestRef.current);
         };
     }, [permissionGranted, handleOrientation]);
 
@@ -299,7 +315,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         if (!permissionGranted) return;
         const updateLoop = () => {
             const data = sensorData.current;
-            data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.15); // Smoothing factor
+            data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.1); // Slightly slower smoothing
             if (worldRef.current) {
                 // Rotate opposite to heading
                 worldRef.current.style.transform = `translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
@@ -331,7 +347,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     return (
         <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
             <style jsx>{`
-                .perspective-container { perspective: 800px; perspective-origin: 50% 50%; }
+                .perspective-container { perspective: ${perspective}; perspective-origin: 50% 50%; }
                 .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; }
                 .ar-gate {
                     position: absolute; width: 120px; height: 80px;
@@ -460,6 +476,7 @@ export default function MapExplorerPage() {
   const isNavigatingRef = useRef(false);
   const currentSpeedRef = useRef(0);
   const lastSafetyUpdate = useRef<number>(0);
+  const hasLoggedSupabaseError = useRef(false);
 
   // Sync Refs to avoid stale closures in Geoloc callback
   const activeConvoyRef = useRef<string | null>(null);
@@ -557,14 +574,21 @@ export default function MapExplorerPage() {
   // --- FEATURE: INCIDENTS ---
   const fetchIncidents = useCallback(async () => {
     if (!supabase) return;
-    const { data } = await supabase.from('incidents').select('*').gt('created_at', new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()); 
-    if (data) setIncidents(data as Incident[]);
+    try {
+        const { data, error } = await supabase.from('incidents').select('*').gt('created_at', new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()); 
+        if (error) {
+            if (!hasLoggedSupabaseError.current) { console.warn("Supabase Error (Incidents):", error.message); hasLoggedSupabaseError.current = true; }
+        } else if (data) {
+            setIncidents(data as Incident[]);
+        }
+    } catch (e) {}
   }, []);
 
   const reportIncident = async (type: string) => {
     if (!supabase || !userLocation.current) { toast({ title: "Error", description: "GPS required." }); return; }
-    await supabase.from('incidents').insert({ type, lat: userLocation.current[1], lng: userLocation.current[0] });
-    toast({ title: "Reported!", description: "Thank you." });
+    const { error } = await supabase.from('incidents').insert({ type, lat: userLocation.current[1], lng: userLocation.current[0] });
+    if (error) { toast({ title: "Failed", description: "Backend config error (RLS)", variant: "destructive" }); }
+    else { toast({ title: "Reported!", description: "Thank you." }); }
     setShowReportDialog(false);
   };
 
@@ -592,8 +616,14 @@ export default function MapExplorerPage() {
   // --- FEATURE: CONVOY ---
   const joinConvoy = async () => {
       if (!convoyCode || !supabase) return;
-      const { data: existing } = await supabase.from('convoys').select('code').eq('code', convoyCode).single();
-      if (!existing) await supabase.from('convoys').insert({ code: convoyCode });
+      const { data: existing, error } = await supabase.from('convoys').select('code').eq('code', convoyCode).single();
+      if (error && error.code !== 'PGRST116') { toast({ title: "Error", description: "Database error (check RLS)", variant: "destructive" }); return; }
+      
+      if (!existing) {
+          const { error: insertError } = await supabase.from('convoys').insert({ code: convoyCode });
+          if(insertError) { toast({ title: "Error", description: "Failed to create convoy", variant: "destructive" }); return; }
+      }
+      
       const myId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(); 
       localStorage.setItem('convoy_user_id', myId);
       setActiveConvoy(convoyCode);
@@ -704,8 +734,6 @@ export default function MapExplorerPage() {
   const animatePuck = useCallback(() => {
       if (!puckMarker.current || !isMounted.current) { animationFrameId.current = 0; return; }
       
-      const distDelta = getDistanceFromLatLonInMeters(currentPuckPos.current[1], currentPuckPos.current[0], targetPuckPos.current[1], targetPuckPos.current[0]);
-      
       // Interpolate Position
       currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.12);
       currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.12);
@@ -733,7 +761,7 @@ export default function MapExplorerPage() {
 
   const handleStyleChange = (style: string) => { if (!map.current || style === currentStyle) return; map.current.once('style.load', () => { if (map.current) { map.current.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); restoreMapLayers(map.current, isTrafficVisible, isRainMode, isWindMode); } }); map.current.setStyle(style); setCurrentStyle(style); };
   const clearSearchMarkers = useCallback(() => { searchMarkers.current.forEach(m => m.remove()); searchMarkers.current = []; }, []);
-  const handleMapSelection = useCallback((lngLat: { lng: number, lat: number }) => { if(!map.current) return; clearRoute(); if (destinationMarker.current) destinationMarker.current.remove(); destinationMarker.current = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current); setLocationDetails(lngLat); setIsDrawerOpen(true); fetchRichDetails(lngLat.lat, lngLat.lng); map.current.flyTo({ center: lngLat, zoom: 16, padding: { top: 0, bottom: 250, left: 0, right: 0 }, essential: true, duration: 1500 }); }, [removeRouteLayers]);
+  const handleMapSelection = useCallback((lngLat: { lng: number, lat: number }) => { if(!map.current) return; clearRoute(); if (destinationMarker.current) destinationMarker.current.remove(); destinationMarker.current = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current); setLocationDetails(lngLat); setIsDrawerOpen(true); fetchRichDetails(lngLat.lat, lngLat.lng); map.current.flyTo({ center: lngLat, zoom: 16, padding: { top: 0, bottom: 250, left: 0, right: 0 }, essential: true, duration: 1500 }); }, []);
   const plotSearchResults = useCallback((results: SearchResult[], type: string) => { if(!map.current) return; const bounds = new LngLatBounds(); results.forEach(r => { const el = document.createElement('div'); el.className = 'marker-pin'; el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`; const marker = new Marker({ element: el }).setLngLat([r.lng, r.lat]).setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`)).addTo(map.current!); marker.getElement().addEventListener('click', () => { handleMapSelection({ lng: r.lng, lat: r.lat }); }); searchMarkers.current.push(marker); bounds.extend([r.lng, r.lat]); }); if (results.length > 0) map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 }); else toast({ title: "No results", description: "Nothing found nearby." }); }, [handleMapSelection, toast]);
   const handleCategorySearch = useCallback(async (query: string) => { const geoKey = GEOAPIFY_API_KEY; const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER); clearSearchMarkers(); if (isNavigating && routeGeoJSON.current && geoKey) { let category = "commercial"; if (query === "gas station") category = "service.vehicle.fuel"; else if (query === "restaurant") category = "catering.restaurant"; else if (query === "coffee") category = "catering.cafe"; else if (query === "bank") category = "service.financial"; else if (query === "school") category = "education"; try { const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${simplifyGeometry(routeGeoJSON.current)}&limit=10&apiKey=${geoKey}`; const res = await fetch(url); const data = await res.json(); const results = data.features.map((f: any) => ({ lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], name: f.properties.name || f.properties.address_line1 || "Unknown", address: f.properties.address_line2 || "", type: query })); plotSearchResults(results, query); } catch (e) { const fallbackResults = await searchPlaces(query, center, true); plotSearchResults(fallbackResults, query); } } else { const results = await searchPlaces(query, center, true); plotSearchResults(results, query); } }, [clearSearchMarkers, plotSearchResults, toast, isNavigating]);
 
@@ -741,7 +769,18 @@ export default function MapExplorerPage() {
   useEffect(() => {
     isMounted.current = true;
     if (!MAPBOX_TOKEN || !mapContainer.current || map.current) return;
-    const mapInstance = new mapboxgl.Map({ container: mapContainer.current, style: currentStyle, center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, pitch: 45, bearing: 0, attributionControl: false, antialias: true, logoPosition: 'bottom-left' });
+    const mapInstance = new mapboxgl.Map({ 
+        container: mapContainer.current, 
+        style: currentStyle, 
+        center: DEFAULT_CENTER, 
+        zoom: DEFAULT_ZOOM, 
+        pitch: 45, 
+        bearing: 0, 
+        attributionControl: false, 
+        antialias: true, 
+        logoPosition: 'bottom-left',
+        cooperativeGestures: true // Improved mobile UX
+    });
     map.current = mapInstance;
     mapInstance.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
     const geolocate = new GeolocateControl({ positionOptions: { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }, trackUserLocation: false, showUserHeading: false, showUserLocation: false, showAccuracyCircle: false });
@@ -783,13 +822,27 @@ export default function MapExplorerPage() {
                 const isSafety = isSafetyModeActiveRef.current;
                 const tripId = currentTripIdRef.current;
 
-                // Safety Mode & Convoy Updates (Throttled)
+                // Safety Mode & Convoy Updates (Throttled & Defensive)
                 if ((isSafety && tripId) || activeConvoy) {
                     const now = Date.now();
                     if (now - lastSafetyUpdate.current > 3000 && supabase) {
                         const payload = { lat: latitude, lng: longitude, heading: heading || 0, speed: speed || 0, last_updated: new Date().toISOString() };
-                        if (isSafety && tripId) supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading||0, speed: speed||0, last_updated: new Date().toISOString() }).eq('id', tripId).then(()=>{});
-                        if (activeConvoy) { const myId = localStorage.getItem('convoy_user_id'); if(myId) supabase.from('convoy_members').upsert({ convoy_code: activeConvoy, user_id: myId, ...payload }, {onConflict:'user_id'}).then(()=>{}); }
+                        
+                        // Safety Trip
+                        if (isSafety && tripId) {
+                            supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading||0, speed: speed||0, last_updated: new Date().toISOString() })
+                                .eq('id', tripId).then(({ error }) => { if (error && !hasLoggedSupabaseError.current) { console.warn("Trip update failed:", error.message); hasLoggedSupabaseError.current = true; } });
+                        }
+                        
+                        // Convoy
+                        if (activeConvoy) { 
+                            const myId = localStorage.getItem('convoy_user_id'); 
+                            if(myId) {
+                                // Try upserting. If 400 happens due to no constraint, this will fail but catch block handles it
+                                supabase.from('convoy_members').upsert({ convoy_code: activeConvoy, user_id: myId, ...payload }, { onConflict: 'user_id' })
+                                    .then(({ error }) => { if (error && !hasLoggedSupabaseError.current) { console.warn("Convoy update failed (Check RLS/Constraints):", error.message); hasLoggedSupabaseError.current = true; } });
+                            }
+                        }
                         lastSafetyUpdate.current = now;
                     }
                 }
@@ -802,7 +855,7 @@ export default function MapExplorerPage() {
 
                     if (dist < ARRIVAL_THRESHOLD_METERS) stopSafetyMode('arrived');
 
-                    if (routeGeoJSON.current && !isRecalculating.current && (Date.now() - lastRerouteTime.current > 5000)) { 
+                    if (routeGeoJSON.current && !isRecalculating.current && (Date.now() - lastRerouteTime.current > 10000)) { 
                          const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current); 
                          if (distanceToPath > REROUTE_THRESHOLD_METERS) { 
                              isRecalculating.current = true; lastRerouteTime.current = Date.now(); 
@@ -820,9 +873,55 @@ export default function MapExplorerPage() {
 
   useEffect(() => { let frameId: number; const animateWindLayer = () => { if (isWindMode && map.current?.getLayer('wind-layer')) { const time = Date.now() / 2000; map.current.setPaintProperty('wind-layer', 'raster-opacity', 0.6 + Math.sin(time) * 0.1); } frameId = requestAnimationFrame(animateWindLayer); }; if (isWindMode) animateWindLayer(); return () => cancelAnimationFrame(frameId); }, [isWindMode]);
   useEffect(() => { if (routeDetails?.instruction && isNavigating && lastSpokenInstruction.current !== routeDetails.instruction) { speak(routeDetails.instruction); lastSpokenInstruction.current = routeDetails.instruction; } }, [routeDetails, speak, isNavigating]);
-  useEffect(() => { if (locationDetails) { if (addressAbortController.current) addressAbortController.current.abort(); const controller = new AbortController(); addressAbortController.current = controller; setIsFetchingAddress(true); setAddressDetails(null); const timeoutId = setTimeout(async () => { if (!GEOAPIFY_API_KEY) { setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` }); setIsFetchingAddress(false); return; } try { const res = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${GEOAPIFY_API_KEY}&lang=km`, { signal: controller.signal }); const data = await res.json(); if (isMounted.current && !controller.signal.aborted) setAddressDetails((data.features?.length) ? data.features[0].properties : { formatted: "ទីតាំងមិនស្គាល់" }); } catch (error: any) { if (error.name !== 'AbortError' && isMounted.current) setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" }); } finally { if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false); } }, 600); return () => clearTimeout(timeoutId); } }, [locationDetails]);
+  
+  useEffect(() => { 
+      if (locationDetails) { 
+          if (addressAbortController.current) addressAbortController.current.abort(); 
+          const controller = new AbortController(); 
+          addressAbortController.current = controller; 
+          setIsFetchingAddress(true); 
+          setAddressDetails(null); 
+          const timeoutId = setTimeout(async () => { 
+              if (!GEOAPIFY_API_KEY) { 
+                  if (!controller.signal.aborted) {
+                      setAddressDetails({ formatted: `${locationDetails.lat.toFixed(5)}, ${locationDetails.lng.toFixed(5)}` }); 
+                      setIsFetchingAddress(false);
+                  }
+                  return; 
+              } 
+              try { 
+                  const res = await fetch(`https://api.geoapify.com/v1/geocode/reverse?lat=${locationDetails.lat}&lon=${locationDetails.lng}&apiKey=${GEOAPIFY_API_KEY}&lang=km`, { signal: controller.signal }); 
+                  const data = await res.json(); 
+                  if (isMounted.current && !controller.signal.aborted) setAddressDetails((data.features?.length) ? data.features[0].properties : { formatted: "ទីតាំងមិនស្គាល់" }); 
+              } catch (error: any) { 
+                  if (error.name !== 'AbortError' && isMounted.current) setAddressDetails({ formatted: "ទីតាំងមិនស្គាល់" }); 
+              } finally { 
+                  if (isMounted.current && !controller.signal.aborted) setIsFetchingAddress(false); 
+              } 
+          }, 600); 
+          return () => clearTimeout(timeoutId); 
+      } 
+  }, [locationDetails]);
 
-  const handleStartNavigation = async () => { if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "No GPS" }); return; } setIsRouting(true); const start = userLocation.current; const end: [number, number] = [locationDetails.lng, locationDetails.lat]; const success = await fetchRoute(start, end); if (success) { setIsNavigating(true); activeDestination.current = end; setIsDrawerOpen(false); setShowRecenterBtn(false); requestWakeLock(); if(map.current) map.current.flyTo({ center: start, zoom: 18, pitch: 60, bearing: targetHeading.current, duration: 2000 }); } setIsRouting(false); };
+  const handleStartNavigation = async () => { 
+      if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "No GPS" }); return; } 
+      setIsRouting(true); 
+      // Initialize audio context on user click
+      speak("Starting navigation");
+      const start = userLocation.current; 
+      const end: [number, number] = [locationDetails.lng, locationDetails.lat]; 
+      const success = await fetchRoute(start, end); 
+      if (success) { 
+          setIsNavigating(true); 
+          activeDestination.current = end; 
+          setIsDrawerOpen(false); 
+          setShowRecenterBtn(false); 
+          requestWakeLock(); 
+          if(map.current) map.current.flyTo({ center: start, zoom: 18, pitch: 60, bearing: targetHeading.current, duration: 2000 }); 
+      } 
+      setIsRouting(false); 
+  };
+
   const clearRoute = useCallback(() => { setIsNavigating(false); activeDestination.current = null; routeGeoJSON.current = null; releaseWakeLock(); if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel(); if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; } if(map.current) removeRouteLayers(map.current); clearSearchMarkers(); setRouteDetails(null); setLocationDetails(null); setIsDrawerOpen(false); setShowRecenterBtn(false); if(map.current && userLocation.current) map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, duration: 1500 }); }, [clearSearchMarkers, removeRouteLayers]);
   const toggleLayer = useCallback((layerName: 'rain' | 'wind' | 'traffic') => { if (!map.current) return; let isActive: boolean, setIsActive: Function, layerId: string; switch(layerName) { case 'traffic': isActive = isTrafficVisible; setIsActive = setIsTrafficVisible; layerId = 'traffic'; break; case 'rain': isActive = isRainMode; setIsActive = setIsRainMode; layerId = 'rain-layer'; break; case 'wind': isActive = isWindMode; setIsActive = setIsWindMode; layerId = 'wind-layer'; break; } const newState = !isActive; setIsActive(newState); if (map.current.getLayer(layerId)) map.current.setLayoutProperty(layerId, 'visibility', newState ? 'visible' : 'none'); else if (newState) restoreMapLayers(map.current, layerName === 'traffic' ? true : isTrafficVisible, layerName === 'rain' ? true : isRainMode, layerName === 'wind' ? true : isWindMode); }, [isTrafficVisible, isRainMode, isWindMode, restoreMapLayers]);
   const toggleAR = useCallback(() => { if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "Set destination first" }); return; } setShowAR(prev => !prev); }, [locationDetails, toast]);
@@ -832,7 +931,12 @@ export default function MapExplorerPage() {
   const handleUserLocationClick = useCallback(() => { if(!userLocation.current || !map.current) { geolocateControl.current?.trigger(); toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 }); return; } map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 }); }, [toast]);
 
   // Safety
-  const startSafetyMode = async () => { if (!supabase || !userLocation.current) return; const { data } = await supabase.from('active_trips').insert({ current_lat: userLocation.current[1], current_lng: userLocation.current[0], status: 'active' }).select().single(); if(data) { setCurrentTripId(data.id); setIsSafetyModeActive(true); setShowShareDialog(true); } };
+  const startSafetyMode = async () => { 
+      if (!supabase || !userLocation.current) return; 
+      const { data, error } = await supabase.from('active_trips').insert({ current_lat: userLocation.current[1], current_lng: userLocation.current[0], status: 'active' }).select().single(); 
+      if(error) { toast({ title: "Error", description: "Check Supabase Permissions", variant: "destructive" }); return; }
+      if(data) { setCurrentTripId(data.id); setIsSafetyModeActive(true); setShowShareDialog(true); } 
+  };
   const stopSafetyMode = async (status = 'ended') => { if (currentTripId && supabase) await supabase.from('active_trips').update({ status }).eq('id', currentTripId); setIsSafetyModeActive(false); setCurrentTripId(null); setShowShareDialog(false); };
 
   if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Missing Token</h2></CardContent></Card></div>;
