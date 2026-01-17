@@ -36,7 +36,8 @@ import {
   Trash2, Map as MapIcon, CarFront, ExternalLink, Camera, 
   Mountain, Shield, Copy, Siren, Construction, 
   Video, Users, LogOut, Radio, Satellite,
-  Briefcase, Home, Stethoscope, Sparkles, CheckCircle2, ChevronRight, BatteryCharging, Mic2
+  Briefcase, Home, Stethoscope, Sparkles, CheckCircle2, ChevronRight, BatteryCharging, Mic2,
+  Gauge, Activity, Target, ChevronLeft, ChevronRight as ChevronRightIcon
 } from 'lucide-react';
 
 // ==========================================
@@ -64,7 +65,14 @@ const GEOAPIFY_API_KEY = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
 
-if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
+if (MAPBOX_TOKEN) {
+    mapboxgl.accessToken = MAPBOX_TOKEN;
+    // Attempt to reduce telemetry logs if blocked by client
+    try {
+        // @ts-ignore
+        if (mapboxgl.config) mapboxgl.config.DISABLE_TELEMETRY = true;
+    } catch (e) {}
+}
 
 const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
@@ -123,19 +131,22 @@ function lerpAngle(start: number, end: number, amount: number) {
     return ((value % 360) + 360) % 360;
 }
 
+// Low-Pass Filter for Compass Smoothing
 function smoothAngle(current: number, target: number, factor: number) {
     let delta = target - current;
     while (delta <= -180) delta += 360;
     while (delta > 180) delta -= 360;
+    if (Math.abs(delta) < 0.5) return current; // Deadzone for stability
     return current + delta * factor;
 }
 
 function getMinDistanceToRoute(userLat: number, userLng: number, routeCoords: number[][]) { if (!routeCoords.length) return Infinity; let minDistance = Infinity; const step = Math.max(1, Math.ceil(routeCoords.length / 50)); for (let i = 0; i < routeCoords.length; i += step) { const dist = getDistanceFromLatLonInMeters(userLat, userLng, routeCoords[i][1], routeCoords[i][0]); if (dist < minDistance) minDistance = dist; if (minDistance < 10) return minDistance; } return minDistance; }
 const lerp = (start: number, end: number, amt: number) => (1 - amt) * start + amt * end;
-const formatDistance = (d: number) => d > 1000 ? `${(d / 1000).toFixed(1)} គ.ម` : `${d.toFixed(0)} ម៉ែត្រ`;
-const formatDuration = (s: number) => { if (s < 0) s = 0; const m = Math.round(s / 60); return m < 60 ? `${m} នាទី` : `${Math.floor(m / 60)}ម៉ោង ${m % 60}នាទី`; };
+const formatDistance = (d: number) => d > 1000 ? `${(d / 1000).toFixed(1)} km` : `${d.toFixed(0)} m`;
+const formatDuration = (s: number) => { if (s < 0) s = 0; const m = Math.round(s / 60); return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`; };
 const simplifyGeometry = (coordinates: number[][]) => { if (!coordinates || coordinates.length === 0) return ""; const step = Math.max(1, Math.floor(coordinates.length / 80)); const simplified = coordinates.filter((_, i) => i % step === 0 || i === coordinates.length - 1); return `line_string:${simplified.map(c => `${c[0]},${c[1]}`).join(',')}`; };
 const HighlightMatch = ({ text, match }: { text: string, match: string }) => { if (!match || !text) return <span>{text}</span>; const parts = text.split(new RegExp(`(${match.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')); return <span>{parts.map((part, i) => part.toLowerCase() === match.toLowerCase() ? <span key={i} className="text-indigo-400 font-bold">{part}</span> : part)}</span>; };
+const triggerHaptic = () => { if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(10); };
 
 type SearchResult = { lng: number, lat: number, name: string, type: string, address: string };
 const mapFeaturesToResults = (features: any[]): SearchResult[] => features.map((f: any) => { const name = f.text_km || f.text_en || f.text; let rawAddress = (f.properties?.address || f.place_name_km || f.place_name || "").toString(); if (rawAddress.startsWith(name)) rawAddress = rawAddress.substring(name.length).replace(/^,\s*/, "").trim(); const cleanAddress = rawAddress.replace(/,\s*Cambodia/i, "").replace(/,\s*កម្ពុជា/i, "").replace(/,\s*Phnom Penh/i, "").trim().replace(/^,\s*/, ""); return { lng: f.center[0], lat: f.center[1], name: name, address: cleanAddress || "ទីតាំងផែនទី", type: f.properties?.category || f.place_type[0] || "general" } });
@@ -144,7 +155,7 @@ const ManeuverIcon = memo(({ instruction }: { instruction: string }) => { const 
 ManeuverIcon.displayName = 'ManeuverIcon';
 
 type WeatherData = { temp: number; condition: string; description: string };
-type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number };
+type RouteDetails = { distance: number; duration: number; instruction: string; arrivalTime: string; totalDistance: number; initialTotalDistance?: number };
 type Incident = { id: number, type: 'police' | 'traffic' | 'accident' | 'pothole', lat: number, lng: number };
 type ConvoyMember = { user_id: string, lat: number, lng: number, heading: number, speed: number, last_updated: string };
 
@@ -176,7 +187,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
     useEffect(() => {
         isActive.current = true;
         tf.ready().then(() => cocoSsd.load({ base: 'lite_mobilenet_v2' }).then(m => { if(isActive.current) setModel(m); }));
-        return () => { isActive.current = false; }
+        return () => { isActive.current = false; setModel(null); }
     }, []);
 
     useEffect(() => {
@@ -190,6 +201,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
     const takeSnapshot = () => {
         if (!canvasRef.current || !videoRef.current) return;
         try {
+            triggerHaptic();
             const link = document.createElement('a');
             link.download = `dashcam-${Date.now()}.png`;
             link.href = canvasRef.current.toDataURL();
@@ -307,7 +319,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 };
 
 // ==========================================
-// 4. AR COMPONENT (UPDATED & STABILIZED)
+// 4. AR COMPONENT (UPDATED V2)
 // ==========================================
 const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -319,6 +331,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const [permissionGranted, setPermissionGranted] = useState(hasParentPermission);
     const [debugMsg, setDebugMsg] = useState("");
     const [perspective, setPerspective] = useState("800px");
+    const [currentCompassHeading, setCurrentCompassHeading] = useState(0);
     
     // Smooth Data Refs
     const sensorData = useRef({ alpha: 0, smoothAlpha: 0 });
@@ -336,7 +349,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         for (let i = 0; i < routePath.length; i += step) {
             const pt = routePath[i];
             const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]);
-            if (dist < 120 && count < 25) { 
+            if (dist < 150 && count < 30) { 
                 const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]);
                 const rad = bearing * (Math.PI / 180);
                 segments.push({ x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist: dist, index: i });
@@ -356,11 +369,16 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const handleOrientation = useCallback((e: DeviceOrientationEvent) => {
         let heading = 0;
         // @ts-ignore
-        if ((e as any).webkitCompassHeading) { heading = (e as any).webkitCompassHeading; } 
-        else if (e.alpha !== null) { heading = 360 - e.alpha; }
+        if ((e as any).webkitCompassHeading) { 
+            // @ts-ignore
+            heading = (e as any).webkitCompassHeading;
+        } else if (e.alpha !== null) { 
+            // Basic Android support
+            heading = 360 - e.alpha; 
+        }
 
         sensorData.current.alpha = heading;
-        if (!sensorsActive) setSensorsActive(true);
+        if (!sensorsActive && heading !== 0) setSensorsActive(true);
     }, [sensorsActive]);
 
     useEffect(() => {
@@ -380,10 +398,14 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         if (permissionGranted) {
             startCamera();
             window.addEventListener('deviceorientation', handleOrientation);
+            // @ts-ignore
+            window.addEventListener('deviceorientationabsolute', handleOrientation);
         }
 
         return () => {
             window.removeEventListener('deviceorientation', handleOrientation);
+            // @ts-ignore
+            window.removeEventListener('deviceorientationabsolute', handleOrientation);
             if (stream) stream.getTracks().forEach(t => t.stop());
             cancelAnimationFrame(requestRef.current);
         };
@@ -393,8 +415,10 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         if (!permissionGranted) return;
         const updateLoop = () => {
             const data = sensorData.current;
-            // Stronger smoothing factor (0.05) for less jitter
-            data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.05); 
+            // Improved Smoothing
+            data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.08); 
+            setCurrentCompassHeading(Math.round(data.smoothAlpha));
+
             if (worldRef.current) {
                 worldRef.current.style.transform = `translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
             }
@@ -422,25 +446,56 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         }
     };
 
+    // --- Compass Strip Calculation ---
+    // The compass strip is 720px wide (repeating 0-360 twice effectively) or just mapped
+    // 1 degree = ~2-3 pixels shift
+    const compassShift = (currentCompassHeading % 360) * 4; // 4px per degree
+
     return (
         <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
             <style jsx>{`
                 .perspective-container { perspective: ${perspective}; perspective-origin: 50% 50%; }
                 .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; }
-                .ar-gate {
-                    position: absolute; width: 120px; height: 80px;
-                    border: 2px solid rgba(16, 185, 129, 0.6); border-bottom: 4px solid rgba(16, 185, 129, 1);
-                    background: linear-gradient(180deg, rgba(16,185,129,0) 0%, rgba(16,185,129,0.2) 100%);
+                
+                /* New Path Markers */
+                .ar-chevron {
+                    position: absolute; width: 60px; height: 30px;
+                    border-bottom: 6px solid rgba(16, 185, 129, 0.9);
+                    border-left: 6px solid transparent; border-right: 6px solid transparent;
                     transform-origin: center bottom; transform: translate(-50%, -100%);
+                    box-shadow: 0 0 15px rgba(16, 185, 129, 0.6);
+                    filter: drop-shadow(0 0 5px #10b981);
+                }
+                
+                /* Destination Pin */
+                .dest-pin {
+                    position: absolute; display: flex; flex-direction: column; align-items: center;
+                    transform: translate(-50%, -100%);
+                }
+                .pin-head {
+                    width: 40px; height: 40px; background: #ef4444; border: 3px solid white;
+                    border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+                    box-shadow: 0 0 20px rgba(239, 68, 68, 0.8);
                     display: flex; align-items: center; justify-content: center;
-                    color: #10b981; font-weight: bold; font-family: monospace;
-                    text-shadow: 0 2px 4px black; border-radius: 8px 8px 0 0;
-                    box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
                 }
-                .ar-gate::after {
-                    content: ''; position: absolute; bottom: -10px; left: 50%; transform: translateX(-50%);
-                    width: 6px; height: 6px; background: #fff; border-radius: 50%; box-shadow: 0 0 10px #fff;
+                .pin-icon { transform: rotate(45deg); }
+                .pin-stick { width: 4px; height: 40px; background: white; margin-top: -10px; box-shadow: 0 0 10px white; }
+                .pin-pulse {
+                    width: 20px; height: 10px; background: rgba(239,68,68,0.5); border-radius: 50%;
+                    animation: pinPulse 1s infinite alternate; filter: blur(4px);
                 }
+                @keyframes pinPulse { from { transform: scale(1); opacity: 0.8; } to { transform: scale(2); opacity: 0.2; } }
+
+                /* Compass Strip */
+                .compass-track {
+                    width: 1440px; height: 40px; background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
+                    display: flex; align-items: center; color: white; font-family: monospace; font-weight: bold;
+                    font-size: 14px; position: absolute; left: 50%; top: 0;
+                    mask-image: linear-gradient(to right, transparent, black 40%, black 60%, transparent);
+                }
+                .tick { width: 4px; height: 10px; background: rgba(255,255,255,0.3); margin-right: 32px; position: relative; }
+                .tick.major { height: 20px; background: white; width: 2px; }
+                .tick-label { position: absolute; top: 22px; left: -10px; width: 24px; text-align: center; font-size: 12px; text-shadow: 0 0 4px black; }
             `}</style>
 
             <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
@@ -459,58 +514,120 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
             {permissionGranted && (
                 <>
+                {/* HUD Overlay */}
+                <div className="absolute inset-0 pointer-events-none z-[61]">
+                    {/* Top Compass Strip */}
+                    <div className="absolute top-8 left-0 right-0 h-16 overflow-hidden flex justify-center items-start">
+                        <div className="compass-track" style={{ transform: `translateX(-50%) translateX(${-compassShift}px)` }}>
+                            {Array.from({ length: 36 }).map((_, i) => {
+                                const deg = i * 10;
+                                let label = "";
+                                if (deg === 0) label = "N";
+                                else if (deg === 90) label = "E";
+                                else if (deg === 180) label = "S";
+                                else if (deg === 270) label = "W";
+                                return (
+                                    <div key={i} className={`tick ${label ? 'major' : ''}`}>
+                                        {label && <span className="tick-label text-emerald-400">{label}</span>}
+                                    </div>
+                                );
+                            })}
+                             {/* Repeat for seamless loop if needed, simplified here */}
+                        </div>
+                        <div className="absolute top-0 w-0.5 h-8 bg-red-500 shadow-[0_0_10px_red]"></div>
+                    </div>
+
+                    {/* Target Reticle */}
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+                        <div className="w-16 h-16 border border-white/20 rounded-full flex items-center justify-center">
+                            <div className="w-1 h-1 bg-emerald-400 rounded-full"></div>
+                        </div>
+                        <div className="absolute top-0 left-0 w-full h-full border-t border-l border-emerald-500/50 w-4 h-4"></div>
+                        <div className="absolute bottom-0 right-0 w-full h-full border-b border-r border-emerald-500/50 w-4 h-4"></div>
+                    </div>
+
+                    {/* Stats Corner */}
+                    <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-emerald-500/30 p-3 rounded-lg text-emerald-400 font-mono text-xs shadow-lg space-y-1">
+                        <div className="flex items-center gap-2"><Target className="h-3 w-3" /> <span>DST: {Math.round(destStats.dist)}m</span></div>
+                        <div className="flex items-center gap-2"><Compass className="h-3 w-3" /> <span>HDG: {Math.round(currentCompassHeading)}°</span></div>
+                    </div>
+
+                    {/* Off-screen guidance */}
+                    {Math.abs(destStats.bearing - currentCompassHeading) > 40 && (
+                        <div className={`absolute top-1/2 -translate-y-1/2 ${destStats.bearing - currentCompassHeading > 0 ? 'right-4' : 'left-4'} animate-pulse`}>
+                            {destStats.bearing - currentCompassHeading > 0 
+                                ? <ChevronRightIcon className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" /> 
+                                : <ChevronLeft className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" />
+                            }
+                        </div>
+                    )}
+                </div>
+
+                {/* 3D World Layer */}
                 <div ref={worldRef} className="world-3d">
                     {visiblePathSegments.map((seg, i) => {
-                        const opacity = Math.max(0, 1 - (seg.dist / 80)); 
-                        const PIXEL_PER_METER = 25;
+                        const opacity = Math.max(0.1, 1 - (seg.dist / 120)); 
+                        const PIXEL_PER_METER = 35; // Scale up for better visibility
                         return (
-                            <div key={`seg-${i}`} className="ar-gate" style={{ transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(80px) translateZ(${seg.z * PIXEL_PER_METER}px)`, opacity: opacity }}>
-                                <span className="text-sm">{Math.round(seg.dist)}m</span>
+                            <div key={`seg-${i}`} className="ar-chevron" 
+                                 style={{ 
+                                     transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(150px) translateZ(${seg.z * PIXEL_PER_METER}px)`, 
+                                     opacity: opacity,
+                                     borderColor: `rgba(16, 185, 129, ${opacity})`
+                                 }}>
                             </div>
                         )
                     })}
-                    <div className="absolute flex flex-col items-center justify-center w-0 h-0" style={{ transform: `translateX(${destStats.x * 25}px) translateY(50px) translateZ(${destStats.z * 25}px)` }}>
-                        <div className="relative animate-bounce">
-                            <div className="bg-red-600 text-white px-3 py-1 rounded-lg text-lg font-bold shadow-xl border-2 border-white mb-1 whitespace-nowrap transform -translate-x-1/2">
-                                {destStats.dist > 1000 ? (destStats.dist/1000).toFixed(1) + 'km' : Math.round(destStats.dist) + 'm'}
-                            </div>
-                            <MapPin className="h-12 w-12 text-red-500 transform -translate-x-1/2 drop-shadow-[0_4px_4px_rgba(0,0,0,0.5)] fill-red-600" />
+                    
+                    {/* Destination Pin */}
+                    <div className="dest-pin" style={{ transform: `translateX(${destStats.x * 35}px) translateY(120px) translateZ(${destStats.z * 35}px)` }}>
+                        <div className="bg-red-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded mb-1 whitespace-nowrap border border-red-400">
+                            {formatDistance(destStats.dist)}
                         </div>
-                        <div className="w-4 h-4 bg-black/50 rounded-full blur-sm transform -translate-x-1/2 translate-y-2"></div>
+                        <div className="pin-head">
+                            <MapPin className="h-5 w-5 text-white pin-icon" fill="currentColor" />
+                        </div>
+                        <div className="pin-stick"></div>
+                        <div className="pin-pulse"></div>
                     </div>
                 </div>
 
-                <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-start" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
-                    <div className="bg-black/40 backdrop-blur-md text-white px-4 py-2 rounded-xl border border-white/10">
-                        <div className="flex items-center gap-2 mb-1">
-                            <Navigation className="h-4 w-4 text-emerald-400" style={{ transform: `rotate(${destStats.bearing - sensorData.current.alpha}deg)` }} />
-                            <span className="text-xs font-bold uppercase text-emerald-400">Target</span>
-                        </div>
-                        <p className="text-2xl font-black font-mono leading-none">{Math.round(destStats.dist)}<span className="text-sm text-zinc-400">m</span></p>
-                    </div>
-                    <Button onClick={onClose} size="icon" className="rounded-full bg-black/40 backdrop-blur text-white border border-white/10 h-10 w-10"><X className="h-5 w-5" /></Button>
+                <div className="absolute top-4 right-4 z-[62]">
+                    <Button onClick={onClose} size="icon" className="rounded-full bg-red-500/80 backdrop-blur text-white border border-white/20 h-10 w-10 shadow-xl"><X className="h-5 w-5" /></Button>
                 </div>
 
-                {/* Radar */}
-                <div className="absolute bottom-6 left-6" style={{ marginBottom: 'env(safe-area-inset-bottom)' }}>
-                    <div className="w-24 h-24 rounded-full bg-black/50 backdrop-blur border-2 border-white/20 relative overflow-hidden shadow-xl">
-                        <div className="absolute inset-0 rounded-full bg-gradient-to-t from-transparent via-emerald-500/20 to-transparent animate-spin-slow opacity-50"></div>
-                        <div className="absolute top-1/2 left-1/2 w-2 h-2 bg-blue-500 rounded-full transform -translate-x-1/2 -translate-y-1/2 border border-white z-10"></div>
-                        <div className="absolute top-1/2 left-1/2 w-0 h-0 border-l-[30px] border-l-transparent border-r-[30px] border-r-transparent border-t-[40px] border-t-white/10 transform -translate-x-1/2 -translate-y-full origin-bottom"></div>
+                {/* Radar Map (Bottom Left) */}
+                <div className="absolute bottom-6 left-6 z-[62]" style={{ marginBottom: 'env(safe-area-inset-bottom)' }}>
+                    <div className="w-28 h-28 rounded-full bg-black/70 backdrop-blur border-2 border-emerald-500/50 relative overflow-hidden shadow-[0_0_20px_rgba(16,185,129,0.2)]">
+                        <div className="absolute inset-0 rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,rgba(16,185,129,0.1)_360deg)] animate-spin-slow opacity-50"></div>
+                        <div className="absolute top-1/2 left-1/2 w-3 h-3 bg-blue-500 rounded-full transform -translate-x-1/2 -translate-y-1/2 border-2 border-white z-10 shadow-lg"></div>
+                        {/* FOV Cone */}
+                        <div className="absolute top-1/2 left-1/2 w-0 h-0 border-l-[40px] border-l-transparent border-r-[40px] border-r-transparent border-t-[60px] border-t-emerald-500/10 transform -translate-x-1/2 -translate-y-full origin-bottom"></div>
+                        
                         {visiblePathSegments.map((seg, i) => {
-                            const scale = 0.4;
-                            const cx = 48 + (seg.x * scale); 
-                            const cy = 48 - (Math.abs(seg.z) * scale);
-                            if (cx < 0 || cx > 96 || cy < 0 || cy > 96) return null;
-                            return <div key={`r-${i}`} className="absolute w-1.5 h-1.5 bg-emerald-400 rounded-full" style={{ left: cx, top: cy }}></div>
+                            const scale = 0.5;
+                            const cx = 56 + (seg.x * scale); 
+                            const cy = 56 - (Math.abs(seg.z) * scale);
+                            if (cx < 0 || cx > 112 || cy < 0 || cy > 112) return null;
+                            return <div key={`r-${i}`} className="absolute w-1.5 h-1.5 bg-emerald-400 rounded-full shadow-[0_0_4px_#34d399]" style={{ left: cx, top: cy }}></div>
                         })}
+                        {/* Destination Dot on Radar */}
+                        {(() => {
+                             const scale = 0.5;
+                             const cx = 56 + (destStats.x * scale);
+                             const cy = 56 - (Math.abs(destStats.z) * scale);
+                             // Clamp logic for radar
+                             const clampedX = Math.max(5, Math.min(107, cx));
+                             const clampedY = Math.max(5, Math.min(107, cy));
+                             return <div className="absolute w-2 h-2 bg-red-500 rounded-full border border-white animate-pulse z-20" style={{ left: clampedX, top: clampedY }}></div>
+                        })()}
                     </div>
                 </div>
                 
                 {debugMsg && <div className="absolute bottom-20 left-0 right-0 text-center text-red-400 text-xs bg-black/50 p-1">{debugMsg}</div>}
                 
                 {!sensorsActive && (
-                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/70 text-white px-6 py-4 rounded-xl text-center pointer-events-none animate-pulse">
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/70 text-white px-6 py-4 rounded-xl text-center pointer-events-none animate-pulse z-[70]">
                         <div className="text-4xl mb-2">∞</div>
                         <p className="font-bold">Move phone in Figure 8</p>
                         <p className="text-xs text-zinc-400">Calibrating Compass...</p>
@@ -678,6 +795,7 @@ export default function MapExplorerPage() {
       const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
       recognition.lang = 'en-US';
       recognition.start();
+      triggerHaptic();
       recognition.onresult = (event: any) => {
           const cmd = event.results[0][0].transcript.toLowerCase();
           if (cmd.includes('stop')) { setIsNavigating(false); setRouteDetails(null); speak("Navigation stopped"); }
@@ -696,6 +814,7 @@ export default function MapExplorerPage() {
   }, []);
 
   const reportIncident = async (type: string) => {
+    triggerHaptic();
     if (!supabase || !userLocation.current) { toast({ title: "Error", description: "GPS required." }); return; }
     const { error } = await supabase.from('incidents').insert({ type, lat: userLocation.current[1], lng: userLocation.current[0] });
     if (error) { toast({ title: "Failed", description: "Backend config error (RLS)", variant: "destructive" }); }
@@ -726,6 +845,7 @@ export default function MapExplorerPage() {
 
   const joinConvoy = async () => {
       if (!convoyCode || !supabase) return;
+      triggerHaptic();
       const { data: existing, error } = await supabase.from('convoys').select('code').eq('code', convoyCode).maybeSingle();
       
       if (!existing && !error) {
@@ -741,6 +861,7 @@ export default function MapExplorerPage() {
   };
 
   const leaveConvoy = async () => {
+      triggerHaptic();
       const myId = localStorage.getItem('convoy_user_id');
       if (myId && activeConvoy && supabase) await supabase.from('convoy_members').delete().eq('user_id', myId);
       setActiveConvoy(null);
@@ -840,7 +961,7 @@ export default function MapExplorerPage() {
           const route = data.routes[0]; routeGeoJSON.current = route.geometry.coordinates;
           if (map.current) drawBlueRoute(map.current, { type: 'Feature', properties: {}, geometry: route.geometry });
           const leg = route.legs[0]; const instructionText = (leg.steps[0]?.distance < 30 && leg.steps[1]) ? leg.steps[1].maneuver.instruction : (leg.steps[0]?.maneuver.instruction || "ធ្វើដំណើរតាមផ្លូវ");
-          setRouteDetails({ distance: route.distance, duration: route.duration, instruction: instructionText, arrivalTime: new Date(Date.now() + route.duration * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), totalDistance: route.distance });
+          setRouteDetails({ distance: route.distance, duration: route.duration, instruction: instructionText, arrivalTime: new Date(Date.now() + route.duration * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), totalDistance: route.distance, initialTotalDistance: route.distance });
           resetIdleTimer();
           return true;
       } catch (error) { if(!isSilentRecalc) toast({ title: "កំហុសបណ្តាញ", description: "សូមពិនិត្យអ៊ីនធឺណិតរបស់អ្នក", variant: "destructive" }); return false; }
@@ -852,7 +973,7 @@ export default function MapExplorerPage() {
   };
 
   const animatePuck = useCallback(() => {
-      if (!puckMarker.current || !isMounted.current) { animationFrameId.current = 0; return; }
+      if (!puckMarker.current || !isMounted.current || !map.current) { animationFrameId.current = 0; return; }
       
       // Interpolate Position
       currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.12);
@@ -879,11 +1000,58 @@ export default function MapExplorerPage() {
       animationFrameId.current = requestAnimationFrame(animatePuck);
   }, []);
 
-  const handleStyleChange = (style: string) => { if (!map.current || style === currentStyle) return; map.current.once('style.load', () => { if (map.current) { map.current.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); restoreMapLayers(map.current, isTrafficVisible, isRainMode, isWindMode); } }); map.current.setStyle(style); setCurrentStyle(style); };
+  const handleStyleChange = (style: string) => { 
+      if (!map.current || style === currentStyle) return; 
+      
+      // Wait for style load to re-add sources
+      map.current.once('style.load', () => { 
+          if (map.current) { 
+              if(!map.current.getSource('mapbox-dem')) {
+                   map.current.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); 
+              }
+              // Catching privacy-blocking errors here
+              try {
+                  map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); 
+              } catch (e) { console.warn("Terrain disabled due to browser privacy settings"); }
+              
+              restoreMapLayers(map.current, isTrafficVisible, isRainMode, isWindMode); 
+          } 
+      }); 
+      map.current.setStyle(style); 
+      setCurrentStyle(style); 
+  };
+  
   const clearSearchMarkers = useCallback(() => { searchMarkers.current.forEach(m => m.remove()); searchMarkers.current = []; }, []);
   const handleMapSelection = useCallback((lngLat: { lng: number, lat: number }) => { if(!map.current) return; clearRoute(); if (destinationMarker.current) destinationMarker.current.remove(); destinationMarker.current = new Marker({ color: '#ef4444' }).setLngLat(lngLat).addTo(map.current); setLocationDetails(lngLat); setIsDrawerOpen(true); fetchRichDetails(lngLat.lat, lngLat.lng); map.current.flyTo({ center: lngLat, zoom: 16, padding: { top: 0, bottom: 250, left: 0, right: 0 }, essential: true, duration: 1500 }); }, []);
   const plotSearchResults = useCallback((results: SearchResult[], type: string) => { if(!map.current) return; const bounds = new LngLatBounds(); results.forEach(r => { const el = document.createElement('div'); el.className = 'marker-pin'; el.innerHTML = `<div class="bg-indigo-500 w-4 h-4 rounded-full border-2 border-white shadow-lg"></div>`; const marker = new Marker({ element: el }).setLngLat([r.lng, r.lat]).setPopup(new mapboxgl.Popup({ offset: 25, closeButton: false }).setHTML(`<b>${r.name}</b><br>${r.address}`)).addTo(map.current!); marker.getElement().addEventListener('click', (e) => { e.stopPropagation(); handleMapSelection({ lng: r.lng, lat: r.lat }); }); searchMarkers.current.push(marker); bounds.extend([r.lng, r.lat]); }); if (results.length > 0) map.current.fitBounds(bounds, { padding: 100, maxZoom: 16 }); else toast({ title: "No results", description: "Nothing found nearby." }); }, [handleMapSelection, toast]);
-  const handleCategorySearch = useCallback(async (query: string) => { const geoKey = GEOAPIFY_API_KEY; const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER); clearSearchMarkers(); if (isNavigating && routeGeoJSON.current && geoKey) { let category = "commercial"; if (query === "gas station") category = "service.vehicle.fuel"; else if (query === "restaurant") category = "catering.restaurant"; else if (query === "coffee") category = "catering.cafe"; else if (query === "bank") category = "service.financial"; else if (query === "school") category = "education"; try { const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${simplifyGeometry(routeGeoJSON.current)}&limit=10&apiKey=${geoKey}`; const res = await fetch(url); const data = await res.json(); const results = data.features.map((f: any) => ({ lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], name: f.properties.name || f.properties.address_line1 || "Unknown", address: f.properties.address_line2 || "", type: query })); plotSearchResults(results, query); } catch (e) { const fallbackResults = await searchPlaces(query, center, true); plotSearchResults(fallbackResults, query); } } else { const results = await searchPlaces(query, center, true); plotSearchResults(results, query); } }, [clearSearchMarkers, plotSearchResults, toast, isNavigating]);
+  
+  const handleCategorySearch = useCallback(async (query: string) => { 
+      const geoKey = GEOAPIFY_API_KEY; 
+      const center = userLocation.current || (map.current ? map.current.getCenter().toArray() as [number, number] : DEFAULT_CENTER); 
+      clearSearchMarkers(); 
+      if (isNavigating && routeGeoJSON.current && geoKey) { 
+          let category = "commercial"; 
+          if (query === "gas station") category = "service.vehicle.fuel"; 
+          else if (query === "restaurant") category = "catering.restaurant"; 
+          else if (query === "coffee") category = "catering.cafe"; 
+          else if (query === "bank") category = "service.financial"; 
+          else if (query === "school") category = "education"; 
+          
+          try { 
+              const url = `https://api.geoapify.com/v2/places?categories=${category}&filter=geometry:${simplifyGeometry(routeGeoJSON.current)}&limit=10&apiKey=${geoKey}`; 
+              const res = await fetch(url); 
+              const data = await res.json(); 
+              const results = data.features.map((f: any) => ({ lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], name: f.properties.name || f.properties.address_line1 || "Unknown", address: f.properties.address_line2 || "", type: query })); 
+              plotSearchResults(results, query); 
+          } catch (e) { 
+              const fallbackResults = await searchPlaces(query, center, true); 
+              plotSearchResults(fallbackResults, query); 
+          } 
+      } else { 
+          const results = await searchPlaces(query, center, true); 
+          plotSearchResults(results, query); 
+      } 
+  }, [clearSearchMarkers, plotSearchResults, toast, isNavigating]);
 
   // --- INIT MAP ---
   useEffect(() => {
@@ -912,8 +1080,20 @@ export default function MapExplorerPage() {
     const handleOrientation = (event: DeviceOrientationEvent) => { if (event.alpha !== null) compassHeading.current = (event as any).webkitCompassHeading || (360 - event.alpha); };
     const handleVisibilityChange = () => { if (document.visibilityState === 'visible' && isNavigatingRef.current) requestWakeLock(); };
     if (typeof window !== 'undefined') { window.addEventListener('deviceorientation', handleOrientation); document.addEventListener('visibilitychange', handleVisibilityChange); }
+    
     mapInstance.on('load', () => {
-        if (!isMounted.current) return; setIsMapLoaded(true); geolocate.trigger(); mapInstance.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode); if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
+        if (!isMounted.current) return; setIsMapLoaded(true); geolocate.trigger(); 
+        
+        // Add 3D Terrain safely
+        if (!mapInstance.getSource('mapbox-dem')) mapInstance.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); 
+        try {
+             mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); 
+        } catch (e) {
+            console.warn("Terrain disabled due to browser privacy settings");
+        }
+        
+        restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode); 
+        if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
         
         // --- FIXED GEOLOCATION WATCHER ---
         if ('geolocation' in navigator) {
@@ -1036,6 +1216,7 @@ export default function MapExplorerPage() {
   }, [locationDetails]);
 
   const handleStartNavigation = async () => { 
+      triggerHaptic();
       if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "No GPS" }); return; } 
       setIsRouting(true); 
       // Initialize audio context on user click (Silent utterance trick)
@@ -1059,20 +1240,21 @@ export default function MapExplorerPage() {
 
   const clearRoute = useCallback(() => { setIsNavigating(false); activeDestination.current = null; routeGeoJSON.current = null; releaseWakeLock(); if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel(); if (destinationMarker.current) { destinationMarker.current.remove(); destinationMarker.current = null; } if(map.current) removeRouteLayers(map.current); clearSearchMarkers(); setRouteDetails(null); setLocationDetails(null); setIsDrawerOpen(false); setShowRecenterBtn(false); if(map.current && userLocation.current) map.current.flyTo({ center: userLocation.current, zoom: 15, pitch: 0, bearing: 0, duration: 1500 }); }, [clearSearchMarkers, removeRouteLayers]);
   const toggleLayer = useCallback((layerName: 'rain' | 'wind' | 'traffic') => { if (!map.current) return; let isActive: boolean, setIsActive: Function, layerId: string; switch(layerName) { case 'traffic': isActive = isTrafficVisible; setIsActive = setIsTrafficVisible; layerId = 'traffic'; break; case 'rain': isActive = isRainMode; setIsActive = setIsRainMode; layerId = 'rain-layer'; break; case 'wind': isActive = isWindMode; setIsActive = setIsWindMode; layerId = 'wind-layer'; break; } const newState = !isActive; setIsActive(newState); if (map.current.getLayer(layerId)) map.current.setLayoutProperty(layerId, 'visibility', newState ? 'visible' : 'none'); else if (newState) restoreMapLayers(map.current, layerName === 'traffic' ? true : isTrafficVisible, layerName === 'rain' ? true : isRainMode, layerName === 'wind' ? true : isWindMode); }, [isTrafficVisible, isRainMode, isWindMode, restoreMapLayers]);
-  const toggleAR = useCallback(() => { if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "Set destination first" }); return; } setShowAR(prev => !prev); }, [locationDetails, toast]);
+  const toggleAR = useCallback(() => { triggerHaptic(); if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "Set destination first" }); return; } setShowAR(prev => !prev); }, [locationDetails, toast]);
   const handleAutocomplete = useCallback(async (query: string, signal: AbortSignal) => { if (!query.trim()) return []; const center = map.current ? map.current.getCenter().toArray() as [number, number] : (userLocation.current || DEFAULT_CENTER); return await searchPlaces(query, center, false, signal); }, []);
-  const resetCompass = useCallback(() => { if(map.current) map.current.easeTo({ bearing: 0, pitch: 45, duration: 800 }); }, []);
-  const handleRecenter = () => { if(!userLocation.current || !map.current) return; userIsInteracting.current = false; setShowRecenterBtn(false); showRecenterBtnRef.current = false; map.current.flyTo({ center: userLocation.current, zoom: 19, pitch: 70, bearing: targetHeading.current, padding: { top: 0, bottom: 200, left: 0, right: 0 }, duration: 1200 }); };
-  const handleUserLocationClick = useCallback(() => { if(!userLocation.current || !map.current) { geolocateControl.current?.trigger(); toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 }); return; } map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 }); }, [toast]);
+  const resetCompass = useCallback(() => { triggerHaptic(); if(map.current) map.current.easeTo({ bearing: 0, pitch: 45, duration: 800 }); }, []);
+  const handleRecenter = () => { triggerHaptic(); if(!userLocation.current || !map.current) return; userIsInteracting.current = false; setShowRecenterBtn(false); showRecenterBtnRef.current = false; map.current.flyTo({ center: userLocation.current, zoom: 19, pitch: 70, bearing: targetHeading.current, padding: { top: 0, bottom: 200, left: 0, right: 0 }, duration: 1200 }); };
+  const handleUserLocationClick = useCallback(() => { triggerHaptic(); if(!userLocation.current || !map.current) { geolocateControl.current?.trigger(); toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 }); return; } map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 }); }, [toast]);
 
   // Safety
   const startSafetyMode = async () => { 
+      triggerHaptic();
       if (!supabase || !userLocation.current) return; 
       const { data, error } = await supabase.from('active_trips').insert({ current_lat: userLocation.current[1], current_lng: userLocation.current[0], status: 'active' }).select().single(); 
       if(error) { toast({ title: "Error", description: "Check Supabase Permissions", variant: "destructive" }); return; }
       if(data) { setCurrentTripId(data.id); setIsSafetyModeActive(true); setShowShareDialog(true); } 
   };
-  const stopSafetyMode = async (status = 'ended') => { if (currentTripId && supabase) await supabase.from('active_trips').update({ status }).eq('id', currentTripId); setIsSafetyModeActive(false); setCurrentTripId(null); setShowShareDialog(false); };
+  const stopSafetyMode = async (status = 'ended') => { triggerHaptic(); if (currentTripId && supabase) await supabase.from('active_trips').update({ status }).eq('id', currentTripId); setIsSafetyModeActive(false); setCurrentTripId(null); setShowShareDialog(false); };
 
   if (!MAPBOX_TOKEN) return <div className={`flex h-screen w-full items-center justify-center bg-zinc-950 text-white p-6 ${kantumruy.className}`}><Card className="w-full max-w-md bg-zinc-900 border-red-900/50"><CardContent className="flex flex-col items-center gap-4 p-6"><AlertTriangle className="h-8 w-8 text-red-500" /><h2 className="text-xl font-bold">Missing Token</h2></CardContent></Card></div>;
 
@@ -1147,6 +1329,11 @@ const WeatherWidget = memo(({ weather, isNavigating }: { weather: WeatherData | 
 WeatherWidget.displayName = "WeatherWidget";
 
 const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, onClearRoute }: any) => {
+    // Percentage for progress bar
+    const progress = routeDetails.initialTotalDistance 
+        ? Math.max(0, Math.min(100, 100 - (routeDetails.distance / routeDetails.initialTotalDistance * 100))) 
+        : 0;
+
     return (
         <>
         <div className="absolute top-0 left-0 right-0 z-30 pt-2 px-2 pointer-events-none pb-[safe-area-inset-top]" style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top))' }}>
@@ -1159,6 +1346,10 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
             </div>
         </div>
         <div className="absolute bottom-0 left-0 right-0 z-30 pb-[safe-area-inset-bottom]">
+            {/* Progress Bar */}
+            <div className="h-1.5 w-full bg-zinc-800">
+                <div className="h-full bg-emerald-500 transition-all duration-1000 ease-out" style={{ width: `${progress}%` }}></div>
+            </div>
             <div className="bg-[#18181b]/95 backdrop-blur-xl border-t border-zinc-800 p-5 flex items-center justify-between shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
                 <div className="flex flex-col gap-1"><div className="flex items-baseline gap-2"><span className="text-4xl font-bold text-emerald-400 leading-none tracking-tight">{formatDuration(routeDetails.duration)}</span><span className="text-sm text-zinc-400 font-medium">remaining</span></div><div className="flex items-center gap-2 text-zinc-400 text-sm font-medium"><span className="text-white">{formatDistance(routeDetails.distance)}</span><span className="w-1 h-1 rounded-full bg-zinc-600"></span><span>{routeDetails.arrivalTime}</span></div></div>
                 <div className="flex items-center gap-4">
@@ -1187,6 +1378,7 @@ const WelcomeWizard = ({ onComplete }: { onComplete: () => void }) => {
     }, []);
 
     const handleNext = () => {
+        triggerHaptic();
         if (step < 3) {
             setStep(prev => prev + 1);
         } else {
@@ -1197,6 +1389,7 @@ const WelcomeWizard = ({ onComplete }: { onComplete: () => void }) => {
     };
 
     const handleLocationPerm = () => {
+        triggerHaptic();
         if ('geolocation' in navigator) {
             navigator.geolocation.getCurrentPosition(() => handleNext(), () => handleNext());
         } else {
