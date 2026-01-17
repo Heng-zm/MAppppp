@@ -24,7 +24,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel
 } from "@/components/ui/dropdown-menu";
 
 // Icons
@@ -37,7 +37,7 @@ import {
   Mountain, Shield, Copy, Siren, Construction, 
   Video, Users, LogOut, Radio, Satellite,
   Briefcase, Home, Stethoscope, Sparkles, CheckCircle2, ChevronRight, BatteryCharging, Mic2,
-  Gauge, Activity, Target, ChevronLeft, ChevronRight as ChevronRightIcon
+  Gauge, Activity, Target, ChevronLeft, ChevronRight as ChevronRightIcon, Menu
 } from 'lucide-react';
 
 // ==========================================
@@ -67,7 +67,6 @@ const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NE
 
 if (MAPBOX_TOKEN) {
     mapboxgl.accessToken = MAPBOX_TOKEN;
-    // Attempt to reduce telemetry logs if blocked by client
     try {
         // @ts-ignore
         if (mapboxgl.config) mapboxgl.config.DISABLE_TELEMETRY = true;
@@ -163,6 +162,7 @@ type ConvoyMember = { user_id: string, lat: number, lng: number, heading: number
 // 3. HYPER-THREADED AI DASHCAM (TTC LOGIC)
 // ==========================================
 const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type: string) => void }) => {
+    // ... (Dashcam code remains same as optimized version)
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
@@ -224,14 +224,13 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                 ctx.clearRect(0, 0, cw, ch);
                 ctx.drawImage(vid, 0, 0, cw, ch);
 
-                // Lane Guides
                 ctx.strokeStyle = "rgba(0, 255, 255, 0.2)";
                 ctx.lineWidth = 2;
                 ctx.beginPath(); ctx.moveTo(cw * 0.1, ch); ctx.lineTo(cw * 0.45, ch * 0.55); ctx.stroke();
                 ctx.beginPath(); ctx.moveTo(cw * 0.9, ch); ctx.lineTo(cw * 0.55, ch * 0.55); ctx.stroke();
 
                 const now = Date.now();
-                if (now - lastDetectTime.current > 100) { // 10 FPS for detection
+                if (now - lastDetectTime.current > 100) { 
                     lastDetectTime.current = now;
                     try {
                         const predictions = await model.detect(vid);
@@ -244,12 +243,11 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                                 const area = w * h;
                                 const id = `${p.class}-${idx}`;
                                 
-                                // --- Time To Collision (TTC) Heuristic ---
                                 let expandingRate = 0;
                                 const prev = previousBoxes.current.get(id);
                                 if (prev) {
                                     const areaDiff = area - (prev.w * prev.h);
-                                    if (areaDiff > 0) expandingRate = areaDiff; // It's getting bigger (closer)
+                                    if (areaDiff > 0) expandingRate = areaDiff; 
                                 }
                                 previousBoxes.current.set(id, { w, h, time: now });
 
@@ -257,13 +255,13 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                                 const isClose = area > (cw * ch) * 0.25;
                                 const isRapidlyApproaching = expandingRate > 3000; 
 
-                                let color = '#10b981'; // Green
+                                let color = '#10b981'; 
                                 
                                 if (isRapidlyApproaching && isCentered) {
-                                    color = '#ef4444'; // Red
+                                    color = '#ef4444'; 
                                     maxDanger = 2;
                                 } else if (isClose && isCentered) {
-                                    color = '#eab308'; // Yellow
+                                    color = '#eab308'; 
                                     if (maxDanger < 1) maxDanger = 1;
                                 }
 
@@ -322,18 +320,15 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 // 4. AR COMPONENT (UPDATED V2)
 // ==========================================
 const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
+    // ... (AR code remains same as optimized version)
     const videoRef = useRef<HTMLVideoElement>(null);
     const worldRef = useRef<HTMLDivElement>(null);
     const requestRef = useRef<number>(0);
-    
-    // Sensor State
     const [sensorsActive, setSensorsActive] = useState(false);
     const [permissionGranted, setPermissionGranted] = useState(hasParentPermission);
     const [debugMsg, setDebugMsg] = useState("");
     const [perspective, setPerspective] = useState("800px");
     const [currentCompassHeading, setCurrentCompassHeading] = useState(0);
-    
-    // Smooth Data Refs
     const sensorData = useRef({ alpha: 0, smoothAlpha: 0 });
 
     useEffect(() => {
@@ -373,10 +368,8 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
             // @ts-ignore
             heading = (e as any).webkitCompassHeading;
         } else if (e.alpha !== null) { 
-            // Basic Android support
             heading = 360 - e.alpha; 
         }
-
         sensorData.current.alpha = heading;
         if (!sensorsActive && heading !== 0) setSensorsActive(true);
     }, [sensorsActive]);
@@ -415,10 +408,8 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         if (!permissionGranted) return;
         const updateLoop = () => {
             const data = sensorData.current;
-            // Improved Smoothing
             data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.08); 
             setCurrentCompassHeading(Math.round(data.smoothAlpha));
-
             if (worldRef.current) {
                 worldRef.current.style.transform = `translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
             }
@@ -446,53 +437,21 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         }
     };
 
-    // --- Compass Strip Calculation ---
-    // The compass strip is 720px wide (repeating 0-360 twice effectively) or just mapped
-    // 1 degree = ~2-3 pixels shift
-    const compassShift = (currentCompassHeading % 360) * 4; // 4px per degree
+    const compassShift = (currentCompassHeading % 360) * 4; 
 
     return (
         <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
             <style jsx>{`
                 .perspective-container { perspective: ${perspective}; perspective-origin: 50% 50%; }
                 .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; }
-                
-                /* New Path Markers */
-                .ar-chevron {
-                    position: absolute; width: 60px; height: 30px;
-                    border-bottom: 6px solid rgba(16, 185, 129, 0.9);
-                    border-left: 6px solid transparent; border-right: 6px solid transparent;
-                    transform-origin: center bottom; transform: translate(-50%, -100%);
-                    box-shadow: 0 0 15px rgba(16, 185, 129, 0.6);
-                    filter: drop-shadow(0 0 5px #10b981);
-                }
-                
-                /* Destination Pin */
-                .dest-pin {
-                    position: absolute; display: flex; flex-direction: column; align-items: center;
-                    transform: translate(-50%, -100%);
-                }
-                .pin-head {
-                    width: 40px; height: 40px; background: #ef4444; border: 3px solid white;
-                    border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
-                    box-shadow: 0 0 20px rgba(239, 68, 68, 0.8);
-                    display: flex; align-items: center; justify-content: center;
-                }
+                .ar-chevron { position: absolute; width: 60px; height: 30px; border-bottom: 6px solid rgba(16, 185, 129, 0.9); border-left: 6px solid transparent; border-right: 6px solid transparent; transform-origin: center bottom; transform: translate(-50%, -100%); box-shadow: 0 0 15px rgba(16, 185, 129, 0.6); filter: drop-shadow(0 0 5px #10b981); }
+                .dest-pin { position: absolute; display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -100%); }
+                .pin-head { width: 40px; height: 40px; background: #ef4444; border: 3px solid white; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); box-shadow: 0 0 20px rgba(239, 68, 68, 0.8); display: flex; align-items: center; justify-content: center; }
                 .pin-icon { transform: rotate(45deg); }
                 .pin-stick { width: 4px; height: 40px; background: white; margin-top: -10px; box-shadow: 0 0 10px white; }
-                .pin-pulse {
-                    width: 20px; height: 10px; background: rgba(239,68,68,0.5); border-radius: 50%;
-                    animation: pinPulse 1s infinite alternate; filter: blur(4px);
-                }
+                .pin-pulse { width: 20px; height: 10px; background: rgba(239,68,68,0.5); border-radius: 50%; animation: pinPulse 1s infinite alternate; filter: blur(4px); }
                 @keyframes pinPulse { from { transform: scale(1); opacity: 0.8; } to { transform: scale(2); opacity: 0.2; } }
-
-                /* Compass Strip */
-                .compass-track {
-                    width: 1440px; height: 40px; background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
-                    display: flex; align-items: center; color: white; font-family: monospace; font-weight: bold;
-                    font-size: 14px; position: absolute; left: 50%; top: 0;
-                    mask-image: linear-gradient(to right, transparent, black 40%, black 60%, transparent);
-                }
+                .compass-track { width: 1440px; height: 40px; background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent); display: flex; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 14px; position: absolute; left: 50%; top: 0; mask-image: linear-gradient(to right, transparent, black 40%, black 60%, transparent); }
                 .tick { width: 4px; height: 10px; background: rgba(255,255,255,0.3); margin-right: 32px; position: relative; }
                 .tick.major { height: 20px; background: white; width: 2px; }
                 .tick-label { position: absolute; top: 22px; left: -10px; width: 24px; text-align: center; font-size: 12px; text-shadow: 0 0 4px black; }
@@ -514,9 +473,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
             {permissionGranted && (
                 <>
-                {/* HUD Overlay */}
                 <div className="absolute inset-0 pointer-events-none z-[61]">
-                    {/* Top Compass Strip */}
                     <div className="absolute top-8 left-0 right-0 h-16 overflow-hidden flex justify-center items-start">
                         <div className="compass-track" style={{ transform: `translateX(-50%) translateX(${-compassShift}px)` }}>
                             {Array.from({ length: 36 }).map((_, i) => {
@@ -526,67 +483,40 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                                 else if (deg === 90) label = "E";
                                 else if (deg === 180) label = "S";
                                 else if (deg === 270) label = "W";
-                                return (
-                                    <div key={i} className={`tick ${label ? 'major' : ''}`}>
-                                        {label && <span className="tick-label text-emerald-400">{label}</span>}
-                                    </div>
-                                );
+                                return ( <div key={i} className={`tick ${label ? 'major' : ''}`}>{label && <span className="tick-label text-emerald-400">{label}</span>}</div> );
                             })}
-                             {/* Repeat for seamless loop if needed, simplified here */}
                         </div>
                         <div className="absolute top-0 w-0.5 h-8 bg-red-500 shadow-[0_0_10px_red]"></div>
                     </div>
 
-                    {/* Target Reticle */}
                     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
-                        <div className="w-16 h-16 border border-white/20 rounded-full flex items-center justify-center">
-                            <div className="w-1 h-1 bg-emerald-400 rounded-full"></div>
-                        </div>
+                        <div className="w-16 h-16 border border-white/20 rounded-full flex items-center justify-center"><div className="w-1 h-1 bg-emerald-400 rounded-full"></div></div>
                         <div className="absolute top-0 left-0 w-full h-full border-t border-l border-emerald-500/50 w-4 h-4"></div>
                         <div className="absolute bottom-0 right-0 w-full h-full border-b border-r border-emerald-500/50 w-4 h-4"></div>
                     </div>
 
-                    {/* Stats Corner */}
                     <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-emerald-500/30 p-3 rounded-lg text-emerald-400 font-mono text-xs shadow-lg space-y-1">
                         <div className="flex items-center gap-2"><Target className="h-3 w-3" /> <span>DST: {Math.round(destStats.dist)}m</span></div>
                         <div className="flex items-center gap-2"><Compass className="h-3 w-3" /> <span>HDG: {Math.round(currentCompassHeading)}°</span></div>
                     </div>
 
-                    {/* Off-screen guidance */}
                     {Math.abs(destStats.bearing - currentCompassHeading) > 40 && (
                         <div className={`absolute top-1/2 -translate-y-1/2 ${destStats.bearing - currentCompassHeading > 0 ? 'right-4' : 'left-4'} animate-pulse`}>
-                            {destStats.bearing - currentCompassHeading > 0 
-                                ? <ChevronRightIcon className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" /> 
-                                : <ChevronLeft className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" />
-                            }
+                            {destStats.bearing - currentCompassHeading > 0 ? <ChevronRightIcon className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" /> : <ChevronLeft className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" />}
                         </div>
                     )}
                 </div>
 
-                {/* 3D World Layer */}
                 <div ref={worldRef} className="world-3d">
                     {visiblePathSegments.map((seg, i) => {
                         const opacity = Math.max(0.1, 1 - (seg.dist / 120)); 
-                        const PIXEL_PER_METER = 35; // Scale up for better visibility
-                        return (
-                            <div key={`seg-${i}`} className="ar-chevron" 
-                                 style={{ 
-                                     transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(150px) translateZ(${seg.z * PIXEL_PER_METER}px)`, 
-                                     opacity: opacity,
-                                     borderColor: `rgba(16, 185, 129, ${opacity})`
-                                 }}>
-                            </div>
-                        )
+                        const PIXEL_PER_METER = 35;
+                        return ( <div key={`seg-${i}`} className="ar-chevron" style={{ transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(150px) translateZ(${seg.z * PIXEL_PER_METER}px)`, opacity: opacity, borderColor: `rgba(16, 185, 129, ${opacity})` }}></div> )
                     })}
                     
-                    {/* Destination Pin */}
                     <div className="dest-pin" style={{ transform: `translateX(${destStats.x * 35}px) translateY(120px) translateZ(${destStats.z * 35}px)` }}>
-                        <div className="bg-red-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded mb-1 whitespace-nowrap border border-red-400">
-                            {formatDistance(destStats.dist)}
-                        </div>
-                        <div className="pin-head">
-                            <MapPin className="h-5 w-5 text-white pin-icon" fill="currentColor" />
-                        </div>
+                        <div className="bg-red-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded mb-1 whitespace-nowrap border border-red-400">{formatDistance(destStats.dist)}</div>
+                        <div className="pin-head"><MapPin className="h-5 w-5 text-white pin-icon" fill="currentColor" /></div>
                         <div className="pin-stick"></div>
                         <div className="pin-pulse"></div>
                     </div>
@@ -596,29 +526,19 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                     <Button onClick={onClose} size="icon" className="rounded-full bg-red-500/80 backdrop-blur text-white border border-white/20 h-10 w-10 shadow-xl"><X className="h-5 w-5" /></Button>
                 </div>
 
-                {/* Radar Map (Bottom Left) */}
                 <div className="absolute bottom-6 left-6 z-[62]" style={{ marginBottom: 'env(safe-area-inset-bottom)' }}>
                     <div className="w-28 h-28 rounded-full bg-black/70 backdrop-blur border-2 border-emerald-500/50 relative overflow-hidden shadow-[0_0_20px_rgba(16,185,129,0.2)]">
                         <div className="absolute inset-0 rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,rgba(16,185,129,0.1)_360deg)] animate-spin-slow opacity-50"></div>
                         <div className="absolute top-1/2 left-1/2 w-3 h-3 bg-blue-500 rounded-full transform -translate-x-1/2 -translate-y-1/2 border-2 border-white z-10 shadow-lg"></div>
-                        {/* FOV Cone */}
                         <div className="absolute top-1/2 left-1/2 w-0 h-0 border-l-[40px] border-l-transparent border-r-[40px] border-r-transparent border-t-[60px] border-t-emerald-500/10 transform -translate-x-1/2 -translate-y-full origin-bottom"></div>
-                        
                         {visiblePathSegments.map((seg, i) => {
-                            const scale = 0.5;
-                            const cx = 56 + (seg.x * scale); 
-                            const cy = 56 - (Math.abs(seg.z) * scale);
+                            const scale = 0.5; const cx = 56 + (seg.x * scale); const cy = 56 - (Math.abs(seg.z) * scale);
                             if (cx < 0 || cx > 112 || cy < 0 || cy > 112) return null;
                             return <div key={`r-${i}`} className="absolute w-1.5 h-1.5 bg-emerald-400 rounded-full shadow-[0_0_4px_#34d399]" style={{ left: cx, top: cy }}></div>
                         })}
-                        {/* Destination Dot on Radar */}
                         {(() => {
-                             const scale = 0.5;
-                             const cx = 56 + (destStats.x * scale);
-                             const cy = 56 - (Math.abs(destStats.z) * scale);
-                             // Clamp logic for radar
-                             const clampedX = Math.max(5, Math.min(107, cx));
-                             const clampedY = Math.max(5, Math.min(107, cy));
+                             const scale = 0.5; const cx = 56 + (destStats.x * scale); const cy = 56 - (Math.abs(destStats.z) * scale);
+                             const clampedX = Math.max(5, Math.min(107, cx)); const clampedY = Math.max(5, Math.min(107, cy));
                              return <div className="absolute w-2 h-2 bg-red-500 rounded-full border border-white animate-pulse z-20" style={{ left: clampedX, top: clampedY }}></div>
                         })()}
                     </div>
@@ -1067,7 +987,10 @@ export default function MapExplorerPage() {
         attributionControl: false, 
         antialias: true, 
         logoPosition: 'bottom-left',
-        cooperativeGestures: true // Improved mobile UX
+        cooperativeGestures: false, // CHANGED: Allow one-finger pan (disables overlay)
+        dragRotate: true,
+        touchZoomRotate: true,
+        pitchWithRotate: true,
     });
     map.current = mapInstance;
     mapInstance.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
@@ -1262,7 +1185,7 @@ export default function MapExplorerPage() {
     <div className={`relative h-[100dvh] w-full overflow-hidden bg-zinc-950 text-zinc-50 ${kantumruy.className}`}>
         <style jsx global>{` .navigation-puck { width: 24px; height: 24px; background-color: #3b82f6; border: 3px solid white; border-radius: 50%; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); position: relative; z-index: 50; } .puck-pulse { position: absolute; width: 60px; height: 60px; top: -21px; left: -21px; border-radius: 50%; background: rgba(59, 130, 246, 0.4); animation: pulse 2s infinite; z-index: -1; } @keyframes pulse { 0% { transform: scale(0.5); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } } `}</style>
         
-        <div ref={mapContainer} className="absolute inset-0 w-full h-full touch-none" />
+        <div ref={mapContainer} className="absolute inset-0 w-full h-full touch-none" style={{ touchAction: 'none' }} />
         
         <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center bg-zinc-950 text-white transition-opacity duration-700 pointer-events-none ${isMapLoaded ? 'opacity-0' : 'opacity-100'}`}><Loader2 className="h-10 w-10 animate-spin text-indigo-500 mb-4" /></div>
         
@@ -1329,7 +1252,6 @@ const WeatherWidget = memo(({ weather, isNavigating }: { weather: WeatherData | 
 WeatherWidget.displayName = "WeatherWidget";
 
 const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, onClearRoute }: any) => {
-    // Percentage for progress bar
     const progress = routeDetails.initialTotalDistance 
         ? Math.max(0, Math.min(100, 100 - (routeDetails.distance / routeDetails.initialTotalDistance * 100))) 
         : 0;
@@ -1346,7 +1268,6 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
             </div>
         </div>
         <div className="absolute bottom-0 left-0 right-0 z-30 pb-[safe-area-inset-bottom]">
-            {/* Progress Bar */}
             <div className="h-1.5 w-full bg-zinc-800">
                 <div className="h-full bg-emerald-500 transition-all duration-1000 ease-out" style={{ width: `${progress}%` }}></div>
             </div>
@@ -1363,9 +1284,6 @@ const NavigationHUD = memo(({ routeDetails, isMuted, setIsMuted, currentSpeed, o
 });
 NavigationHUD.displayName = "NavigationHUD";
 
-// ==========================================
-// 4. NEW USER EXPERIENCE (ONBOARDING)
-// ==========================================
 const WelcomeWizard = ({ onComplete }: { onComplete: () => void }) => {
     const [step, setStep] = useState(0);
     const [isOpen, setIsOpen] = useState(false);
@@ -1479,19 +1397,24 @@ const BottomControls = memo(({
             <div className={`flex justify-end gap-3 px-4 mb-3 pointer-events-auto transition-opacity duration-300 ${isInputActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
                  <Button size="icon" onClick={onReportClick} className="h-11 w-11 rounded-full bg-yellow-500 border border-yellow-400 text-black shadow-xl hover:bg-yellow-400 animate-in zoom-in"><AlertTriangle className="h-5 w-5" /></Button>
 
+                 {/* Consolidated Layers Menu */}
                  <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button size="icon" aria-label="Map Layers" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800"><Layers className="h-5 w-5" /></Button></DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" side="top" className="w-48 bg-[#18181b]/95 border-zinc-800 text-white backdrop-blur-xl mb-2">
+                    <DropdownMenuContent align="end" side="top" className="w-56 bg-[#18181b]/95 border-zinc-800 text-white backdrop-blur-xl mb-2 p-1.5 rounded-xl">
+                        <DropdownMenuLabel className="text-xs text-zinc-500 uppercase tracking-wider">Map Style</DropdownMenuLabel>
                         <DropdownMenuItem onClick={() => handleStyleChange(STYLES.DARK)} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><Layers className="mr-2 h-4 w-4" /> Dark {currentStyle === STYLES.DARK && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500" />}</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => handleStyleChange(STYLES.LIGHT)} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><MapIcon className="mr-2 h-4 w-4" /> Street {currentStyle === STYLES.LIGHT && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500" />}</DropdownMenuItem>
-                         <DropdownMenuItem onClick={() => handleStyleChange(STYLES.OUTDOORS)} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><Mountain className="mr-2 h-4 w-4" /> Terrain {currentStyle === STYLES.OUTDOORS && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500" />}</DropdownMenuItem>
                         <DropdownMenuItem onClick={() => handleStyleChange(STYLES.SATELLITE)} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><Satellite className="mr-2 h-4 w-4" /> Satellite {currentStyle === STYLES.SATELLITE && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-500" />}</DropdownMenuItem>
+                        
+                        <DropdownMenuSeparator className="bg-zinc-800" />
+                        <DropdownMenuLabel className="text-xs text-zinc-500 uppercase tracking-wider">Overlays</DropdownMenuLabel>
+                        <DropdownMenuItem onClick={toggleTraffic} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><Zap className="mr-2 h-4 w-4" /> Traffic {isTrafficVisible && <div className="ml-auto w-2 h-2 rounded-full bg-green-500" />}</DropdownMenuItem>
+                        <DropdownMenuItem onClick={toggleRainMode} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><CloudRain className="mr-2 h-4 w-4" /> Rain Radar {isRainMode && <div className="ml-auto w-2 h-2 rounded-full bg-blue-500" />}</DropdownMenuItem>
+                        <DropdownMenuItem onClick={toggleWindMode} className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"><Wind className="mr-2 h-4 w-4" /> Wind Map {isWindMode && <div className="ml-auto w-2 h-2 rounded-full bg-cyan-500" />}</DropdownMenuItem>
                     </DropdownMenuContent>
                 </DropdownMenu>
+
                  <Button size="icon" onClick={handleUserLocationClick} aria-label="My Location" className="h-11 w-11 rounded-full bg-zinc-900/80 backdrop-blur-md border border-zinc-700 text-zinc-300 shadow-xl hover:bg-zinc-800"><Crosshair className="h-5 w-5" /></Button>
-                <Button size="icon" onClick={toggleTraffic} aria-label="Toggle Traffic" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isTrafficVisible ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}><Zap className="h-5 w-5" /></Button>
-                <Button size="icon" onClick={toggleRainMode} aria-label="Toggle Rain" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isRainMode ? 'bg-blue-600 border-blue-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}><CloudRain className="h-5 w-5" /></Button>
-                <Button size="icon" onClick={toggleWindMode} aria-label="Toggle Wind" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isWindMode ? 'bg-cyan-600 border-cyan-500 text-white' : 'bg-zinc-900/80 border-zinc-700 text-zinc-400'}`}><Wind className={`h-5 w-5 ${isWindMode ? 'wind-active' : ''}`} /></Button>
                 
                 {/* SAFETY BUTTON */}
                 <Button size="icon" onClick={() => isSafetyModeActive ? showShareDialog() : startSafetyMode()} aria-label="Safety Share" className={`h-11 w-11 rounded-full border shadow-xl backdrop-blur-md transition-all ${isSafetyModeActive ? 'bg-red-600 border-red-500 text-white animate-pulse' : 'bg-zinc-900/80 border-zinc-700 text-zinc-300'}`}><Shield className="h-5 w-5" /></Button>
@@ -1547,7 +1470,7 @@ const BottomControls = memo(({
 
                 <div className="relative shadow-2xl transition-all duration-300 ease-out active:scale-[0.99]">
                     <Search className={`absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 transition-colors ${isSearching ? 'text-indigo-400' : 'text-zinc-400'}`} />
-                    <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)} onFocus={() => setIsInputActive(true)} placeholder="ស្វែងរកទីតាំង, ហាង..." inputMode="search" className="w-full h-14 pl-12 pr-24 rounded-2xl bg-[#18181b] border border-zinc-800 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]" />
+                    <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)} onFocus={() => setIsInputActive(true)} placeholder="ស្វែងរកទីតាំង, ហាង..." inputMode="search" className="w-full h-14 pl-12 pr-24 rounded-2xl bg-[#18181b]/80 backdrop-blur-xl border border-zinc-700 text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-base shadow-inner transition-all focus:bg-[#18181b]" />
                     
                     <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2">
                         {isSearching ? <Loader2 className="h-5 w-5 text-indigo-500 animate-spin mr-2" />
