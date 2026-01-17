@@ -130,12 +130,12 @@ function lerpAngle(start: number, end: number, amount: number) {
     return ((value % 360) + 360) % 360;
 }
 
-// Low-Pass Filter for Compass Smoothing
+// Robust Low-Pass Filter for Compass Smoothing
 function smoothAngle(current: number, target: number, factor: number) {
     let delta = target - current;
     while (delta <= -180) delta += 360;
     while (delta > 180) delta -= 360;
-    if (Math.abs(delta) < 0.2) return current; // Deadzone for stability
+    if (Math.abs(delta) < 0.1) return current; // Deadzone for jitter
     return current + delta * factor;
 }
 
@@ -162,7 +162,7 @@ type ConvoyMember = { user_id: string, lat: number, lng: number, heading: number
 // 3. HYPER-THREADED AI DASHCAM (TTC LOGIC)
 // ==========================================
 const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type: string) => void }) => {
-    // ... (Dashcam code remains same as optimized version)
+    // ... (Dashcam logic kept optimized)
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
@@ -317,7 +317,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 };
 
 // ==========================================
-// 4. AR COMPONENT (SMART ENGINE V3)
+// 4. AR COMPONENT (SMART ENGINE V4)
 // ==========================================
 const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -330,7 +330,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const [currentCompassHeading, setCurrentCompassHeading] = useState(0);
     const [calibrationOffset, setCalibrationOffset] = useState(0);
     
-    // Sensor data ref: alpha (heading), beta (tilt/pitch), gamma (roll)
+    // Sensor fusion refs
     const sensorData = useRef({ alpha: 0, beta: 90, smoothAlpha: 0, smoothBeta: 90 });
 
     useEffect(() => {
@@ -340,14 +340,12 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const visiblePathSegments = useMemo(() => {
         if (!routePath || routePath.length === 0) return [];
         const segments: { x: number; z: number; dist: number; index: number }[] = [];
-        // Filtering for performance
         const step = 3; 
         let count = 0;
         
         for (let i = 0; i < routePath.length; i += step) {
             const pt = routePath[i];
             const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]);
-            // Only show close segments, but not TOO close (behind)
             if (dist < 200 && count < 40) { 
                 const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]);
                 const rad = bearing * (Math.PI / 180);
@@ -367,7 +365,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent) => {
         let heading = 0;
-        // iOS
+        // iOS Compass
         // @ts-ignore
         if ((e as any).webkitCompassHeading) { 
             // @ts-ignore
@@ -379,12 +377,13 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         }
         // Fallback
         else if (e.alpha !== null) {
-            heading = 360 - e.alpha; // Likely needs offset, handled by UI calibration if needed
+            heading = 360 - e.alpha; 
         }
 
+        // Weighted buffer for alpha (heading)
         sensorData.current.alpha = heading;
-        // Beta is front-back tilt. 90 is upright, 0 is flat on table.
-        // We clamp it to avoid extreme flips.
+        
+        // Beta is front-back tilt. We clamp it for safety.
         if (e.beta !== null) {
             sensorData.current.beta = Math.max(0, Math.min(180, e.beta));
         }
@@ -397,9 +396,9 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         
         const startCamera = async () => {
             const constraintsOptions = [
-                { video: { facingMode: { exact: "environment" }, width: { ideal: 1280 } } }, // Best AR
-                { video: { facingMode: "environment" } }, // Standard Back
-                { video: true } // Fallback
+                { video: { facingMode: { exact: "environment" }, width: { ideal: 1280 } } },
+                { video: { facingMode: "environment" } },
+                { video: true }
             ];
 
             for (const constraints of constraintsOptions) {
@@ -439,21 +438,20 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         const updateLoop = () => {
             const data = sensorData.current;
             
-            // 1. Smooth Heading (Y-Axis Rotation)
+            // 1. Heading Smoothing (Strong exponential moving average)
             const adjustedAlpha = (data.alpha + calibrationOffset) % 360;
-            data.smoothAlpha = smoothAngle(data.smoothAlpha, adjustedAlpha, 0.1); 
+            // Lower factor = smoother but slower. 0.08 is a good balance.
+            data.smoothAlpha = smoothAngle(data.smoothAlpha, adjustedAlpha, 0.08); 
             setCurrentCompassHeading(Math.round(data.smoothAlpha));
 
-            // 2. Horizon Locking (X-Axis Rotation / Y-Axis Translation)
-            // If phone tilts back (beta < 90), horizon moves down.
-            // Pixel shift approx: 1 degree = ~8-10 pixels depending on FOV.
-            // We use a simplified vertical shift to keep the "ground" level.
-            // 90deg = 0px shift (center). 
-            const horizonShift = (data.beta - 90) * 15; 
+            // 2. Horizon Locking (Beta Smoothing)
+            data.smoothBeta = data.smoothBeta * 0.9 + data.beta * 0.1;
+            // 90deg is upright (0 shift). <90 tilts back, >90 tilts forward.
+            // Approx 15px shift per degree of tilt maintains horizon.
+            const horizonShift = (data.smoothBeta - 90) * 15; 
             
             if (worldRef.current) {
-                // We rotate the world opposite to the phone's heading to keep North "North"
-                // We translate Y to simulate looking up/down
+                // Combine rotation and vertical shift
                 worldRef.current.style.transform = `translateY(${horizonShift}px) translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
             }
             
