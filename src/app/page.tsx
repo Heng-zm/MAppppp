@@ -3,7 +3,7 @@
 // ==========================================
 // 1. IMPORTS
 // ==========================================
-import React, { useRef, useEffect, useState, useCallback, memo, useMemo, Suspense } from 'react';
+import React, { useRef, useEffect, useState, useCallback, memo, useMemo } from 'react';
 import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap, GeoJSONSource, MapMouseEvent } from 'mapbox-gl';
 import { Kantumruy_Pro } from 'next/font/google';
 import { createClient } from '@supabase/supabase-js'; 
@@ -38,7 +38,7 @@ import {
   Mountain, Shield, Copy, Siren, Construction, 
   Video, Users, LogOut, Radio, Satellite,
   Briefcase, Home, Stethoscope, CheckCircle2, ChevronRight as ChevronRightIcon, ChevronLeft,
-  Smartphone, RefreshCw, Target, BatteryCharging, Mic2 // Added missing imports here
+  Smartphone, RefreshCw, Target, BatteryCharging, Mic2
 } from 'lucide-react';
 
 // ==========================================
@@ -131,12 +131,12 @@ function lerpAngle(start: number, end: number, amount: number) {
     return ((value % 360) + 360) % 360;
 }
 
-// Robust Low-Pass Filter for Compass Smoothing
+// Low-Pass Filter for Compass Smoothing
 function smoothAngle(current: number, target: number, factor: number) {
     let delta = target - current;
     while (delta <= -180) delta += 360;
     while (delta > 180) delta -= 360;
-    if (Math.abs(delta) < 0.1) return current; // Deadzone
+    if (Math.abs(delta) < 0.2) return current; // Deadzone to prevent jitter when stationary
     return current + delta * factor;
 }
 
@@ -163,7 +163,6 @@ type ConvoyMember = { user_id: string, lat: number, lng: number, heading: number
 // 3. HYPER-THREADED AI DASHCAM (TTC LOGIC)
 // ==========================================
 const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type: string) => void }) => {
-    // ... (Dashcam logic kept optimized)
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [model, setModel] = useState<cocoSsd.ObjectDetection | null>(null);
@@ -231,7 +230,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                 ctx.beginPath(); ctx.moveTo(cw * 0.9, ch); ctx.lineTo(cw * 0.55, ch * 0.55); ctx.stroke();
 
                 const now = Date.now();
-                if (now - lastDetectTime.current > 100) { 
+                if (now - lastDetectTime.current > 200) { // Limit to 5 FPS to save battery
                     lastDetectTime.current = now;
                     try {
                         const predictions = await model.detect(vid);
@@ -307,7 +306,7 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
                         <div className="bg-red-600/90 text-white text-center font-black text-xl py-1 animate-bounce uppercase tracking-widest border-2 border-white rounded-lg shadow-lg">BRAKE!</div>
                     )}
                     <div className="flex justify-between items-end">
-                        <div className="text-[8px] font-mono text-zinc-400">FPS: 60</div>
+                        <div className="text-[8px] font-mono text-zinc-400">FPS: 5</div>
                         <button onClick={takeSnapshot} className="pointer-events-auto p-2 bg-white/10 hover:bg-white/30 backdrop-blur-md rounded-full border border-white/20 active:scale-95 transition-all"><Camera className="h-4 w-4 text-white" /></button>
                     </div>
                 </div>
@@ -880,7 +879,8 @@ export default function MapExplorerPage() {
       if (!MAPBOX_TOKEN) return false;
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&language=km&overview=full&access_token=${MAPBOX_TOKEN}`;
       try {
-          const res = await fetch(url); const data = await res.json();
+          const res = await fetch(url, { signal: AbortSignal.timeout(5000) }); // Timeout added
+          const data = await res.json();
           if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) { if(!isSilentRecalc) toast({ title: "កំហុស", description: "រកផ្លូវមិនឃើញ", variant: "destructive" }); return false; }
           const route = data.routes[0]; routeGeoJSON.current = route.geometry.coordinates;
           if (map.current) drawBlueRoute(map.current, { type: 'Feature', properties: {}, geometry: route.geometry });
@@ -1006,6 +1006,9 @@ export default function MapExplorerPage() {
             watchId.current = navigator.geolocation.watchPosition(async (pos) => {
                 if (!isMounted.current) return;
                 const { latitude, longitude, heading, speed } = pos.coords;
+                // GPS Filter: If accuracy is bad (>50m) ignore update
+                if(pos.coords.accuracy > 50) return;
+
                 if (puckElement.current) puckElement.current.style.display = 'block';
                 userLocation.current = [longitude, latitude];
                 setCurrentUserLocationForAR([longitude, latitude]);
@@ -1013,7 +1016,7 @@ export default function MapExplorerPage() {
                 const speedKmh = speed ? Math.round(speed * 3.6) : 0;
                 setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); 
                 if (heading !== null && !isNaN(heading)) gpsHeading.current = heading;
-                const isMoving = speedKmh > 5;
+                const isMoving = speedKmh > 3; // Threshold for moving
                 targetHeading.current = isMoving && heading !== null ? heading : compassHeading.current;
                 if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
                 fetchWeather(latitude, longitude);
@@ -1049,7 +1052,7 @@ export default function MapExplorerPage() {
                         } 
                     }
                 }
-            }, (err) => { console.warn("GPS Warning:", err); }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+            }, (err) => { console.warn("GPS Warning:", err); }, { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 });
         }
     });
     const handleInteractionStart = () => { if (isNavigatingRef.current) { userIsInteracting.current = true; setShowRecenterBtn(true); } }; const handleMapClick = (e: MapMouseEvent) => { if (!isNavigatingRef.current) handleMapSelection(e.lngLat); }; mapInstance.on('touchstart', handleInteractionStart); mapInstance.on('dragstart', handleInteractionStart); mapInstance.on('pitchstart', handleInteractionStart); mapInstance.on('zoomstart', handleInteractionStart); mapInstance.on('wheel', handleInteractionStart); mapInstance.on('click', handleMapClick);
