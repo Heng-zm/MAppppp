@@ -37,7 +37,7 @@ import {
   Mountain, Shield, Copy, Siren, Construction, 
   Video, Users, LogOut, Radio, Satellite,
   Briefcase, Home, Stethoscope, Sparkles, CheckCircle2, ChevronRight, BatteryCharging, Mic2,
-  Gauge, Activity, Target, ChevronLeft, ChevronRight as ChevronRightIcon, Menu
+  Gauge, Activity, Target, ChevronLeft, ChevronRight as ChevronRightIcon, Menu, Smartphone, RefreshCw
 } from 'lucide-react';
 
 // ==========================================
@@ -135,7 +135,7 @@ function smoothAngle(current: number, target: number, factor: number) {
     let delta = target - current;
     while (delta <= -180) delta += 360;
     while (delta > 180) delta -= 360;
-    if (Math.abs(delta) < 0.5) return current; // Deadzone for stability
+    if (Math.abs(delta) < 0.2) return current; // Deadzone for stability
     return current + delta * factor;
 }
 
@@ -317,10 +317,9 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 };
 
 // ==========================================
-// 4. AR COMPONENT (UPDATED V2)
+// 4. AR COMPONENT (SMART ENGINE V3)
 // ==========================================
 const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasParentPermission, setParentPermission }: ArLastMileViewProps) => {
-    // ... (AR code remains same as optimized version)
     const videoRef = useRef<HTMLVideoElement>(null);
     const worldRef = useRef<HTMLDivElement>(null);
     const requestRef = useRef<number>(0);
@@ -329,7 +328,10 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const [debugMsg, setDebugMsg] = useState("");
     const [perspective, setPerspective] = useState("800px");
     const [currentCompassHeading, setCurrentCompassHeading] = useState(0);
-    const sensorData = useRef({ alpha: 0, smoothAlpha: 0 });
+    const [calibrationOffset, setCalibrationOffset] = useState(0);
+    
+    // Sensor data ref: alpha (heading), beta (tilt/pitch), gamma (roll)
+    const sensorData = useRef({ alpha: 0, beta: 90, smoothAlpha: 0, smoothBeta: 90 });
 
     useEffect(() => {
         if (typeof window !== 'undefined') setPerspective(`${window.innerHeight}px`);
@@ -338,13 +340,15 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const visiblePathSegments = useMemo(() => {
         if (!routePath || routePath.length === 0) return [];
         const segments: { x: number; z: number; dist: number; index: number }[] = [];
-        const step = 2; 
+        // Filtering for performance
+        const step = 3; 
         let count = 0;
         
         for (let i = 0; i < routePath.length; i += step) {
             const pt = routePath[i];
             const dist = getDistanceFromLatLonInMeters(userLocation[1], userLocation[0], pt[1], pt[0]);
-            if (dist < 150 && count < 30) { 
+            // Only show close segments, but not TOO close (behind)
+            if (dist < 200 && count < 40) { 
                 const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]);
                 const rad = bearing * (Math.PI / 180);
                 segments.push({ x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist: dist, index: i });
@@ -363,29 +367,54 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent) => {
         let heading = 0;
+        // iOS
         // @ts-ignore
         if ((e as any).webkitCompassHeading) { 
             // @ts-ignore
             heading = (e as any).webkitCompassHeading;
-        } else if (e.alpha !== null) { 
+        } 
+        // Android Absolute
+        else if (e.absolute && e.alpha !== null) { 
             heading = 360 - e.alpha; 
         }
+        // Fallback
+        else if (e.alpha !== null) {
+            heading = 360 - e.alpha; // Likely needs offset, handled by UI calibration if needed
+        }
+
         sensorData.current.alpha = heading;
+        // Beta is front-back tilt. 90 is upright, 0 is flat on table.
+        // We clamp it to avoid extreme flips.
+        if (e.beta !== null) {
+            sensorData.current.beta = Math.max(0, Math.min(180, e.beta));
+        }
+
         if (!sensorsActive && heading !== 0) setSensorsActive(true);
     }, [sensorsActive]);
 
     useEffect(() => {
         let stream: MediaStream | null = null;
+        
         const startCamera = async () => {
-            try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } }, audio: false });
-                if (videoRef.current) videoRef.current.srcObject = stream;
-            } catch (err) {
+            const constraintsOptions = [
+                { video: { facingMode: { exact: "environment" }, width: { ideal: 1280 } } }, // Best AR
+                { video: { facingMode: "environment" } }, // Standard Back
+                { video: true } // Fallback
+            ];
+
+            for (const constraints of constraintsOptions) {
                 try {
-                    stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                    if (videoRef.current) videoRef.current.srcObject = stream;
-                } catch (e) { setDebugMsg("Camera access denied."); }
+                    stream = await navigator.mediaDevices.getUserMedia(constraints as MediaStreamConstraints);
+                    if (videoRef.current) {
+                        videoRef.current.srcObject = stream;
+                        setDebugMsg("");
+                        return; // Success
+                    }
+                } catch (e) {
+                    console.log("Cam constraint failed", e);
+                }
             }
+            setDebugMsg("Camera access denied or unavailable.");
         };
 
         if (permissionGranted) {
@@ -406,18 +435,34 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
     useEffect(() => {
         if (!permissionGranted) return;
+        
         const updateLoop = () => {
             const data = sensorData.current;
-            data.smoothAlpha = smoothAngle(data.smoothAlpha, data.alpha, 0.08); 
+            
+            // 1. Smooth Heading (Y-Axis Rotation)
+            const adjustedAlpha = (data.alpha + calibrationOffset) % 360;
+            data.smoothAlpha = smoothAngle(data.smoothAlpha, adjustedAlpha, 0.1); 
             setCurrentCompassHeading(Math.round(data.smoothAlpha));
+
+            // 2. Horizon Locking (X-Axis Rotation / Y-Axis Translation)
+            // If phone tilts back (beta < 90), horizon moves down.
+            // Pixel shift approx: 1 degree = ~8-10 pixels depending on FOV.
+            // We use a simplified vertical shift to keep the "ground" level.
+            // 90deg = 0px shift (center). 
+            const horizonShift = (data.beta - 90) * 15; 
+            
             if (worldRef.current) {
-                worldRef.current.style.transform = `translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
+                // We rotate the world opposite to the phone's heading to keep North "North"
+                // We translate Y to simulate looking up/down
+                worldRef.current.style.transform = `translateY(${horizonShift}px) translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
             }
+            
             requestRef.current = requestAnimationFrame(updateLoop);
         };
+        
         requestRef.current = requestAnimationFrame(updateLoop);
         return () => cancelAnimationFrame(requestRef.current);
-    }, [permissionGranted]);
+    }, [permissionGranted, calibrationOffset]);
 
     const requestAccess = async () => {
         // @ts-ignore
@@ -429,7 +474,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                     setPermissionGranted(true);
                     setParentPermission(true);
                     window.location.reload(); 
-                } else { alert("Permission denied."); }
+                } else { alert("Permission denied. AR requires compass access."); }
             } catch (e) { console.error(e); }
         } else {
             setPermissionGranted(true);
@@ -443,7 +488,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         <div className="fixed inset-0 z-[60] bg-black overflow-hidden perspective-container">
             <style jsx>{`
                 .perspective-container { perspective: ${perspective}; perspective-origin: 50% 50%; }
-                .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; }
+                .world-3d { position: absolute; top: 50%; left: 50%; width: 0; height: 0; transform-style: preserve-3d; will-change: transform; }
                 .ar-chevron { position: absolute; width: 60px; height: 30px; border-bottom: 6px solid rgba(16, 185, 129, 0.9); border-left: 6px solid transparent; border-right: 6px solid transparent; transform-origin: center bottom; transform: translate(-50%, -100%); box-shadow: 0 0 15px rgba(16, 185, 129, 0.6); filter: drop-shadow(0 0 5px #10b981); }
                 .dest-pin { position: absolute; display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -100%); }
                 .pin-head { width: 40px; height: 40px; background: #ef4444; border: 3px solid white; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); box-shadow: 0 0 20px rgba(239, 68, 68, 0.8); display: flex; align-items: center; justify-content: center; }
@@ -464,7 +509,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                     <div className="text-center p-6 max-w-sm">
                         <Compass className="h-16 w-16 text-indigo-500 mx-auto mb-4 animate-pulse"/>
                         <h3 className="text-white text-xl font-bold mb-2">Enable AR View</h3>
-                        <p className="text-zinc-400 mb-6 text-sm">Access to camera & compass is required.</p>
+                        <p className="text-zinc-400 mb-6 text-sm">Access to camera & compass is required for the HUD.</p>
                         <Button onClick={requestAccess} className="bg-indigo-600 hover:bg-indigo-700 text-white w-full rounded-xl h-12">Start Camera</Button>
                         <Button variant="ghost" onClick={onClose} className="mt-4 text-zinc-400 w-full">Cancel</Button>
                     </div>
@@ -474,32 +519,38 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
             {permissionGranted && (
                 <>
                 <div className="absolute inset-0 pointer-events-none z-[61]">
+                    {/* Compass Strip */}
                     <div className="absolute top-8 left-0 right-0 h-16 overflow-hidden flex justify-center items-start">
                         <div className="compass-track" style={{ transform: `translateX(-50%) translateX(${-compassShift}px)` }}>
                             {Array.from({ length: 36 }).map((_, i) => {
                                 const deg = i * 10;
                                 let label = "";
-                                if (deg === 0) label = "N";
-                                else if (deg === 90) label = "E";
-                                else if (deg === 180) label = "S";
-                                else if (deg === 270) label = "W";
+                                if (deg === 0) label = "N"; else if (deg === 90) label = "E"; else if (deg === 180) label = "S"; else if (deg === 270) label = "W";
                                 return ( <div key={i} className={`tick ${label ? 'major' : ''}`}>{label && <span className="tick-label text-emerald-400">{label}</span>}</div> );
                             })}
                         </div>
                         <div className="absolute top-0 w-0.5 h-8 bg-red-500 shadow-[0_0_10px_red]"></div>
                     </div>
 
-                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
-                        <div className="w-16 h-16 border border-white/20 rounded-full flex items-center justify-center"><div className="w-1 h-1 bg-emerald-400 rounded-full"></div></div>
-                        <div className="absolute top-0 left-0 w-full h-full border-t border-l border-emerald-500/50 w-4 h-4"></div>
-                        <div className="absolute bottom-0 right-0 w-full h-full border-b border-r border-emerald-500/50 w-4 h-4"></div>
+                    {/* Calibration Control */}
+                    <div className="absolute top-24 right-4 pointer-events-auto flex flex-col gap-2">
+                        <Button size="icon" className="h-8 w-8 rounded-full bg-black/40 text-white border border-white/10" onClick={() => setCalibrationOffset(p => p + 5)}><RefreshCw className="h-3 w-3" /></Button>
                     </div>
 
+                    {/* Target Reticle */}
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+                        <div className="w-16 h-16 border border-white/20 rounded-full flex items-center justify-center"><div className="w-1 h-1 bg-emerald-400 rounded-full"></div></div>
+                        <div className="absolute top-0 left-0 w-4 h-4 border-t border-l border-emerald-500/50"></div>
+                        <div className="absolute bottom-0 right-0 w-4 h-4 border-b border-r border-emerald-500/50"></div>
+                    </div>
+
+                    {/* HUD Stats */}
                     <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-emerald-500/30 p-3 rounded-lg text-emerald-400 font-mono text-xs shadow-lg space-y-1">
                         <div className="flex items-center gap-2"><Target className="h-3 w-3" /> <span>DST: {Math.round(destStats.dist)}m</span></div>
                         <div className="flex items-center gap-2"><Compass className="h-3 w-3" /> <span>HDG: {Math.round(currentCompassHeading)}°</span></div>
                     </div>
 
+                    {/* Off-screen Guidance */}
                     {Math.abs(destStats.bearing - currentCompassHeading) > 40 && (
                         <div className={`absolute top-1/2 -translate-y-1/2 ${destStats.bearing - currentCompassHeading > 0 ? 'right-4' : 'left-4'} animate-pulse`}>
                             {destStats.bearing - currentCompassHeading > 0 ? <ChevronRightIcon className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" /> : <ChevronLeft className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" />}
@@ -509,7 +560,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
                 <div ref={worldRef} className="world-3d">
                     {visiblePathSegments.map((seg, i) => {
-                        const opacity = Math.max(0.1, 1 - (seg.dist / 120)); 
+                        const opacity = Math.max(0.1, 1 - (seg.dist / 150)); 
                         const PIXEL_PER_METER = 35;
                         return ( <div key={`seg-${i}`} className="ar-chevron" style={{ transform: `translateX(${seg.x * PIXEL_PER_METER}px) translateY(150px) translateZ(${seg.z * PIXEL_PER_METER}px)`, opacity: opacity, borderColor: `rgba(16, 185, 129, ${opacity})` }}></div> )
                     })}
@@ -526,6 +577,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                     <Button onClick={onClose} size="icon" className="rounded-full bg-red-500/80 backdrop-blur text-white border border-white/20 h-10 w-10 shadow-xl"><X className="h-5 w-5" /></Button>
                 </div>
 
+                {/* Radar Map */}
                 <div className="absolute bottom-6 left-6 z-[62]" style={{ marginBottom: 'env(safe-area-inset-bottom)' }}>
                     <div className="w-28 h-28 rounded-full bg-black/70 backdrop-blur border-2 border-emerald-500/50 relative overflow-hidden shadow-[0_0_20px_rgba(16,185,129,0.2)]">
                         <div className="absolute inset-0 rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,rgba(16,185,129,0.1)_360deg)] animate-spin-slow opacity-50"></div>
@@ -536,11 +588,6 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                             if (cx < 0 || cx > 112 || cy < 0 || cy > 112) return null;
                             return <div key={`r-${i}`} className="absolute w-1.5 h-1.5 bg-emerald-400 rounded-full shadow-[0_0_4px_#34d399]" style={{ left: cx, top: cy }}></div>
                         })}
-                        {(() => {
-                             const scale = 0.5; const cx = 56 + (destStats.x * scale); const cy = 56 - (Math.abs(destStats.z) * scale);
-                             const clampedX = Math.max(5, Math.min(107, cx)); const clampedY = Math.max(5, Math.min(107, cy));
-                             return <div className="absolute w-2 h-2 bg-red-500 rounded-full border border-white animate-pulse z-20" style={{ left: clampedX, top: clampedY }}></div>
-                        })()}
                     </div>
                 </div>
                 
@@ -548,7 +595,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                 
                 {!sensorsActive && (
                     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/70 text-white px-6 py-4 rounded-xl text-center pointer-events-none animate-pulse z-[70]">
-                        <div className="text-4xl mb-2">∞</div>
+                        <div className="text-4xl mb-2 flex justify-center"><Smartphone className="h-10 w-10 animate-bounce" /></div>
                         <p className="font-bold">Move phone in Figure 8</p>
                         <p className="text-xs text-zinc-400">Calibrating Compass...</p>
                     </div>
