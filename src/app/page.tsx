@@ -3,11 +3,12 @@
 // ==========================================
 // 1. IMPORTS
 // ==========================================
-import React, { useRef, useEffect, useState, useCallback, memo, useMemo } from 'react';
+import React, { useRef, useEffect, useState, useCallback, memo, useMemo, Suspense } from 'react';
 import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap, GeoJSONSource, MapMouseEvent } from 'mapbox-gl';
 import { Kantumruy_Pro } from 'next/font/google';
 import { createClient } from '@supabase/supabase-js'; 
 import { QRCodeSVG } from 'qrcode.react'; 
+import { useSearchParams, useRouter } from 'next/navigation';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 // AI & TensorFlow
@@ -30,14 +31,14 @@ import {
 // Icons
 import {
   X, MapPin, Navigation, LocateFixed, Volume2, VolumeX, Compass, Loader2, AlertTriangle,
-  Fuel, Utensils, Coffee, Search, Mic, Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
+  Fuel, Search, Mic, Layers, Zap, CornerUpLeft, CornerUpRight, ArrowUp,
   Sun, Cloud, CloudRain, CloudLightning, Snowflake, Wind, ArrowRight, Clock, History, 
   Navigation as NavIcon, Crosshair, Banknote, ChevronDown, ChevronUp, 
   Trash2, Map as MapIcon, CarFront, ExternalLink, Camera, 
   Mountain, Shield, Copy, Siren, Construction, 
   Video, Users, LogOut, Radio, Satellite,
-  Briefcase, Home, Stethoscope, Sparkles, CheckCircle2, ChevronRight, BatteryCharging, Mic2,
-  Gauge, Activity, Target, ChevronLeft, ChevronRight as ChevronRightIcon, Menu, Smartphone, RefreshCw
+  Briefcase, Home, Stethoscope, CheckCircle2, ChevronRight as ChevronRightIcon, ChevronLeft,
+  Smartphone, RefreshCw, Target, BatteryCharging, Mic2 // Added missing imports here
 } from 'lucide-react';
 
 // ==========================================
@@ -135,7 +136,7 @@ function smoothAngle(current: number, target: number, factor: number) {
     let delta = target - current;
     while (delta <= -180) delta += 360;
     while (delta > 180) delta -= 360;
-    if (Math.abs(delta) < 0.1) return current; // Deadzone for jitter
+    if (Math.abs(delta) < 0.1) return current; // Deadzone
     return current + delta * factor;
 }
 
@@ -329,8 +330,6 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
     const [perspective, setPerspective] = useState("800px");
     const [currentCompassHeading, setCurrentCompassHeading] = useState(0);
     const [calibrationOffset, setCalibrationOffset] = useState(0);
-    
-    // Sensor fusion refs
     const sensorData = useRef({ alpha: 0, beta: 90, smoothAlpha: 0, smoothBeta: 90 });
 
     useEffect(() => {
@@ -365,29 +364,17 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
     const handleOrientation = useCallback((e: DeviceOrientationEvent) => {
         let heading = 0;
-        // iOS Compass
         // @ts-ignore
         if ((e as any).webkitCompassHeading) { 
             // @ts-ignore
             heading = (e as any).webkitCompassHeading;
-        } 
-        // Android Absolute
-        else if (e.absolute && e.alpha !== null) { 
+        } else if (e.alpha !== null) { 
             heading = 360 - e.alpha; 
         }
-        // Fallback
-        else if (e.alpha !== null) {
-            heading = 360 - e.alpha; 
-        }
-
-        // Weighted buffer for alpha (heading)
         sensorData.current.alpha = heading;
-        
-        // Beta is front-back tilt. We clamp it for safety.
         if (e.beta !== null) {
             sensorData.current.beta = Math.max(0, Math.min(180, e.beta));
         }
-
         if (!sensorsActive && heading !== 0) setSensorsActive(true);
     }, [sensorsActive]);
 
@@ -413,7 +400,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                     console.log("Cam constraint failed", e);
                 }
             }
-            setDebugMsg("Camera access denied or unavailable.");
+            setDebugMsg("Camera access denied.");
         };
 
         if (permissionGranted) {
@@ -434,30 +421,19 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 
     useEffect(() => {
         if (!permissionGranted) return;
-        
         const updateLoop = () => {
             const data = sensorData.current;
-            
-            // 1. Heading Smoothing (Strong exponential moving average)
             const adjustedAlpha = (data.alpha + calibrationOffset) % 360;
-            // Lower factor = smoother but slower. 0.08 is a good balance.
             data.smoothAlpha = smoothAngle(data.smoothAlpha, adjustedAlpha, 0.08); 
             setCurrentCompassHeading(Math.round(data.smoothAlpha));
-
-            // 2. Horizon Locking (Beta Smoothing)
             data.smoothBeta = data.smoothBeta * 0.9 + data.beta * 0.1;
-            // 90deg is upright (0 shift). <90 tilts back, >90 tilts forward.
-            // Approx 15px shift per degree of tilt maintains horizon.
             const horizonShift = (data.smoothBeta - 90) * 15; 
             
             if (worldRef.current) {
-                // Combine rotation and vertical shift
                 worldRef.current.style.transform = `translateY(${horizonShift}px) translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
             }
-            
             requestRef.current = requestAnimationFrame(updateLoop);
         };
-        
         requestRef.current = requestAnimationFrame(updateLoop);
         return () => cancelAnimationFrame(requestRef.current);
     }, [permissionGranted, calibrationOffset]);
@@ -517,7 +493,6 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
             {permissionGranted && (
                 <>
                 <div className="absolute inset-0 pointer-events-none z-[61]">
-                    {/* Compass Strip */}
                     <div className="absolute top-8 left-0 right-0 h-16 overflow-hidden flex justify-center items-start">
                         <div className="compass-track" style={{ transform: `translateX(-50%) translateX(${-compassShift}px)` }}>
                             {Array.from({ length: 36 }).map((_, i) => {
@@ -530,25 +505,21 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                         <div className="absolute top-0 w-0.5 h-8 bg-red-500 shadow-[0_0_10px_red]"></div>
                     </div>
 
-                    {/* Calibration Control */}
                     <div className="absolute top-24 right-4 pointer-events-auto flex flex-col gap-2">
                         <Button size="icon" className="h-8 w-8 rounded-full bg-black/40 text-white border border-white/10" onClick={() => setCalibrationOffset(p => p + 5)}><RefreshCw className="h-3 w-3" /></Button>
                     </div>
 
-                    {/* Target Reticle */}
                     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
                         <div className="w-16 h-16 border border-white/20 rounded-full flex items-center justify-center"><div className="w-1 h-1 bg-emerald-400 rounded-full"></div></div>
                         <div className="absolute top-0 left-0 w-4 h-4 border-t border-l border-emerald-500/50"></div>
                         <div className="absolute bottom-0 right-0 w-4 h-4 border-b border-r border-emerald-500/50"></div>
                     </div>
 
-                    {/* HUD Stats */}
                     <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-emerald-500/30 p-3 rounded-lg text-emerald-400 font-mono text-xs shadow-lg space-y-1">
                         <div className="flex items-center gap-2"><Target className="h-3 w-3" /> <span>DST: {Math.round(destStats.dist)}m</span></div>
                         <div className="flex items-center gap-2"><Compass className="h-3 w-3" /> <span>HDG: {Math.round(currentCompassHeading)}°</span></div>
                     </div>
 
-                    {/* Off-screen Guidance */}
                     {Math.abs(destStats.bearing - currentCompassHeading) > 40 && (
                         <div className={`absolute top-1/2 -translate-y-1/2 ${destStats.bearing - currentCompassHeading > 0 ? 'right-4' : 'left-4'} animate-pulse`}>
                             {destStats.bearing - currentCompassHeading > 0 ? <ChevronRightIcon className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" /> : <ChevronLeft className="h-12 w-12 text-red-500 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]" />}
@@ -575,7 +546,6 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                     <Button onClick={onClose} size="icon" className="rounded-full bg-red-500/80 backdrop-blur text-white border border-white/20 h-10 w-10 shadow-xl"><X className="h-5 w-5" /></Button>
                 </div>
 
-                {/* Radar Map */}
                 <div className="absolute bottom-6 left-6 z-[62]" style={{ marginBottom: 'env(safe-area-inset-bottom)' }}>
                     <div className="w-28 h-28 rounded-full bg-black/70 backdrop-blur border-2 border-emerald-500/50 relative overflow-hidden shadow-[0_0_20px_rgba(16,185,129,0.2)]">
                         <div className="absolute inset-0 rounded-full bg-[conic-gradient(from_0deg,transparent_0deg,rgba(16,185,129,0.1)_360deg)] animate-spin-slow opacity-50"></div>
@@ -641,7 +611,6 @@ export default function MapExplorerPage() {
   const hasLoggedSupabaseError = useRef(false);
   const supabaseErrorCount = useRef(0);
 
-  // Sync Refs
   const activeConvoyRef = useRef<string | null>(null);
   const isSafetyModeActiveRef = useRef<boolean>(false);
   const currentTripIdRef = useRef<string | null>(null);
@@ -655,8 +624,9 @@ export default function MapExplorerPage() {
   const animationFrameId = useRef<number>(0);
 
   const { toast } = useToast();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   
-  // UI State
   const [isNavigating, setIsNavigating] = useState(false);
   const [isBatterySaver, setIsBatterySaver] = useState(false);
   const [locationDetails, setLocationDetails] = useState<{lng: number, lat: number} | null>(null);
@@ -681,25 +651,21 @@ export default function MapExplorerPage() {
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [currentStyle, setCurrentStyle] = useState(STYLES.DARK);
   
-  // Advanced Features State
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [showReportDialog, setShowReportDialog] = useState(false);
   const [vehicleType, setVehicleType] = useState<'moto' | 'car' | 'suv'>('moto');
   const [estimatedCost, setEstimatedCost] = useState<number>(0);
   
-  // Convoy & Dashcam
   const [showDashcam, setShowDashcam] = useState(false);
   const [convoyCode, setConvoyCode] = useState("");
   const [activeConvoy, setActiveConvoy] = useState<string | null>(null);
   const [convoyMembers, setConvoyMembers] = useState<ConvoyMember[]>([]);
   const [showConvoyDialog, setShowConvoyDialog] = useState(false);
 
-  // Safety
   const [isSafetyModeActive, setIsSafetyModeActive] = useState(false);
   const [currentTripId, setCurrentTripId] = useState<string | null>(null);
   const [showShareDialog, setShowShareDialog] = useState(false);
 
-  // Refs sync
   useEffect(() => { showRecenterBtnRef.current = showRecenterBtn; }, [showRecenterBtn]);
   useEffect(() => { isNavigatingRef.current = isNavigating; }, [isNavigating]);
   useEffect(() => { currentSpeedRef.current = currentSpeed; }, [currentSpeed]);
@@ -710,13 +676,11 @@ export default function MapExplorerPage() {
     currentTripIdRef.current = currentTripId;
   }, [activeConvoy, isSafetyModeActive, currentTripId]);
 
-  // Initial Setup
   useEffect(() => { 
       const saved = localStorage.getItem(AR_PERMISSION_KEY); 
       if (saved === 'true') setHasArPermission(true); 
   }, []);
   
-  // Voice Setup
   useEffect(() => { 
       const updateVoices = () => { if (typeof window !== 'undefined' && window.speechSynthesis) { const voices = window.speechSynthesis.getVoices(); if (voices.length > 0) setAvailableVoices(voices); } }; 
       if (typeof window !== 'undefined' && window.speechSynthesis) { window.speechSynthesis.onvoiceschanged = updateVoices; updateVoices(); } 
@@ -734,12 +698,10 @@ export default function MapExplorerPage() {
       window.speechSynthesis.speak(utteranceRef.current); 
   }, [isMuted, availableVoices]);
 
-  // --- BATTERY SAVER LOGIC (OLED SAVER) ---
   const resetIdleTimer = useCallback(() => {
       lastInteractionTime.current = Date.now();
       if (isBatterySaver) setIsBatterySaver(false);
       if (idleTimer.current) clearTimeout(idleTimer.current);
-      // If navigating, screen dims after 30s of no touch
       if (isNavigating) {
           idleTimer.current = setTimeout(() => setIsBatterySaver(true), IDLE_TIMEOUT_MS);
       }
@@ -754,7 +716,6 @@ export default function MapExplorerPage() {
       };
   }, [resetIdleTimer]);
 
-  // --- VOICE COMMANDS ---
   const handleVoiceCommand = () => {
       // @ts-ignore
       const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
@@ -769,7 +730,6 @@ export default function MapExplorerPage() {
       };
   };
 
-  // --- CORE FUNCTIONS ---
   const fetchIncidents = useCallback(async () => {
     if (!supabase) return;
     try {
@@ -852,7 +812,6 @@ export default function MapExplorerPage() {
           if (convoyMarkers.current[member.user_id]) {
               const marker = convoyMarkers.current[member.user_id];
               const currentLngLat = marker.getLngLat();
-              // LERP Animation for smoother movement
               let start = Date.now();
               const animate = () => {
                   let now = Date.now();
@@ -939,18 +898,11 @@ export default function MapExplorerPage() {
 
   const animatePuck = useCallback(() => {
       if (!puckMarker.current || !isMounted.current || !map.current) { animationFrameId.current = 0; return; }
-      
-      // Interpolate Position
       currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.12);
       currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.12);
-      
-      // Smart Interpolate Heading (Smoother and shortest path)
       currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.08);
-      
       puckMarker.current.setLngLat(currentPuckPos.current); 
       puckMarker.current.setRotation(currentHeading.current);
-      
-      // Smooth Camera Follow
       if (map.current && isNavigatingRef.current && !userIsInteracting.current && !showRecenterBtnRef.current) {
           const speed = currentSpeedRef.current;
           map.current.easeTo({ 
@@ -967,18 +919,12 @@ export default function MapExplorerPage() {
 
   const handleStyleChange = (style: string) => { 
       if (!map.current || style === currentStyle) return; 
-      
-      // Wait for style load to re-add sources
       map.current.once('style.load', () => { 
           if (map.current) { 
               if(!map.current.getSource('mapbox-dem')) {
                    map.current.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); 
               }
-              // Catching privacy-blocking errors here
-              try {
-                  map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); 
-              } catch (e) { console.warn("Terrain disabled due to browser privacy settings"); }
-              
+              try { map.current.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); } catch (e) { console.warn("Terrain disabled"); }
               restoreMapLayers(map.current, isTrafficVisible, isRainMode, isWindMode); 
           } 
       }); 
@@ -1032,7 +978,7 @@ export default function MapExplorerPage() {
         attributionControl: false, 
         antialias: true, 
         logoPosition: 'bottom-left',
-        cooperativeGestures: false, // CHANGED: Allow one-finger pan (disables overlay)
+        cooperativeGestures: false, 
         dragRotate: true,
         touchZoomRotate: true,
         pitchWithRotate: true,
@@ -1051,90 +997,49 @@ export default function MapExplorerPage() {
     
     mapInstance.on('load', () => {
         if (!isMounted.current) return; setIsMapLoaded(true); geolocate.trigger(); 
-        
-        // Add 3D Terrain safely
         if (!mapInstance.getSource('mapbox-dem')) mapInstance.addSource('mapbox-dem', { 'type': 'raster-dem', 'url': 'mapbox://mapbox.mapbox-terrain-dem-v1', 'tileSize': 512, 'maxzoom': 14 }); 
-        try {
-             mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); 
-        } catch (e) {
-            console.warn("Terrain disabled due to browser privacy settings");
-        }
-        
+        try { mapInstance.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 }); } catch (e) { console.warn("Terrain disabled"); }
         restoreMapLayers(mapInstance, isTrafficVisible, isRainMode, isWindMode); 
         if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
         
-        // --- FIXED GEOLOCATION WATCHER ---
         if ('geolocation' in navigator) {
             watchId.current = navigator.geolocation.watchPosition(async (pos) => {
                 if (!isMounted.current) return;
                 const { latitude, longitude, heading, speed } = pos.coords;
                 if (puckElement.current) puckElement.current.style.display = 'block';
-                
-                // Update internal refs
                 userLocation.current = [longitude, latitude];
                 setCurrentUserLocationForAR([longitude, latitude]);
                 targetPuckPos.current = [longitude, latitude];
-                
                 const speedKmh = speed ? Math.round(speed * 3.6) : 0;
-                setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); // Debounce UI updates
-                
+                setCurrentSpeed(prev => (Math.abs(prev - speedKmh) > 2 ? speedKmh : prev)); 
                 if (heading !== null && !isNaN(heading)) gpsHeading.current = heading;
                 const isMoving = speedKmh > 5;
                 targetHeading.current = isMoving && heading !== null ? heading : compassHeading.current;
-                
                 if (!animationFrameId.current) animationFrameId.current = requestAnimationFrame(animatePuck);
                 fetchWeather(latitude, longitude);
                 
-                // --- FIX: USE REFS TO AVOID STALE STATE ---
-                const activeConvoy = activeConvoyRef.current;
-                const isSafety = isSafetyModeActiveRef.current;
-                const tripId = currentTripIdRef.current;
-
-                // Safety Mode & Convoy Updates (Throttled & Circuit Breaker)
-                if ((isSafety && tripId) || activeConvoy) {
-                    // Stop trying if DB is broken to avoid 400 error spam
+                // Update Live Location
+                if ((isSafetyModeActiveRef.current && currentTripIdRef.current) || activeConvoyRef.current) {
                     if (supabaseErrorCount.current > 3) return;
-
                     const now = Date.now();
                     if (now - lastSafetyUpdate.current > 3000 && supabase) {
                         const payload = { lat: latitude, lng: longitude, heading: heading || 0, speed: speed || 0, last_updated: new Date().toISOString() };
-                        
-                        // Safety Trip
-                        if (isSafety && tripId) {
+                        if (isSafetyModeActiveRef.current && currentTripIdRef.current) {
                             supabase.from('active_trips').update({ current_lat: latitude, current_lng: longitude, heading: heading||0, speed: speed||0, last_updated: new Date().toISOString() })
-                                .eq('id', tripId).then(({ error }) => { 
-                                    if (error) { 
-                                        supabaseErrorCount.current++;
-                                        if (!hasLoggedSupabaseError.current) { console.warn("Trip update failed:", error.message); hasLoggedSupabaseError.current = true; } 
-                                    } 
-                                });
+                                .eq('id', currentTripIdRef.current).then(({ error }) => { if (error) { supabaseErrorCount.current++; } });
                         }
-                        
-                        // Convoy
-                        if (activeConvoy) { 
+                        if (activeConvoyRef.current) { 
                             const myId = localStorage.getItem('convoy_user_id'); 
-                            if(myId) {
-                                supabase.from('convoy_members').upsert({ convoy_code: activeConvoy, user_id: myId, ...payload }, { onConflict: 'user_id' })
-                                    .then(({ error }) => { 
-                                        if (error) { 
-                                            supabaseErrorCount.current++;
-                                            if (!hasLoggedSupabaseError.current) { console.warn("Convoy update failed (Check RLS/Constraints):", error.message); hasLoggedSupabaseError.current = true; } 
-                                        } 
-                                    });
-                            }
+                            if(myId) { supabase.from('convoy_members').upsert({ convoy_code: activeConvoyRef.current, user_id: myId, ...payload }, { onConflict: 'user_id' }); }
                         }
                         lastSafetyUpdate.current = now;
                     }
                 }
                 
-                // Geofencing Arrival
                 if (isNavigatingRef.current && activeDestination.current) {
                     const dist = getDistanceFromLatLonInMeters(latitude, longitude, activeDestination.current[1], activeDestination.current[0]);
-                    
                     setRouteDetails(prev => prev ? { ...prev, distance: dist, duration: (dist / 1000) / (Math.max(20, speedKmh) / 60) * 60 } : null);
-
                     if (dist < ARRIVAL_THRESHOLD_METERS) stopSafetyMode('arrived');
-
                     if (routeGeoJSON.current && !isRecalculating.current && (Date.now() - lastRerouteTime.current > REROUTE_COOLDOWN_MS)) { 
                          const distanceToPath = getMinDistanceToRoute(latitude, longitude, routeGeoJSON.current); 
                          if (distanceToPath > REROUTE_THRESHOLD_METERS) { 
@@ -1183,15 +1088,36 @@ export default function MapExplorerPage() {
       } 
   }, [locationDetails]);
 
+  // --- AUTO ROUTING LOGIC ---
+  useEffect(() => {
+    const destParam = searchParams.get('destination');
+    if (isMapLoaded && destParam && userLocation.current && map.current) {
+        const [latStr, lngStr] = destParam.split(',');
+        const lat = parseFloat(latStr);
+        const lng = parseFloat(lngStr);
+
+        if (!isNaN(lat) && !isNaN(lng)) {
+            if (destinationMarker.current) destinationMarker.current.remove();
+            destinationMarker.current = new mapboxgl.Marker({ color: '#ef4444' }).setLngLat([lng, lat]).addTo(map.current);
+            setLocationDetails({ lat, lng });
+            setAddressDetails({ formatted: "Friend's Location" }); 
+            setIsDrawerOpen(true);
+            const bounds = new mapboxgl.LngLatBounds();
+            bounds.extend(userLocation.current);
+            bounds.extend([lng, lat]);
+            map.current.fitBounds(bounds, { padding: 100, maxZoom: 15 });
+            toast({ title: "Destination Set", description: "Navigating to shared location." });
+        }
+    }
+  }, [isMapLoaded, searchParams]);
+
   const handleStartNavigation = async () => { 
       triggerHaptic();
       if (!userLocation.current || !locationDetails) { toast({ title: "Error", description: "No GPS" }); return; } 
       setIsRouting(true); 
-      // Initialize audio context on user click (Silent utterance trick)
       const u = new SpeechSynthesisUtterance(" ");
       window.speechSynthesis.speak(u);
       speak("Starting navigation");
-      
       const start = userLocation.current; 
       const end: [number, number] = [locationDetails.lng, locationDetails.lat]; 
       const success = await fetchRoute(start, end); 
@@ -1214,7 +1140,6 @@ export default function MapExplorerPage() {
   const handleRecenter = () => { triggerHaptic(); if(!userLocation.current || !map.current) return; userIsInteracting.current = false; setShowRecenterBtn(false); showRecenterBtnRef.current = false; map.current.flyTo({ center: userLocation.current, zoom: 19, pitch: 70, bearing: targetHeading.current, padding: { top: 0, bottom: 200, left: 0, right: 0 }, duration: 1200 }); };
   const handleUserLocationClick = useCallback(() => { triggerHaptic(); if(!userLocation.current || !map.current) { geolocateControl.current?.trigger(); toast({ title: "ស្វែងរកទីតាំង...", duration: 1000 }); return; } map.current.flyTo({ center: userLocation.current, zoom: 16, duration: 1200 }); }, [toast]);
 
-  // Safety
   const startSafetyMode = async () => { 
       triggerHaptic();
       if (!supabase || !userLocation.current) return; 
@@ -1270,7 +1195,25 @@ export default function MapExplorerPage() {
               <div className="space-y-6 pb-2">
                 <SheetHeader className="text-left space-y-1"><div className="flex items-center gap-3 mb-2"><div className="h-10 w-10 rounded-full bg-indigo-500/20 flex items-center justify-center"><MapPin className="h-5 w-5 text-indigo-400" /></div><div className="flex-1 min-w-0"><SheetTitle asChild className="text-xl font-bold line-clamp-1 text-white"><div role="heading" aria-level={2}>{isFetchingAddress ? <Skeleton className="h-6 w-32 bg-zinc-800" /> : (addressDetails?.name || addressDetails?.address_line1 || "Selected Location")}</div></SheetTitle><SheetDescription asChild className="text-zinc-400 text-xs line-clamp-1"><div>{isFetchingAddress ? <Skeleton className="h-4 w-48 bg-zinc-800 mt-1" /> : (addressDetails?.formatted || "")}</div></SheetDescription></div></div></SheetHeader>
                 {routeDetails && (<div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-700/50 flex justify-between items-center mb-2"><div className="flex items-center gap-2"><Select value={vehicleType} onValueChange={(v: any) => setVehicleType(v)}><SelectTrigger className="w-[110px] h-8 bg-zinc-900 border-zinc-700 text-xs"><SelectValue placeholder="Vehicle" /></SelectTrigger><SelectContent className="bg-zinc-900 border-zinc-700 text-white"><SelectItem value="moto">Moto</SelectItem><SelectItem value="car">Car</SelectItem><SelectItem value="suv">SUV</SelectItem></SelectContent></Select></div><div className="flex flex-col items-end"><span className="text-[10px] text-zinc-400 font-bold uppercase">Est. Cost</span><span className="text-lg font-bold text-emerald-400 font-mono">{estimatedCost.toLocaleString()}៛</span></div></div>)}
-                <div className="mt-2 grid grid-cols-2 gap-3"><div className="col-span-2"><p className="text-[10px] text-zinc-500 font-bold uppercase mb-2 tracking-wider">Ride Hailing</p><div className="grid grid-cols-3 gap-2"><Button onClick={() => window.open(`grab://open?screenType=GRABRIDE&dropOffLatitude=${locationDetails.lat}&dropOffLongitude=${locationDetails.lng}`)} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#00B14F]/20 hover:border-[#00B14F] hover:text-[#00B14F] transition-all flex flex-col gap-0.5"><CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">Grab</span></Button><Button onClick={() => window.open("passapp://")} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-[#1D8F48]/20 hover:border-[#1D8F48] hover:text-[#1D8F48] transition-all flex flex-col gap-0.5"><CarFront className="h-4 w-4" /> <span className="text-[10px] font-bold">PassApp</span></Button><Button onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${locationDetails.lat},${locationDetails.lng}`)} variant="outline" className="h-12 border-zinc-700 bg-zinc-800/50 hover:bg-blue-500/20 hover:border-blue-500 hover:text-blue-500 transition-all flex flex-col gap-0.5"><ExternalLink className="h-4 w-4" /> <span className="text-[10px] font-bold">Google</span></Button></div></div></div>
+                
+                {/* --- Social/Adventure Context Block (REPLACED RIDE HAILING) --- */}
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                    <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-700/50 flex flex-col justify-center">
+                        <p className="text-[10px] text-zinc-500 font-bold uppercase mb-1">Fuel Estimate</p>
+                        <div className="flex items-center gap-2">
+                            <Fuel className="h-4 w-4 text-orange-400" />
+                            <span className="text-sm font-mono text-zinc-200">{estimatedCost > 0 ? `~${estimatedCost.toLocaleString()}៛` : '--'}</span>
+                        </div>
+                    </div>
+                    <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-700/50 flex flex-col justify-center">
+                        <p className="text-[10px] text-zinc-500 font-bold uppercase mb-1">Local Weather</p>
+                        <div className="flex items-center gap-2">
+                            {weather ? getWeatherIcon(weather.condition) : <Cloud className="h-4 w-4 text-gray-400" />}
+                            <span className="text-sm font-mono text-zinc-200">{weather ? `${weather.temp}°C` : '--'}</span>
+                        </div>
+                    </div>
+                </div>
+
                 <SheetFooter className="flex flex-col sm:flex-col sm:space-x-0 gap-2 mt-4"><Button className="w-full gap-2 bg-zinc-800 hover:bg-zinc-700 text-white h-12 text-base font-semibold border border-zinc-700 rounded-xl" onClick={toggleAR} ><Camera className="h-5 w-5" /> Live View (AR)</Button><Button className="w-full gap-2 bg-indigo-600 hover:bg-indigo-700 text-white h-12 text-base font-semibold shadow-lg shadow-indigo-900/20 rounded-xl transition-all active:scale-[0.98]" onClick={handleStartNavigation} disabled={isFetchingAddress || !userLocation.current || isRouting} >{isRouting ? <><Loader2 className="h-5 w-5 animate-spin" /> Calculating...</> : <><Navigation className="h-5 w-5" /> Start Navigation</>}</Button></SheetFooter>
               </div>
             )}
