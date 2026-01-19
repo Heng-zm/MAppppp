@@ -3,7 +3,7 @@
 // ==========================================
 // 1. IMPORTS
 // ==========================================
-import React, { useRef, useEffect, useState, useCallback, memo, useMemo } from 'react';
+import React, { useRef, useEffect, useState, useCallback, memo, useMemo, Suspense } from 'react';
 import mapboxgl, { GeolocateControl, Marker, LngLatBounds, Map as MapboxMap, GeoJSONSource, MapMouseEvent } from 'mapbox-gl';
 import { Kantumruy_Pro } from 'next/font/google';
 import { createClient } from '@supabase/supabase-js'; 
@@ -216,6 +216,13 @@ const AiDashcam = ({ onClose, onDetect }: { onClose: () => void, onDetect: (type
 
         const renderFrame = async () => {
             if (!isActive.current) return;
+
+            // Pause processing if page hidden
+            if (document.hidden) {
+                animationId = requestAnimationFrame(renderFrame);
+                return;
+            }
+
             const ctx = canvasRef.current!.getContext('2d');
             if (ctx && videoRef.current && videoRef.current.readyState === 4) {
                 const vid = videoRef.current;
@@ -347,6 +354,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
             if (dist < 200 && count < 40) { 
                 const bearing = getBearing(userLocation[1], userLocation[0], pt[1], pt[0]);
                 const rad = bearing * (Math.PI / 180);
+                // Simple polar to cartesian projection relative to North
                 segments.push({ x: dist * Math.sin(rad), z: -(dist * Math.cos(rad)), dist: dist, index: i });
                 count++;
             }
@@ -372,6 +380,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
         }
         sensorData.current.alpha = heading;
         if (e.beta !== null) {
+            // Beta is front/back tilt [-180, 180]. 90 is upright.
             sensorData.current.beta = Math.max(0, Math.min(180, e.beta));
         }
         if (!sensorsActive && heading !== 0) setSensorsActive(true);
@@ -414,21 +423,31 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
             // @ts-ignore
             window.removeEventListener('deviceorientationabsolute', handleOrientation);
             if (stream) stream.getTracks().forEach(t => t.stop());
-            cancelAnimationFrame(requestRef.current);
+            if (requestRef.current) cancelAnimationFrame(requestRef.current);
         };
     }, [permissionGranted, handleOrientation]);
 
     useEffect(() => {
         if (!permissionGranted) return;
         const updateLoop = () => {
+            if (document.hidden) {
+                 requestRef.current = requestAnimationFrame(updateLoop);
+                 return;
+            }
+
             const data = sensorData.current;
             const adjustedAlpha = (data.alpha + calibrationOffset) % 360;
             data.smoothAlpha = smoothAngle(data.smoothAlpha, adjustedAlpha, 0.08); 
             setCurrentCompassHeading(Math.round(data.smoothAlpha));
+            
+            // Smooth beta (tilt) for horizon level
             data.smoothBeta = data.smoothBeta * 0.9 + data.beta * 0.1;
+            
+            // Shift the 3D world up/down based on phone tilt to keep "horizon" stable
             const horizonShift = (data.smoothBeta - 90) * 15; 
             
             if (worldRef.current) {
+                // Rotate world opposite to compass heading
                 worldRef.current.style.transform = `translateY(${horizonShift}px) translateZ(600px) rotateY(${-data.smoothAlpha}deg)`;
             }
             requestRef.current = requestAnimationFrame(updateLoop);
@@ -446,7 +465,8 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
                 if (perm === 'granted') {
                     setPermissionGranted(true);
                     setParentPermission(true);
-                    window.location.reload(); 
+                    // Don't reload, just state update is enough usually, but sometimes sensors need a kick
+                    // window.location.reload(); 
                 } else { alert("Permission denied. AR requires compass access."); }
             } catch (e) { console.error(e); }
         } else {
@@ -576,7 +596,7 @@ const ArLastMileView = ({ userLocation, destination, routePath, onClose, hasPare
 // ==========================================
 // 5. MAIN PAGE (OPTIMIZED)
 // ==========================================
-export default function MapExplorerPage() {
+function MapExplorerPage() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapboxMap | null>(null);
   const geolocateControl = useRef<GeolocateControl | null>(null);
@@ -589,7 +609,8 @@ export default function MapExplorerPage() {
   const convoyMarkers = useRef<Record<string, Marker>>({});
   
   const routeGeoJSON = useRef<any>(null);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const speechQueue = useRef<string[]>([]);
+  const isSpeakingRef = useRef(false);
   const userLocation = useRef<[number, number] | null>(null);
   const activeDestination = useRef<[number, number] | null>(null);
   const watchId = useRef<number | null>(null);
@@ -675,9 +696,12 @@ export default function MapExplorerPage() {
     currentTripIdRef.current = currentTripId;
   }, [activeConvoy, isSafetyModeActive, currentTripId]);
 
+  // Safe LocalStorage Access for Hydration
   useEffect(() => { 
-      const saved = localStorage.getItem(AR_PERMISSION_KEY); 
-      if (saved === 'true') setHasArPermission(true); 
+      try {
+          const saved = localStorage.getItem(AR_PERMISSION_KEY); 
+          if (saved === 'true') setHasArPermission(true); 
+      } catch (e) {}
   }, []);
   
   useEffect(() => { 
@@ -686,16 +710,37 @@ export default function MapExplorerPage() {
       return () => { if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null; }; 
   }, []);
 
-  const speak = useCallback((text: string) => { 
-      if (typeof window === 'undefined' || isMuted || !window.speechSynthesis) return; 
-      if (window.speechSynthesis.speaking && lastSpokenInstruction.current === text) return; 
-      window.speechSynthesis.cancel(); 
-      utteranceRef.current = new SpeechSynthesisUtterance(text); 
+  // Voice Queue Processor
+  const processSpeechQueue = useCallback(() => {
+      if (isSpeakingRef.current || speechQueue.current.length === 0 || typeof window === 'undefined' || isMuted) return;
+
+      const text = speechQueue.current.shift();
+      if (!text) return;
+
+      isSpeakingRef.current = true;
+      const utterance = new SpeechSynthesisUtterance(text);
       const preferredVoice = availableVoices.find(v => v.lang.includes('km')) || availableVoices.find(v => v.name.includes('Google') && v.lang.includes('en')); 
-      if (preferredVoice) utteranceRef.current.voice = preferredVoice; 
-      utteranceRef.current.rate = 1.0; 
-      window.speechSynthesis.speak(utteranceRef.current); 
-  }, [isMuted, availableVoices]);
+      if (preferredVoice) utterance.voice = preferredVoice; 
+      utterance.rate = 1.0; 
+      
+      utterance.onend = () => {
+          isSpeakingRef.current = false;
+          // Small delay between utterances
+          setTimeout(processSpeechQueue, 300);
+      };
+      utterance.onerror = () => {
+          isSpeakingRef.current = false;
+          processSpeechQueue();
+      };
+
+      window.speechSynthesis.speak(utterance);
+  }, [availableVoices, isMuted]);
+
+  const speak = useCallback((text: string) => {
+      if (typeof window === 'undefined' || isMuted) return;
+      speechQueue.current.push(text);
+      processSpeechQueue();
+  }, [isMuted, processSpeechQueue]);
 
   const resetIdleTimer = useCallback(() => {
       lastInteractionTime.current = Date.now();
@@ -717,7 +762,13 @@ export default function MapExplorerPage() {
 
   const handleVoiceCommand = () => {
       // @ts-ignore
-      const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+          toast({ title: "Not Supported", description: "Voice API not available in this browser." });
+          return;
+      }
+      
+      const recognition = new SpeechRecognition();
       recognition.lang = 'en-US';
       recognition.start();
       triggerHaptic();
@@ -898,6 +949,13 @@ export default function MapExplorerPage() {
 
   const animatePuck = useCallback(() => {
       if (!puckMarker.current || !isMounted.current || !map.current) { animationFrameId.current = 0; return; }
+      
+      // Throttle if tab hidden
+      if (document.hidden) {
+          animationFrameId.current = requestAnimationFrame(animatePuck);
+          return;
+      }
+
       currentPuckPos.current[0] = lerp(currentPuckPos.current[0], targetPuckPos.current[0], 0.12);
       currentPuckPos.current[1] = lerp(currentPuckPos.current[1], targetPuckPos.current[1], 0.12);
       currentHeading.current = lerpAngle(currentHeading.current, targetHeading.current, 0.08);
@@ -991,7 +1049,11 @@ export default function MapExplorerPage() {
     const el = document.createElement('div'); el.className = 'navigation-puck'; el.style.display = 'none'; el.innerHTML = `<div class="puck-pulse"></div>`;
     puckElement.current = el;
     puckMarker.current = new Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(DEFAULT_CENTER).addTo(mapInstance);
-    const handleOrientation = (event: DeviceOrientationEvent) => { if (event.alpha !== null) compassHeading.current = (event as any).webkitCompassHeading || (360 - event.alpha); };
+    
+    // Handler for Device Orientation (Compass)
+    const handleOrientation = (event: DeviceOrientationEvent) => { 
+        if (event.alpha !== null) compassHeading.current = (event as any).webkitCompassHeading || (360 - event.alpha); 
+    };
     const handleVisibilityChange = () => { if (document.visibilityState === 'visible' && isNavigatingRef.current) requestWakeLock(); };
     if (typeof window !== 'undefined') { window.addEventListener('deviceorientation', handleOrientation); document.addEventListener('visibilitychange', handleVisibilityChange); }
     
@@ -1023,7 +1085,7 @@ export default function MapExplorerPage() {
                 
                 // Update Live Location
                 if ((isSafetyModeActiveRef.current && currentTripIdRef.current) || activeConvoyRef.current) {
-                    if (supabaseErrorCount.current > 3) return;
+                    if (supabaseErrorCount.current > 3) return; // Backoff if supabase fails repeatedly
                     const now = Date.now();
                     if (now - lastSafetyUpdate.current > 3000 && supabase) {
                         const payload = { lat: latitude, lng: longitude, heading: heading || 0, speed: speed || 0, last_updated: new Date().toISOString() };
@@ -1059,7 +1121,7 @@ export default function MapExplorerPage() {
     return () => { isMounted.current = false; if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current); if (typeof window !== 'undefined') { window.removeEventListener('deviceorientation', handleOrientation); document.removeEventListener('visibilitychange', handleVisibilityChange); if (window.speechSynthesis) window.speechSynthesis.cancel(); } if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current); releaseWakeLock(); if (map.current) map.current.remove(); map.current = null; }
   }, []);
 
-  useEffect(() => { let frameId: number; const animateWindLayer = () => { if (isWindMode && map.current?.getLayer('wind-layer')) { const time = Date.now() / 2000; map.current.setPaintProperty('wind-layer', 'raster-opacity', 0.6 + Math.sin(time) * 0.1); } frameId = requestAnimationFrame(animateWindLayer); }; if (isWindMode) animateWindLayer(); return () => cancelAnimationFrame(frameId); }, [isWindMode]);
+  useEffect(() => { let frameId: number; const animateWindLayer = () => { if (document.hidden) { frameId = requestAnimationFrame(animateWindLayer); return; } if (isWindMode && map.current?.getLayer('wind-layer')) { const time = Date.now() / 2000; map.current.setPaintProperty('wind-layer', 'raster-opacity', 0.6 + Math.sin(time) * 0.1); } frameId = requestAnimationFrame(animateWindLayer); }; if (isWindMode) animateWindLayer(); return () => cancelAnimationFrame(frameId); }, [isWindMode]);
   useEffect(() => { if (routeDetails?.instruction && isNavigating && lastSpokenInstruction.current !== routeDetails.instruction) { speak(routeDetails.instruction); lastSpokenInstruction.current = routeDetails.instruction; } }, [routeDetails, speak, isNavigating]);
   
   useEffect(() => { 
@@ -1199,7 +1261,7 @@ export default function MapExplorerPage() {
                 <SheetHeader className="text-left space-y-1"><div className="flex items-center gap-3 mb-2"><div className="h-10 w-10 rounded-full bg-indigo-500/20 flex items-center justify-center"><MapPin className="h-5 w-5 text-indigo-400" /></div><div className="flex-1 min-w-0"><SheetTitle asChild className="text-xl font-bold line-clamp-1 text-white"><div role="heading" aria-level={2}>{isFetchingAddress ? <Skeleton className="h-6 w-32 bg-zinc-800" /> : (addressDetails?.name || addressDetails?.address_line1 || "Selected Location")}</div></SheetTitle><SheetDescription asChild className="text-zinc-400 text-xs line-clamp-1"><div>{isFetchingAddress ? <Skeleton className="h-4 w-48 bg-zinc-800 mt-1" /> : (addressDetails?.formatted || "")}</div></SheetDescription></div></div></SheetHeader>
                 {routeDetails && (<div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-700/50 flex justify-between items-center mb-2"><div className="flex items-center gap-2"><Select value={vehicleType} onValueChange={(v: any) => setVehicleType(v)}><SelectTrigger className="w-[110px] h-8 bg-zinc-900 border-zinc-700 text-xs"><SelectValue placeholder="Vehicle" /></SelectTrigger><SelectContent className="bg-zinc-900 border-zinc-700 text-white"><SelectItem value="moto">Moto</SelectItem><SelectItem value="car">Car</SelectItem><SelectItem value="suv">SUV</SelectItem></SelectContent></Select></div><div className="flex flex-col items-end"><span className="text-[10px] text-zinc-400 font-bold uppercase">Est. Cost</span><span className="text-lg font-bold text-emerald-400 font-mono">{estimatedCost.toLocaleString()}៛</span></div></div>)}
                 
-                {/* --- Social/Adventure Context Block (REPLACED RIDE HAILING) --- */}
+                {/* --- Social/Adventure Context Block --- */}
                 <div className="mt-4 grid grid-cols-2 gap-3">
                     <div className="bg-zinc-800/50 p-3 rounded-xl border border-zinc-700/50 flex flex-col justify-center">
                         <p className="text-[10px] text-zinc-500 font-bold uppercase mb-1">Fuel Estimate</p>
@@ -1280,10 +1342,12 @@ const WelcomeWizard = ({ onComplete }: { onComplete: () => void }) => {
     const [isOpen, setIsOpen] = useState(false);
 
     useEffect(() => {
-        const hasSeen = localStorage.getItem('has_seen_onboarding_v2');
-        if (!hasSeen) {
-            setTimeout(() => setIsOpen(true), 1500);
-        }
+        try {
+            const hasSeen = localStorage.getItem('has_seen_onboarding_v2');
+            if (!hasSeen) {
+                setTimeout(() => setIsOpen(true), 1500);
+            }
+        } catch(e){}
     }, []);
 
     const handleNext = () => {
@@ -1475,3 +1539,12 @@ const BottomControls = memo(({
     );
 });
 BottomControls.displayName = "BottomControls";
+
+// Default export wrapped in Suspense for Next.js App Router
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="flex h-screen w-full items-center justify-center bg-zinc-950 text-white"><Loader2 className="h-10 w-10 animate-spin text-indigo-500" /></div>}>
+      <MapExplorerPage />
+    </Suspense>
+  );
+}

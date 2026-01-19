@@ -3,8 +3,8 @@
 // ==========================================
 // 1. IMPORTS
 // ==========================================
-import React, { useEffect, useRef, useState, useMemo } from 'react';
-import mapboxgl, { Map as MapboxMap, Marker, LngLatBounds } from 'mapbox-gl';
+import React, { useEffect, useRef, useState } from 'react';
+import mapboxgl, { Map as MapboxMap, Marker } from 'mapbox-gl';
 import { createClient } from '@supabase/supabase-js';
 import { useParams, useRouter } from 'next/navigation';
 import { Kantumruy_Pro } from 'next/font/google';
@@ -13,15 +13,14 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 // Icons
 import { 
   Clock, MapPin, AlertCircle, 
-  LocateFixed, Share2, Loader2, Navigation, User, ArrowLeft,
-  Activity, Map as MapIcon, Copy
+  LocateFixed, Share2, Navigation, User, ArrowLeft,
+  Activity, Copy, Smartphone
 } from 'lucide-react';
 
 // UI Components
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Skeleton } from "@/components/ui/skeleton";
 
 // ==========================================
 // 2. CONFIGURATION & TYPES
@@ -54,6 +53,16 @@ type TripData = {
 // Smooth interpolation helper
 const lerp = (start: number, end: number, amt: number) => (1 - amt) * start + amt * end;
 
+// Distance helper to throttle Geocoding (Haversine)
+function getDistanceFromLatLonInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371; 
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); 
+  return (R * c) * 1000;
+}
+
 // ==========================================
 // 3. COMPONENT
 // ==========================================
@@ -67,6 +76,7 @@ export default function LiveTripPage() {
   const map = useRef<MapboxMap | null>(null);
   const userMarker = useRef<Marker | null>(null);
   const animationFrame = useRef<number>(0);
+  const lastGeocodePos = useRef<{lat: number, lng: number} | null>(null);
   
   // State
   const [tripData, setTripData] = useState<TripData | null>(null);
@@ -79,21 +89,29 @@ export default function LiveTripPage() {
   // Animation Refs
   const currentPos = useRef<[number, number]>([0, 0]);
   const targetPos = useRef<[number, number]>([0, 0]);
+  const currentHeading = useRef<number>(0);
+  const targetHeading = useRef<number>(0);
   
-  // --- 1. GEOCODING (Get Address from Lat/Lng) ---
+  // --- 1. GEOCODING (Optimized) ---
   const fetchAddress = async (lat: number, lng: number) => {
     if (!MAPBOX_TOKEN) return;
+    
+    // Throttle: Only fetch if moved > 50 meters from last fetch
+    if (lastGeocodePos.current) {
+        const dist = getDistanceFromLatLonInMeters(lastGeocodePos.current.lat, lastGeocodePos.current.lng, lat, lng);
+        if (dist < 50) return;
+    }
+
     try {
       const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?types=poi,address,neighborhood&limit=1&access_token=${MAPBOX_TOKEN}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.features && data.features.length > 0) {
-        setAddress(data.features[0].place_name.replace(", Phnom Penh, Cambodia", ""));
-      } else {
-        setAddress(`${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+        setAddress(data.features[0].place_name.replace(", Phnom Penh, Cambodia", "").replace(", Cambodia", ""));
+        lastGeocodePos.current = { lat, lng };
       }
     } catch (e) {
-      // Fail silently, keep coords
+      // Fail silently
     }
   };
 
@@ -107,17 +125,15 @@ export default function LiveTripPage() {
 
     const fetchTrip = async () => {
       try {
-        const { data, error } = await supabase
-          .from('active_trips')
-          .select('*')
-          .eq('id', tripId)
-          .single();
+        const { data } = await supabase.from('active_trips').select('*').eq('id', tripId).single();
 
         if (data) {
           setTripData(data);
           targetPos.current = [data.current_lng, data.current_lat];
           currentPos.current = [data.current_lng, data.current_lat];
-          setTrail([[data.current_lng, data.current_lat]]); // Init trail
+          targetHeading.current = data.heading;
+          currentHeading.current = data.heading;
+          setTrail([[data.current_lng, data.current_lat]]);
           fetchAddress(data.current_lat, data.current_lng);
         } else {
           setError("Trip not active or ID invalid.");
@@ -138,15 +154,17 @@ export default function LiveTripPage() {
           const newData = payload.new as TripData;
           setTripData(newData);
           targetPos.current = [newData.current_lng, newData.current_lat];
+          targetHeading.current = newData.heading;
           
-          // Update trail
-          setTrail(prev => [...prev.slice(-20), [newData.current_lng, newData.current_lat]]);
+          setTrail(prev => {
+              const newTrail = [...prev, [newData.current_lng, newData.current_lat]];
+              return newTrail.slice(-50); // Keep last 50 points to prevent memory issues
+          });
           
-          // Debounce address fetch (every 3 updates roughly)
-          if (Math.random() > 0.7) fetchAddress(newData.current_lat, newData.current_lng);
+          fetchAddress(newData.current_lat, newData.current_lng);
 
           if (newData.status === 'ended') {
-             toast({ title: "Live Sharing Ended", description: "The user has stopped sharing location." });
+             toast({ title: "Trip Ended", description: "Live sharing has stopped." });
           }
         }
       )
@@ -164,7 +182,7 @@ export default function LiveTripPage() {
       style: 'mapbox://styles/mapbox/dark-v11',
       center: [tripData.current_lng, tripData.current_lat],
       zoom: 16,
-      pitch: 45, // 3D Tilt
+      pitch: 45,
       bearing: tripData.heading || 0,
       attributionControl: false,
       logoPosition: 'bottom-left',
@@ -172,30 +190,21 @@ export default function LiveTripPage() {
       cooperativeGestures: false,
     });
 
-    // Add Trail Source
     map.current.on('load', () => {
         if (!map.current) return;
-        map.current.addSource('trail', {
-            type: 'geojson',
-            data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: trail } }
-        });
-        map.current.addLayer({
-            id: 'trail-layer',
-            type: 'line',
-            source: 'trail',
-            layout: { 'line-join': 'round', 'line-cap': 'round' },
-            paint: { 'line-color': '#818cf8', 'line-width': 4, 'line-opacity': 0.6, 'line-blur': 2 }
-        });
+        // Add trail layer
+        map.current.addSource('trail', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: trail } } });
+        map.current.addLayer({ id: 'trail-layer', type: 'line', source: 'trail', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#818cf8', 'line-width': 4, 'line-opacity': 0.6, 'line-blur': 1 } });
     });
 
-    // Custom Avatar Marker
+    // Custom CSS Avatar Marker
     const el = document.createElement('div');
     el.className = "friend-marker";
     el.innerHTML = `
       <div class="relative flex flex-col items-center group">
-        <div class="absolute w-full h-full bg-indigo-500/40 rounded-full animate-ping opacity-75 duration-1000"></div>
-        <div class="w-14 h-14 rounded-full border-4 border-white shadow-[0_0_20px_rgba(99,102,241,0.6)] overflow-hidden bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center z-10 relative transform transition-transform duration-300">
-           <svg width="28" height="28" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <div class="absolute w-full h-full bg-indigo-500/40 rounded-full animate-ping opacity-75 duration-1500"></div>
+        <div class="w-14 h-14 rounded-full border-4 border-white shadow-[0_0_20px_rgba(99,102,241,0.6)] overflow-hidden bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center z-10 relative">
+           <svg width="24" height="24" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         </div>
         <div class="w-0 h-0 border-l-[8px] border-l-transparent border-r-[8px] border-r-transparent border-t-[10px] border-t-white -mt-1 z-10 drop-shadow-md"></div>
       </div>
@@ -207,7 +216,9 @@ export default function LiveTripPage() {
 
     map.current.on('mousedown', () => setIsFollowing(false));
     map.current.on('touchstart', () => setIsFollowing(false));
+    map.current.on('wheel', () => setIsFollowing(false));
 
+    return () => { map.current?.remove(); };
   }, [loading]);
 
   // --- 4. ANIMATION LOOP ---
@@ -215,13 +226,18 @@ export default function LiveTripPage() {
     if (!map.current || !userMarker.current) return;
 
     const animate = () => {
-      // Smooth movement
-      currentPos.current[0] = lerp(currentPos.current[0], targetPos.current[0], 0.05);
-      currentPos.current[1] = lerp(currentPos.current[1], targetPos.current[1], 0.05);
+      // Smooth movement (LERP)
+      currentPos.current[0] = lerp(currentPos.current[0], targetPos.current[0], 0.08);
+      currentPos.current[1] = lerp(currentPos.current[1], targetPos.current[1], 0.08);
       
+      // Handle Heading wrapping (0 -> 360 issue)
+      let dHeading = targetHeading.current - currentHeading.current;
+      while (dHeading <= -180) dHeading += 360;
+      while (dHeading > 180) dHeading -= 360;
+      currentHeading.current += dHeading * 0.08;
+
       userMarker.current?.setLngLat(currentPos.current);
 
-      // Update trail geometry
       const source = map.current?.getSource('trail') as mapboxgl.GeoJSONSource;
       if (source && trail.length > 1) {
           source.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: trail } });
@@ -231,7 +247,7 @@ export default function LiveTripPage() {
         map.current?.easeTo({
           center: currentPos.current,
           zoom: 17,
-          bearing: tripData?.heading || 0, // Rotate with user
+          bearing: currentHeading.current,
           duration: 0,
         });
       }
@@ -242,16 +258,27 @@ export default function LiveTripPage() {
     return () => cancelAnimationFrame(animationFrame.current);
   }, [isFollowing, trail, tripData]);
 
+  // Handle Share Functionality
+  const handleShare = async () => {
+      const url = typeof window !== 'undefined' ? window.location.href : '';
+      if (navigator.share) {
+          try { await navigator.share({ title: 'Track my live location', url }); } catch(e){}
+      } else {
+          navigator.clipboard.writeText(url);
+          toast({ title: "Link Copied", description: "Tracking link copied to clipboard." });
+      }
+  };
+
   // --- 5. RENDER UI ---
 
   if (loading) return (
     <div className="flex h-screen w-full items-center justify-center bg-black text-white">
-      <div className="flex flex-col items-center gap-4">
+      <div className="flex flex-col items-center gap-4 animate-in fade-in duration-700">
         <div className="relative">
             <div className="w-16 h-16 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
-            <div className="absolute inset-0 flex items-center justify-center"><User className="h-6 w-6 text-indigo-500" /></div>
+            <div className="absolute inset-0 flex items-center justify-center"><Smartphone className="h-6 w-6 text-indigo-500" /></div>
         </div>
-        <p className="text-zinc-500 text-sm font-mono animate-pulse">Establishing secure link...</p>
+        <p className="text-zinc-500 text-sm font-mono animate-pulse">Establishing satellite link...</p>
       </div>
     </div>
   );
@@ -262,9 +289,9 @@ export default function LiveTripPage() {
         <div className="mx-auto w-16 h-16 bg-zinc-800 rounded-full flex items-center justify-center mb-6">
           <AlertCircle className="h-8 w-8 text-zinc-500" />
         </div>
-        <h2 className="text-xl font-bold mb-2">Signal Lost</h2>
+        <h2 className="text-xl font-bold mb-2 text-white">Signal Lost</h2>
         <p className="text-zinc-400 text-sm mb-8">{error || "Unable to connect to live tracking."}</p>
-        <Button onClick={() => window.location.href = '/'} className="w-full bg-white text-black hover:bg-zinc-200">Open Map</Button>
+        <Button onClick={() => router.push('/')} className="w-full bg-white text-black hover:bg-zinc-200 font-bold rounded-xl h-12">Open Map</Button>
       </Card>
     </div>
   );
@@ -278,7 +305,7 @@ export default function LiveTripPage() {
       <div ref={mapContainer} className="absolute inset-0 w-full h-full" style={{ touchAction: 'none' }} />
 
       {/* --- TOP BAR --- */}
-      <div className="absolute top-0 left-0 right-0 p-4 z-20 pt-[env(safe-area-inset-top)] pointer-events-none">
+      <div className="absolute top-0 left-0 right-0 p-4 z-20 pt-[max(1rem,env(safe-area-inset-top))] pointer-events-none">
         <div className="flex justify-between items-start pointer-events-auto">
           
           {/* Back Button */}
@@ -288,13 +315,13 @@ export default function LiveTripPage() {
           
           {/* Status Indicator */}
           <div className="flex flex-col items-end gap-2">
-              <div className={`px-3 py-1.5 rounded-full border backdrop-blur-xl flex items-center gap-2 shadow-lg ${isMoving ? 'bg-indigo-500/20 border-indigo-500/30' : 'bg-zinc-800/60 border-zinc-700'}`}>
+              <div className={`px-3 py-1.5 rounded-full border backdrop-blur-xl flex items-center gap-2 shadow-lg transition-colors duration-500 ${isMoving ? 'bg-indigo-500/20 border-indigo-500/30' : 'bg-zinc-800/60 border-zinc-700'}`}>
                 <span className={`relative flex h-2 w-2`}>
                     <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isMoving ? 'bg-indigo-400' : 'bg-zinc-400'}`}></span>
                     <span className={`relative inline-flex rounded-full h-2 w-2 ${isMoving ? 'bg-indigo-500' : 'bg-zinc-500'}`}></span>
                 </span>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-white">
-                    {isMoving ? 'Live & Moving' : 'Live & Stationary'}
+                    {isMoving ? 'Live' : 'Stationary'}
                 </span>
               </div>
           </div>
@@ -312,7 +339,7 @@ export default function LiveTripPage() {
 
       {/* --- BOTTOM SHEET (Floating Glass Card) --- */}
       <div className="absolute bottom-0 left-0 right-0 z-20 p-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] bg-gradient-to-t from-black/90 via-black/50 to-transparent pointer-events-none">
-        <Card className="bg-[#121214]/90 backdrop-blur-3xl border-zinc-800/80 text-white shadow-[0_8px_30px_rgb(0,0,0,0.5)] rounded-3xl overflow-hidden p-5 pointer-events-auto ring-1 ring-white/10">
+        <Card className="bg-[#121214]/90 backdrop-blur-3xl border-zinc-800/80 text-white shadow-[0_8px_30px_rgb(0,0,0,0.5)] rounded-3xl overflow-hidden p-5 pointer-events-auto ring-1 ring-white/10 animate-in slide-in-from-bottom-10 duration-500">
             
             {/* Speedometer & Time */}
             <div className="flex justify-between items-start mb-6">
@@ -335,7 +362,7 @@ export default function LiveTripPage() {
 
             {/* Address & Action */}
             <div className="space-y-4">
-                <div className="flex items-start gap-3 bg-zinc-800/40 p-3 rounded-2xl border border-white/5">
+                <div className="flex items-start gap-3 bg-zinc-800/40 p-3 rounded-2xl border border-white/5 transition-colors hover:bg-zinc-800/60">
                     <div className="mt-0.5 bg-indigo-500/20 p-1.5 rounded-lg shrink-0">
                         <MapPin className="h-4 w-4 text-indigo-400" />
                     </div>
@@ -343,7 +370,7 @@ export default function LiveTripPage() {
                         <p className="text-[10px] text-zinc-500 font-bold uppercase mb-0.5">Current Location</p>
                         <p className="text-sm font-medium text-zinc-100 truncate leading-snug">{address}</p>
                     </div>
-                    <button className="text-zinc-500 hover:text-white" onClick={() => { navigator.clipboard.writeText(address); toast({title:"Copied address"}); }}>
+                    <button className="text-zinc-500 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-all" onClick={() => { navigator.clipboard.writeText(address); toast({title:"Copied address"}); }}>
                         <Copy className="h-4 w-4" />
                     </button>
                 </div>
@@ -351,8 +378,8 @@ export default function LiveTripPage() {
                 <div className="grid grid-cols-5 gap-3">
                     <Button 
                         variant="secondary" 
-                        className="col-span-1 h-12 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700"
-                        onClick={() => navigator.share({ url: window.location.href }).catch(()=>{})}
+                        className="col-span-1 h-12 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300"
+                        onClick={handleShare}
                     >
                         <Share2 className="h-5 w-5" />
                     </Button>
