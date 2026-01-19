@@ -13,7 +13,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 // Icons
 import { 
   Clock, MapPin, AlertCircle, 
-  LocateFixed, Share2, Navigation, User, ArrowLeft,
+  LocateFixed, Share2, Navigation, ArrowLeft,
   Activity, Copy, Smartphone
 } from 'lucide-react';
 
@@ -157,8 +157,10 @@ export default function LiveTripPage() {
           targetHeading.current = newData.heading;
           
           setTrail(prev => {
+              // Create new trail with latest point
               const newTrail = [...prev, [newData.current_lng, newData.current_lat]];
-              return newTrail.slice(-50); // Keep last 50 points to prevent memory issues
+              // FIX: Explicit cast to tuple array to satisfy Typescript
+              return newTrail.slice(-50) as [number, number][]; 
           });
           
           fetchAddress(newData.current_lat, newData.current_lng);
